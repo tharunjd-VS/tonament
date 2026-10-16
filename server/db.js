@@ -1,8 +1,15 @@
 'use strict';
 
-const fs = require('node:fs');
+// Postgres access. In production (Vercel) this connects to DATABASE_URL —
+// e.g. Neon. Locally and in tests, with no DATABASE_URL, it runs an embedded
+// Postgres (PGlite) so nothing needs installing.
+//
+// Both backends expose the same small interface:
+//   query(sql, params) -> rows
+//   tx(async (query) => ...) -> runs fn inside BEGIN/COMMIT
+//   close()
+
 const path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tournaments (
@@ -11,56 +18,95 @@ CREATE TABLE IF NOT EXISTS tournaments (
   venue       TEXT,
   sport       TEXT NOT NULL,
   format      TEXT NOT NULL,
-  config      TEXT NOT NULL,
+  config      JSONB NOT NULL,
   status      TEXT NOT NULL DEFAULT 'setup',
   admin_key   TEXT NOT NULL,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS entries (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  id            SERIAL PRIMARY KEY,
   tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
   name          TEXT NOT NULL,
   seed          INTEGER NOT NULL,
   group_no      INTEGER
 );
 CREATE TABLE IF NOT EXISTS matches (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  id            SERIAL PRIMARY KEY,
   tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-  stage         TEXT NOT NULL,              -- 'league' | 'knockout'
+  stage         TEXT NOT NULL,                     -- 'league' | 'knockout'
   group_no      INTEGER,
   round         INTEGER NOT NULL,
   slot          INTEGER NOT NULL DEFAULT 0,
   a_id          INTEGER REFERENCES entries(id),
   b_id          INTEGER REFERENCES entries(id),
-  status        TEXT NOT NULL DEFAULT 'scheduled', -- scheduled | live | done | bye
+  status        TEXT NOT NULL DEFAULT 'scheduled',  -- scheduled | live | done | bye
   rallies       TEXT NOT NULL DEFAULT '',
   first_server  TEXT NOT NULL DEFAULT 'a',
   winner_id     INTEGER,
   court         TEXT,
-  updated_at    TEXT
+  updated_at    TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS entries_t ON entries(tournament_id);
 CREATE INDEX IF NOT EXISTS matches_t ON matches(tournament_id, stage, round, slot);
 `;
 
-function openDb(file) {
-  if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-  db.exec(SCHEMA);
-  return db;
-}
-
-function transaction(db, fn) {
-  db.exec('BEGIN');
+async function migrate(db) {
   try {
-    const result = fn();
-    db.exec('COMMIT');
-    return result;
+    await db.exec(SCHEMA);
   } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
+    // Two cold starts racing to create the same table; the other one won.
+    if (err.code !== '23505' && err.code !== '42P07') throw err;
   }
 }
 
-module.exports = { openDb, transaction };
+async function connectPostgres(url) {
+  const { Pool } = require('pg');
+  const pool = new Pool({ connectionString: url, max: 5, idleTimeoutMillis: 10_000 });
+  const db = {
+    query: async (sql, params) => (await pool.query(sql, params)).rows,
+    exec: (sql) => pool.query(sql),
+    async tx(fn) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await fn(async (sql, params) => (await client.query(sql, params)).rows);
+        await client.query('COMMIT');
+        return result;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    close: () => pool.end(),
+  };
+  await migrate(db);
+  return db;
+}
+
+async function connectEmbedded(dataDir) {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const pg = dataDir ? new PGlite(dataDir) : new PGlite();
+  const db = {
+    query: async (sql, params) => (await pg.query(sql, params)).rows,
+    exec: (sql) => pg.exec(sql),
+    tx: (fn) => pg.transaction((t) => fn(async (sql, params) => (await t.query(sql, params)).rows)),
+    close: () => pg.close(),
+  };
+  await migrate(db);
+  return db;
+}
+
+// url: a postgres:// connection string, ':memory:' for a throwaway embedded
+// database, or empty for an embedded database stored on disk.
+function createDb(url = process.env.DATABASE_URL || process.env.POSTGRES_URL) {
+  if (url && url !== ':memory:') return connectPostgres(url);
+  if (process.env.VERCEL) {
+    throw new Error('DATABASE_URL is not set. Add a Postgres database (e.g. Neon) to the Vercel project.');
+  }
+  if (url === ':memory:') return connectEmbedded(null);
+  return connectEmbedded(process.env.PGLITE_DIR || path.join(__dirname, '..', 'data', 'pglite'));
+}
+
+module.exports = { createDb };

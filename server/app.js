@@ -18,17 +18,35 @@ const TYPES = {
   '.webmanifest': 'application/manifest+json',
 };
 
-function send(res, status, data) {
-  const body = JSON.stringify(data);
+// cdnSeconds > 0 lets a CDN (Vercel's edge) share the response between
+// viewers for that long. Live viewers poll, so this is what keeps hundreds of
+// spectators from each hitting the database.
+function send(res, status, data, cdnSeconds = 0) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
+    'Cache-Control': cdnSeconds
+      ? `public, max-age=0, s-maxage=${cdnSeconds}, stale-while-revalidate=${cdnSeconds * 2}`
+      : 'no-store',
     'X-Content-Type-Options': 'nosniff',
   });
-  res.end(body);
+  res.end(JSON.stringify(data));
 }
 
 function readJson(req) {
+  // Vercel's Node runtime parses the body itself and exposes it as req.body.
+  if ('body' in req) {
+    let body;
+    try {
+      body = req.body;
+    } catch {
+      return Promise.reject(new HttpError(400, 'Body must be a JSON object'));
+    }
+    if (body == null || body === '') return Promise.resolve({});
+    if (typeof body !== 'object' || Array.isArray(body) || Buffer.isBuffer(body)) {
+      return Promise.reject(new HttpError(400, 'Body must be a JSON object'));
+    }
+    return Promise.resolve(body);
+  }
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -54,24 +72,27 @@ function readJson(req) {
   });
 }
 
+// On Vercel every /api/* request is rewritten to the single function at
+// /api/index with the original path in ?__path= (see vercel.json).
+function apiPath(url) {
+  const forwarded = url.searchParams.get('__path');
+  if (forwarded != null && (url.pathname === '/api' || url.pathname === '/api/index')) {
+    return `/api/${forwarded.replace(/^\/+/, '')}`.replace(/\/+$/, '') || '/api';
+  }
+  return url.pathname;
+}
+
 function createApp(db) {
   const svc = createService(db);
-  const streams = new Map(); // tournamentId -> Set<res>
-
-  svc.events.on('change', (id, payload) => {
-    const clients = streams.get(id);
-    if (!clients) return;
-    const msg = `data: ${JSON.stringify(payload)}\n\n`;
-    for (const res of clients) res.write(msg);
-  });
 
   const T = '/api/tournaments/([a-z0-9-]+)';
   const N = '(\\d+)';
   const routes = [
-    ['GET', '/api/sports', () => sports.list()],
-    ['GET', '/api/tournaments', () => svc.listTournaments()],
+    ['GET', '/api/sports', () => sports.list(), 300],
+    ['GET', '/api/tournaments', () => svc.listTournaments(), 5],
     ['POST', '/api/tournaments', (c) => svc.createTournament(c.body)],
-    ['GET', T, (c, id) => svc.getTournament(id, c.key)],
+    // Organiser reads (with a key) are personal and never cached.
+    ['GET', T, (c, id) => svc.getTournament(id, c.key), (c) => (c.key ? 0 : 1)],
     ['PATCH', T, (c, id) => svc.updateSettings(id, c.key, c.body)],
     ['DELETE', T, (c, id) => svc.deleteTournament(id, c.key)],
     ['POST', `${T}/entries`, (c, id) => svc.addEntries(id, c.key, c.body.names)],
@@ -82,27 +103,7 @@ function createApp(db) {
     ['PATCH', `${T}/matches/${N}`, (c, id, mid) => svc.updateMatch(id, c.key, mid, c.body)],
     ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.key, mid, c.body.side)],
     ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.key, mid)],
-  ].map(([method, pattern, handler]) => ({ method, re: new RegExp(`^${pattern}$`), handler }));
-
-  function openStream(req, res, id) {
-    if (!svc.exists(id)) return send(res, 404, { error: 'Tournament not found' });
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no', // disable proxy buffering (nginx)
-    });
-    res.write('retry: 3000\n\n');
-    if (!streams.has(id)) streams.set(id, new Set());
-    streams.get(id).add(res);
-    const ping = setInterval(() => res.write(': ping\n\n'), 25000);
-    req.on('close', () => {
-      clearInterval(ping);
-      const clients = streams.get(id);
-      clients?.delete(res);
-      if (clients && !clients.size) streams.delete(id);
-    });
-  }
+  ].map(([method, pattern, handler, cache = 0]) => ({ method, re: new RegExp(`^${pattern}$`), handler, cache }));
 
   async function serveStatic(req, res, pathname) {
     let rel;
@@ -131,11 +132,10 @@ function createApp(db) {
   }
 
   async function handle(req, res) {
-    const { pathname } = new URL(req.url, 'http://localhost');
+    const url = new URL(req.url, 'http://localhost');
+    const pathname = apiPath(url);
     try {
-      if (pathname.startsWith('/api/')) {
-        const sse = pathname.match(/^\/api\/tournaments\/([a-z0-9-]+)\/stream$/);
-        if (sse && req.method === 'GET') return openStream(req, res, sse[1]);
+      if (pathname === '/api' || pathname.startsWith('/api/')) {
         let pathMatched = false;
         for (const route of routes) {
           const m = pathname.match(route.re);
@@ -143,10 +143,11 @@ function createApp(db) {
           pathMatched = true;
           if (route.method !== req.method) continue;
           const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readJson(req) : {};
-          const key = req.headers['x-admin-key'];
-          const result = route.handler({ body, key }, ...m.slice(1));
+          const ctx = { body, key: req.headers['x-admin-key'] };
+          const result = await route.handler(ctx, ...m.slice(1));
+          const cache = typeof route.cache === 'function' ? route.cache(ctx) : route.cache;
           const created = req.method === 'POST' && pathname === '/api/tournaments';
-          return send(res, created ? 201 : 200, result);
+          return send(res, created ? 201 : 200, result, cache);
         }
         return pathMatched ? send(res, 405, { error: 'Method not allowed' }) : send(res, 404, { error: 'Not found' });
       }

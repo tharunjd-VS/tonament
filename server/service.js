@@ -1,10 +1,8 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { EventEmitter } = require('node:events');
 const sports = require('./sports');
 const formats = require('./formats');
-const { transaction } = require('./db');
 
 const FORMATS = {
   league_knockout: 'League + Knockout',
@@ -53,58 +51,61 @@ function slugify(name) {
 }
 
 const groupName = (no) => `Group ${String.fromCharCode(65 + no)}`;
+const nextSlotColumn = (m) => (m.slot % 2 ? 'b_id' : 'a_id');
 
+// Every write runs in a transaction that first locks the tournament row, so
+// concurrent requests for one tournament (two umpires, retries, several
+// serverless instances) are applied one at a time.
 function createService(db) {
-  const events = new EventEmitter();
-  events.setMaxListeners(0);
-  const emit = (tournamentId, payload) => events.emit('change', tournamentId, payload);
+  // ---------- queries (q is db.query or a transaction's query)
 
-  const q = {
-    list: db.prepare(`
-      SELECT t.id, t.name, t.venue, t.sport, t.format, t.status, t.created_at AS createdAt,
-             (SELECT COUNT(*) FROM entries e WHERE e.tournament_id = t.id) AS entries
-      FROM tournaments t ORDER BY t.created_at DESC, t.rowid DESC LIMIT 100`),
-    tournament: db.prepare('SELECT * FROM tournaments WHERE id = ?'),
-    insertTournament: db.prepare(
-      'INSERT INTO tournaments (id, name, venue, sport, format, config, admin_key) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ),
-    updateTournament: db.prepare('UPDATE tournaments SET name = ?, venue = ?, format = ?, config = ? WHERE id = ?'),
-    setConfig: db.prepare('UPDATE tournaments SET config = ? WHERE id = ?'),
-    setStatus: db.prepare('UPDATE tournaments SET status = ? WHERE id = ?'),
-    deleteTournament: db.prepare('DELETE FROM tournaments WHERE id = ?'),
-    entries: db.prepare('SELECT id, name, seed, group_no FROM entries WHERE tournament_id = ? ORDER BY seed, id'),
-    insertEntry: db.prepare('INSERT INTO entries (tournament_id, name, seed) VALUES (?, ?, ?)'),
-    deleteEntry: db.prepare('DELETE FROM entries WHERE id = ? AND tournament_id = ?'),
-    setSeed: db.prepare('UPDATE entries SET seed = ? WHERE id = ? AND tournament_id = ?'),
-    setGroup: db.prepare('UPDATE entries SET group_no = ? WHERE id = ?'),
-    matches: db.prepare(
-      `SELECT * FROM matches WHERE tournament_id = ? ORDER BY stage = 'knockout', round, group_no, slot, id`,
-    ),
-    match: db.prepare('SELECT * FROM matches WHERE id = ? AND tournament_id = ?'),
-    koMatch: db.prepare(`SELECT * FROM matches WHERE tournament_id = ? AND stage = 'knockout' AND round = ? AND slot = ?`),
-    byes: db.prepare(`SELECT * FROM matches WHERE tournament_id = ? AND stage = 'knockout' AND status = 'bye'`),
-    pendingLeague: db.prepare(
-      `SELECT COUNT(*) AS n FROM matches WHERE tournament_id = ? AND stage = 'league' AND status != 'done'`,
-    ),
-    insertMatch: db.prepare(
-      `INSERT INTO matches (tournament_id, stage, group_no, round, slot, a_id, b_id, status, winner_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ),
-    saveScore: db.prepare(
-      `UPDATE matches SET rallies = ?, status = ?, winner_id = ?, updated_at = datetime('now') WHERE id = ?`,
-    ),
-    saveMeta: db.prepare(
-      `UPDATE matches SET court = ?, first_server = ?, status = ?, updated_at = datetime('now') WHERE id = ?`,
-    ),
-  };
-
-  // ---------- loading & auth
-
-  function load(id) {
-    const row = q.tournament.get(String(id));
+  async function load(q, id, { lock = false } = {}) {
+    const [row] = await q(`SELECT * FROM tournaments WHERE id = $1${lock ? ' FOR UPDATE' : ''}`, [String(id)]);
     if (!row) fail(404, 'Tournament not found');
-    return { ...row, config: JSON.parse(row.config), sportDef: sports.get(row.sport) };
+    return { ...row, sportDef: sports.get(row.sport) };
   }
+
+  const entriesOf = (q, tid) =>
+    q('SELECT id, name, seed, group_no FROM entries WHERE tournament_id = $1 ORDER BY seed, id', [tid]);
+
+  const matchesOf = (q, tid) =>
+    q(`SELECT * FROM matches WHERE tournament_id = $1 ORDER BY stage = 'knockout', round, group_no, slot, id`, [tid]);
+
+  async function matchOf(q, t, mid) {
+    const [m] = await q('SELECT * FROM matches WHERE id = $1 AND tournament_id = $2', [Number(mid) || 0, t.id]);
+    if (!m) fail(404, 'Match not found');
+    return m;
+  }
+
+  async function koMatch(q, t, round, slot) {
+    const [m] = await q(
+      `SELECT * FROM matches WHERE tournament_id = $1 AND stage = 'knockout' AND round = $2 AND slot = $3`,
+      [t.id, round, slot],
+    );
+    return m;
+  }
+
+  async function pendingLeague(q, t) {
+    const [{ n }] = await q(
+      `SELECT COUNT(*)::int AS n FROM matches WHERE tournament_id = $1 AND stage = 'league' AND status <> 'done'`,
+      [t.id],
+    );
+    return n;
+  }
+
+  const insertMatch = (q, t, stage, group, round, slot, a, b, status = 'scheduled', winner = null) =>
+    q(
+      `INSERT INTO matches (tournament_id, stage, group_no, round, slot, a_id, b_id, status, winner_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [t.id, stage, group, round, slot, a, b, status, winner],
+    );
+
+  async function setStatus(q, t, status) {
+    await q('UPDATE tournaments SET status = $1 WHERE id = $2', [status, t.id]);
+    t.status = status;
+  }
+
+  // ---------- auth
 
   function isAdmin(t, key) {
     if (typeof key !== 'string' || !key) return false;
@@ -113,22 +114,20 @@ function createService(db) {
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
 
-  function admin(id, key) {
-    const t = load(id);
+  async function lockAsAdmin(q, id, key) {
+    const t = await load(q, id, { lock: true });
     if (!isAdmin(t, key)) fail(403, 'Only the organiser can do that');
     return t;
   }
 
-  function loadMatch(t, mid) {
-    const m = q.match.get(Number(mid), t.id);
-    if (!m) fail(404, 'Match not found');
-    return m;
+  // Runs fn as the organiser inside a transaction and returns the fresh view.
+  function mutate(id, key, fn) {
+    return db.tx(async (q) => {
+      const t = await lockAsAdmin(q, id, key);
+      await fn(q, t);
+      return view(q, await load(q, id), key);
+    });
   }
-
-  const setStatus = (t, status) => {
-    q.setStatus.run(status, t.id);
-    t.status = status;
-  };
 
   function buildConfig(input, sport, prev = {}) {
     return {
@@ -140,6 +139,8 @@ function createService(db) {
   }
 
   // ---------- views
+
+  const scoreOf = (t, m) => t.sportDef.compute(m.rallies, t.config.scoring, m.first_server);
 
   function matchView(t, m, score, names) {
     const side = (id) => (id == null ? null : { id, name: names.get(id) ?? 'Unknown' });
@@ -163,9 +164,6 @@ function createService(db) {
       updatedAt: m.updated_at,
     };
   }
-
-  const namesOf = (t) => new Map(q.entries.all(t.id).map((e) => [e.id, e.name]));
-  const scoreOf = (t, m) => t.sportDef.compute(m.rallies, t.config.scoring, m.first_server);
 
   function resultOf(m, score) {
     return {
@@ -194,10 +192,10 @@ function createService(db) {
     });
   }
 
-  function view(t, key) {
-    const entries = q.entries.all(t.id);
+  async function view(q, t, key) {
+    const [entries, rows] = await Promise.all([entriesOf(q, t.id), matchesOf(q, t.id)]);
     const names = new Map(entries.map((e) => [e.id, e.name]));
-    const scored = q.matches.all(t.id).map((row) => ({ row, score: scoreOf(t, row) }));
+    const scored = rows.map((row) => ({ row, score: scoreOf(t, row) }));
     const groups = groupStandings(t, entries, scored, names);
     const matches = scored.map(({ row, score }) => matchView(t, row, score, names));
 
@@ -208,13 +206,16 @@ function createService(db) {
       else if (groups.length === 1) champion = groups[0].standings[0];
     }
 
-    const { admin_key: _k, sportDef, config, created_at: createdAt, ...rest } = t;
     return {
-      ...rest,
-      createdAt,
-      sport: { id: sportDef.id, name: sportDef.name },
+      id: t.id,
+      name: t.name,
+      venue: t.venue,
+      status: t.status,
+      format: t.format,
       formatName: FORMATS[t.format],
-      config,
+      createdAt: t.created_at,
+      sport: { id: t.sportDef.id, name: t.sportDef.name },
+      config: t.config,
       isAdmin: isAdmin(t, key),
       entries: entries.map((e) => ({ id: e.id, name: e.name, seed: e.seed, group: e.group_no })),
       groups,
@@ -223,25 +224,27 @@ function createService(db) {
     };
   }
 
-  function publishMatch(t, matchId, structural) {
-    const row = q.match.get(matchId, t.id);
-    const match = matchView(t, row, scoreOf(t, row), namesOf(t));
-    emit(t.id, { type: 'match', match });
-    if (structural) emit(t.id, { type: 'tournament' });
-    return match;
+  async function singleMatchView(q, t, matchId) {
+    const [row] = await q('SELECT * FROM matches WHERE id = $1', [matchId]);
+    const names = new Map((await entriesOf(q, t.id)).map((e) => [e.id, e.name]));
+    return matchView(t, row, scoreOf(t, row), names);
   }
 
   // ---------- tournaments
 
-  function listTournaments() {
-    return q.list.all().map((r) => ({ ...r, formatName: FORMATS[r.format] }));
+  async function listTournaments() {
+    const rows = await db.query(`
+      SELECT t.id, t.name, t.venue, t.sport, t.format, t.status, t.created_at AS "createdAt",
+             (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries
+      FROM tournaments t ORDER BY t.created_at DESC, t.id LIMIT 100`);
+    return rows.map((r) => ({ ...r, formatName: FORMATS[r.format] }));
   }
 
-  function getTournament(id, key) {
-    return view(load(id), key);
+  async function getTournament(id, key) {
+    return view(db.query, await load(db.query, id), key);
   }
 
-  function createTournament(input = {}) {
+  async function createTournament(input = {}) {
     const name = text(input.name, 'Tournament name');
     const venue = text(input.venue, 'Venue', { optional: true });
     const sport = sports.get(input.sport || 'badminton');
@@ -250,27 +253,35 @@ function createService(db) {
     const config = buildConfig(input, sport);
     const id = `${slugify(name)}-${crypto.randomBytes(3).toString('hex')}`;
     const adminKey = crypto.randomBytes(18).toString('base64url');
-    q.insertTournament.run(id, name, venue, sport.id, format, JSON.stringify(config), adminKey);
+    await db.query(
+      'INSERT INTO tournaments (id, name, venue, sport, format, config, admin_key) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)',
+      [id, name, venue, sport.id, format, JSON.stringify(config), adminKey],
+    );
     return { id, adminKey };
   }
 
-  function updateSettings(id, key, input = {}) {
-    const t = admin(id, key);
-    if (t.status !== 'setup') fail(409, 'Settings are locked once the tournament has started');
-    const name = input.name === undefined ? t.name : text(input.name, 'Tournament name');
-    const venue = input.venue === undefined ? t.venue : text(input.venue, 'Venue', { optional: true });
-    const format = input.format === undefined ? t.format : FORMATS[input.format] ? input.format : fail(400, 'Unknown format');
-    const config = buildConfig(input, t.sportDef, t.config);
-    q.updateTournament.run(name, venue, format, JSON.stringify(config), t.id);
-    emit(t.id, { type: 'tournament' });
-    return getTournament(id, key);
+  async function updateSettings(id, key, input = {}) {
+    return mutate(id, key, async (q, t) => {
+      if (t.status !== 'setup') fail(409, 'Settings are locked once the tournament has started');
+      const name = input.name === undefined ? t.name : text(input.name, 'Tournament name');
+      const venue = input.venue === undefined ? t.venue : text(input.venue, 'Venue', { optional: true });
+      if (input.format !== undefined && !FORMATS[input.format]) fail(400, 'Unknown format');
+      const format = input.format ?? t.format;
+      const config = buildConfig(input, t.sportDef, t.config);
+      await q('UPDATE tournaments SET name = $1, venue = $2, format = $3, config = $4::jsonb WHERE id = $5', [
+        name, venue, format, JSON.stringify(config), t.id,
+      ]);
+    });
   }
 
-  function deleteTournament(id, key) {
-    const t = admin(id, key);
-    q.deleteTournament.run(t.id);
-    emit(t.id, { type: 'deleted' });
-    return { ok: true };
+  async function deleteTournament(id, key) {
+    return db.tx(async (q) => {
+      const t = await lockAsAdmin(q, id, key);
+      await q('DELETE FROM matches WHERE tournament_id = $1', [t.id]);
+      await q('DELETE FROM entries WHERE tournament_id = $1', [t.id]);
+      await q('DELETE FROM tournaments WHERE id = $1', [t.id]);
+      return { ok: true };
+    });
   }
 
   // ---------- entries
@@ -279,83 +290,87 @@ function createService(db) {
     if (t.status !== 'setup') fail(409, 'Entries are locked once the tournament has started');
   }
 
-  function addEntries(id, key, names) {
-    const t = admin(id, key);
-    requireSetup(t);
+  async function addEntries(id, key, names) {
     if (!Array.isArray(names)) fail(400, 'names must be a list');
     const clean = names.map((n) => (typeof n === 'string' ? n.trim().replace(/\s+/g, ' ') : '')).filter(Boolean);
     if (!clean.length) fail(400, 'Enter at least one name');
-    const existing = q.entries.all(t.id);
-    if (existing.length + clean.length > MAX_ENTRIES) fail(400, `A tournament can have at most ${MAX_ENTRIES} entries`);
-    const seen = new Set(existing.map((e) => e.name.toLowerCase()));
-    for (const n of clean) {
-      if (n.length > 60) fail(400, `"${n.slice(0, 20)}…" is too long (max 60 characters)`);
-      if (seen.has(n.toLowerCase())) fail(400, `"${n}" is already entered`);
-      seen.add(n.toLowerCase());
-    }
-    let seed = existing.reduce((max, e) => Math.max(max, e.seed), 0);
-    transaction(db, () => clean.forEach((n) => q.insertEntry.run(t.id, n, ++seed)));
-    emit(t.id, { type: 'tournament' });
-    return getTournament(id, key);
+    return mutate(id, key, async (q, t) => {
+      requireSetup(t);
+      const existing = await entriesOf(q, t.id);
+      if (existing.length + clean.length > MAX_ENTRIES) fail(400, `A tournament can have at most ${MAX_ENTRIES} entries`);
+      const seen = new Set(existing.map((e) => e.name.toLowerCase()));
+      for (const n of clean) {
+        if (n.length > 60) fail(400, `"${n.slice(0, 20)}…" is too long (max 60 characters)`);
+        if (seen.has(n.toLowerCase())) fail(400, `"${n}" is already entered`);
+        seen.add(n.toLowerCase());
+      }
+      let seed = existing.reduce((max, e) => Math.max(max, e.seed), 0);
+      for (const n of clean) await q('INSERT INTO entries (tournament_id, name, seed) VALUES ($1, $2, $3)', [t.id, n, ++seed]);
+    });
   }
 
-  function removeEntry(id, key, entryId) {
-    const t = admin(id, key);
-    requireSetup(t);
-    if (!q.deleteEntry.run(Number(entryId), t.id).changes) fail(404, 'Entry not found');
-    emit(t.id, { type: 'tournament' });
-    return getTournament(id, key);
+  async function removeEntry(id, key, entryId) {
+    return mutate(id, key, async (q, t) => {
+      requireSetup(t);
+      const deleted = await q('DELETE FROM entries WHERE id = $1 AND tournament_id = $2 RETURNING id', [Number(entryId) || 0, t.id]);
+      if (!deleted.length) fail(404, 'Entry not found');
+    });
   }
 
-  function reorderEntries(id, key, ids) {
-    const t = admin(id, key);
-    requireSetup(t);
-    const current = q.entries.all(t.id).map((e) => e.id);
-    const wanted = Array.isArray(ids) ? ids.map(Number) : [];
-    if (wanted.length !== current.length || new Set(wanted).size !== wanted.length || !wanted.every((x) => current.includes(x))) {
-      fail(400, 'ids must list every entry exactly once');
-    }
-    transaction(db, () => wanted.forEach((eid, i) => q.setSeed.run(i + 1, eid, t.id)));
-    emit(t.id, { type: 'tournament' });
-    return getTournament(id, key);
+  async function reorderEntries(id, key, ids) {
+    return mutate(id, key, async (q, t) => {
+      requireSetup(t);
+      const current = (await entriesOf(q, t.id)).map((e) => e.id);
+      const wanted = Array.isArray(ids) ? ids.map(Number) : [];
+      if (wanted.length !== current.length || new Set(wanted).size !== wanted.length || !wanted.every((x) => current.includes(x))) {
+        fail(400, 'ids must list every entry exactly once');
+      }
+      for (const [i, eid] of wanted.entries()) {
+        await q('UPDATE entries SET seed = $1 WHERE id = $2 AND tournament_id = $3', [i + 1, eid, t.id]);
+      }
+    });
   }
 
   // ---------- stages
 
-  function createBracket(t, seeded) {
+  async function createBracket(q, t, seeded) {
     const slots = formats.knockoutSlots(seeded);
     const rounds = Math.log2(slots.length);
-    t.config.knockoutRounds = rounds;
-    q.setConfig.run(JSON.stringify(t.config), t.id);
+    t.config = { ...t.config, knockoutRounds: rounds };
+    await q('UPDATE tournaments SET config = $1::jsonb WHERE id = $2', [JSON.stringify(t.config), t.id]);
+    const byes = [];
     for (let r = 1; r <= rounds; r++) {
       for (let s = 0; s < slots.length >> r; s++) {
-        if (r === 1) {
-          const a = slots[2 * s];
-          const b = slots[2 * s + 1];
-          const bye = a == null || b == null;
-          q.insertMatch.run(t.id, 'knockout', null, 1, s, a, b, bye ? 'bye' : 'scheduled', bye ? (a ?? b) : null);
+        if (r > 1) {
+          await insertMatch(q, t, 'knockout', null, r, s, null, null);
+          continue;
+        }
+        const a = slots[2 * s];
+        const b = slots[2 * s + 1];
+        if (a == null || b == null) {
+          await insertMatch(q, t, 'knockout', null, 1, s, a, b, 'bye', a ?? b);
+          byes.push({ round: 1, slot: s, winner: a ?? b });
         } else {
-          q.insertMatch.run(t.id, 'knockout', null, r, s, null, null, 'scheduled', null);
+          await insertMatch(q, t, 'knockout', null, 1, s, a, b);
         }
       }
     }
-    for (const m of q.byes.all(t.id)) advance(t, m, m.winner_id);
+    for (const bye of byes) await advance(q, t, bye, bye.winner);
   }
 
-  function advance(t, m, winnerId) {
-    const next = q.koMatch.get(t.id, m.round + 1, m.slot >> 1);
-    db.prepare(`UPDATE matches SET ${m.slot % 2 ? 'b_id' : 'a_id'} = ? WHERE id = ?`).run(winnerId, next.id);
+  async function advance(q, t, m, winnerId) {
+    const next = await koMatch(q, t, m.round + 1, m.slot >> 1);
+    await q(`UPDATE matches SET ${nextSlotColumn(m)} = $1 WHERE id = $2`, [winnerId, next.id]);
   }
 
-  function start(id, key) {
-    const t = admin(id, key);
-    if (t.status !== 'setup') fail(409, 'The tournament has already started');
-    const entries = q.entries.all(t.id);
-    transaction(db, () => {
+  async function start(id, key) {
+    return mutate(id, key, async (q, t) => {
+      if (t.status !== 'setup') fail(409, 'The tournament has already started');
+      const entries = await entriesOf(q, t.id);
       if (t.format === 'knockout') {
         if (entries.length < 2) fail(400, 'Add at least 2 entries to start');
-        createBracket(t, entries.map((e) => ({ id: e.id, group: null, tier: 0 })));
-        setStatus(t, 'knockout');
+        await createBracket(q, t, entries.map((e) => ({ id: e.id, group: null, tier: 0 })));
+        await setStatus(q, t, 'knockout');
         return;
       }
       const { groups, qualifiers } = t.config;
@@ -367,37 +382,33 @@ function createService(db) {
         if (qualifiers > smallest) fail(400, `The smallest group has ${smallest} entries, so at most ${smallest} can qualify from each group`);
         if (groups * qualifiers < 2) fail(400, 'At least 2 entries must qualify for the knockout');
       }
-      formats.snakeGroups(entries.map((e) => e.id), groups).forEach((ids, g) => {
-        ids.forEach((eid) => q.setGroup.run(g, eid));
-        formats.roundRobin(ids).forEach((pairs, r) =>
-          pairs.forEach(([a, b], slot) => q.insertMatch.run(t.id, 'league', g, r + 1, slot, a, b, 'scheduled', null)),
-        );
-      });
-      setStatus(t, 'league');
+      const draw = formats.snakeGroups(entries.map((e) => e.id), groups);
+      for (const [g, ids] of draw.entries()) {
+        for (const eid of ids) await q('UPDATE entries SET group_no = $1 WHERE id = $2', [g, eid]);
+        for (const [r, pairs] of formats.roundRobin(ids).entries()) {
+          for (const [slot, [a, b]] of pairs.entries()) await insertMatch(q, t, 'league', g, r + 1, slot, a, b);
+        }
+      }
+      await setStatus(q, t, 'league');
     });
-    emit(t.id, { type: 'tournament' });
-    return getTournament(id, key);
   }
 
-  function startKnockout(id, key) {
-    const t = admin(id, key);
-    if (t.format !== 'league_knockout' || t.status !== 'league') fail(409, 'The knockout stage cannot be started now');
-    const pending = q.pendingLeague.get(t.id).n;
-    if (pending) fail(409, `${pending} league match${pending > 1 ? 'es are' : ' is'} still to be played`);
-    const { groups } = view(t);
-    const seeded = [];
-    for (let tier = 0; tier < t.config.qualifiers; tier++) {
-      for (const g of groups) {
-        const row = g.standings[tier];
-        if (row) seeded.push({ id: row.id, group: g.no, tier });
+  async function startKnockout(id, key) {
+    return mutate(id, key, async (q, t) => {
+      if (t.format !== 'league_knockout' || t.status !== 'league') fail(409, 'The knockout stage cannot be started now');
+      const pending = await pendingLeague(q, t);
+      if (pending) fail(409, `${pending} league match${pending > 1 ? 'es are' : ' is'} still to be played`);
+      const { groups } = await view(q, t);
+      const seeded = [];
+      for (let tier = 0; tier < t.config.qualifiers; tier++) {
+        for (const g of groups) {
+          const row = g.standings[tier];
+          if (row) seeded.push({ id: row.id, group: g.no, tier });
+        }
       }
-    }
-    transaction(db, () => {
-      createBracket(t, seeded);
-      setStatus(t, 'knockout');
+      await createBracket(q, t, seeded);
+      await setStatus(q, t, 'knockout');
     });
-    emit(t.id, { type: 'tournament' });
-    return getTournament(id, key);
   }
 
   // ---------- scoring
@@ -407,87 +418,89 @@ function createService(db) {
     if (!open) fail(409, `This ${m.stage} match cannot be played right now`);
   }
 
-  function rally(id, key, mid, side) {
+  async function rally(id, key, mid, side) {
     if (side !== 'a' && side !== 'b') fail(400, 'side must be "a" or "b"');
-    const t = admin(id, key);
-    const m = loadMatch(t, mid);
-    if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished');
-    if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
-    requireStageOpen(t, m);
+    return db.tx(async (q) => {
+      const t = await lockAsAdmin(q, id, key);
+      const m = await matchOf(q, t, mid);
+      if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished');
+      if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
+      requireStageOpen(t, m);
 
-    const rallies = m.rallies + side;
-    const score = t.sportDef.compute(rallies, t.config.scoring, m.first_server);
-    const winnerId = score.winner ? (score.winner === 'a' ? m.a_id : m.b_id) : null;
-    transaction(db, () => {
-      q.saveScore.run(rallies, winnerId ? 'done' : 'live', winnerId, m.id);
-      if (!winnerId) return;
-      if (m.stage === 'knockout') {
-        if (m.round === t.config.knockoutRounds) setStatus(t, 'completed');
-        else advance(t, m, winnerId);
-      } else if (t.format === 'league' && q.pendingLeague.get(t.id).n === 0) {
-        setStatus(t, 'completed');
+      const rallies = m.rallies + side;
+      const score = t.sportDef.compute(rallies, t.config.scoring, m.first_server);
+      const winnerId = score.winner ? (score.winner === 'a' ? m.a_id : m.b_id) : null;
+      await q(`UPDATE matches SET rallies = $1, status = $2, winner_id = $3, updated_at = now() WHERE id = $4`, [
+        rallies, winnerId ? 'done' : 'live', winnerId, m.id,
+      ]);
+      if (winnerId) {
+        if (m.stage === 'knockout') {
+          if (m.round === t.config.knockoutRounds) await setStatus(q, t, 'completed');
+          else await advance(q, t, m, winnerId);
+        } else if (t.format === 'league' && (await pendingLeague(q, t)) === 0) {
+          await setStatus(q, t, 'completed');
+        }
       }
+      return singleMatchView(q, t, m.id);
     });
-    return publishMatch(t, m.id, Boolean(winnerId));
   }
 
   // Removes the last rally. Undoing the winning point reopens the match, as
   // long as nothing downstream has started yet.
-  function undo(id, key, mid) {
-    const t = admin(id, key);
-    const m = loadMatch(t, mid);
-    if (m.status === 'bye' || !m.rallies) fail(409, 'Nothing to undo');
-    const wasDone = m.status === 'done';
-    transaction(db, () => {
-      if (wasDone && m.stage === 'league') {
+  async function undo(id, key, mid) {
+    return db.tx(async (q) => {
+      const t = await lockAsAdmin(q, id, key);
+      const m = await matchOf(q, t, mid);
+      if (m.status === 'bye' || !m.rallies) fail(409, 'Nothing to undo');
+      if (m.status === 'done' && m.stage === 'league') {
         if (t.status === 'knockout' || (t.status === 'completed' && t.format === 'league_knockout')) {
           fail(409, 'League results are locked because the knockout has started');
         }
-        if (t.status === 'completed') setStatus(t, 'league');
-      } else if (wasDone) {
+        if (t.status === 'completed') await setStatus(q, t, 'league');
+      } else if (m.status === 'done') {
         if (m.round < t.config.knockoutRounds) {
-          const next = q.koMatch.get(t.id, m.round + 1, m.slot >> 1);
+          const next = await koMatch(q, t, m.round + 1, m.slot >> 1);
           if (next.rallies || next.status === 'done') fail(409, 'The next-round match has already started');
-          db.prepare(`UPDATE matches SET ${m.slot % 2 ? 'b_id' : 'a_id'} = NULL, status = 'scheduled' WHERE id = ?`).run(next.id);
+          await q(`UPDATE matches SET ${nextSlotColumn(m)} = NULL, status = 'scheduled' WHERE id = $1`, [next.id]);
         }
-        if (t.status === 'completed') setStatus(t, 'knockout');
+        if (t.status === 'completed') await setStatus(q, t, 'knockout');
       }
-      q.saveScore.run(m.rallies.slice(0, -1), 'live', null, m.id);
+      await q(`UPDATE matches SET rallies = $1, status = 'live', winner_id = NULL, updated_at = now() WHERE id = $2`, [
+        m.rallies.slice(0, -1), m.id,
+      ]);
+      return singleMatchView(q, t, m.id);
     });
-    return publishMatch(t, m.id, wasDone);
   }
 
   // Court, first server, and marking a match as on court before the first rally.
-  function updateMatch(id, key, mid, input = {}) {
-    const t = admin(id, key);
-    const m = loadMatch(t, mid);
-    if (m.status === 'bye') fail(409, 'Byes cannot be edited');
-    const court = input.court === undefined ? m.court : text(input.court, 'Court', { max: 20, optional: true });
-    let firstServer = m.first_server;
-    if (input.firstServer !== undefined) {
-      if (input.firstServer !== 'a' && input.firstServer !== 'b') fail(400, 'firstServer must be "a" or "b"');
-      if (m.rallies) fail(409, 'The first server can only be changed before the first rally');
-      firstServer = input.firstServer;
-    }
-    let status = m.status;
-    if (input.status === 'live' && m.status === 'scheduled') {
-      if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
-      requireStageOpen(t, m);
-      status = 'live';
-    } else if (input.status === 'scheduled' && m.status === 'live' && !m.rallies) {
-      status = 'scheduled';
-    }
-    q.saveMeta.run(court, firstServer, status, m.id);
-    return publishMatch(t, m.id, false);
-  }
-
-  function exists(id) {
-    return Boolean(q.tournament.get(String(id)));
+  async function updateMatch(id, key, mid, input = {}) {
+    return db.tx(async (q) => {
+      const t = await lockAsAdmin(q, id, key);
+      const m = await matchOf(q, t, mid);
+      if (m.status === 'bye') fail(409, 'Byes cannot be edited');
+      const court = input.court === undefined ? m.court : text(input.court, 'Court', { max: 20, optional: true });
+      let firstServer = m.first_server;
+      if (input.firstServer !== undefined) {
+        if (input.firstServer !== 'a' && input.firstServer !== 'b') fail(400, 'firstServer must be "a" or "b"');
+        if (m.rallies) fail(409, 'The first server can only be changed before the first rally');
+        firstServer = input.firstServer;
+      }
+      let status = m.status;
+      if (input.status === 'live' && m.status === 'scheduled') {
+        if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
+        requireStageOpen(t, m);
+        status = 'live';
+      } else if (input.status === 'scheduled' && m.status === 'live' && !m.rallies) {
+        status = 'scheduled';
+      }
+      await q(`UPDATE matches SET court = $1, first_server = $2, status = $3, updated_at = now() WHERE id = $4`, [
+        court, firstServer, status, m.id,
+      ]);
+      return singleMatchView(q, t, m.id);
+    });
   }
 
   return {
-    events,
-    exists,
     listTournaments,
     getTournament,
     createTournament,

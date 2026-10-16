@@ -10,9 +10,8 @@
     list: null,
     t: null,
     error: null,
-    es: null,
     connected: false,
-    reconnecting: false,
+    seq: 0, // bumped on every change we make, so stale poll results are dropped
     pending: false,
     draft: '',
     pendingRender: false,
@@ -58,6 +57,10 @@
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const key = tid ? keys.get(tid) : null;
     if (key) headers['X-Admin-Key'] = key;
+    if (method !== 'GET') S.seq++;
+    // Public reads are shared through the CDN cache; organiser reads use a
+    // distinct URL so they never receive (or populate) the public copy.
+    if (key && method === 'GET') path += `${path.includes('?') ? '&' : '?'}admin=1`;
     const res = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
@@ -123,14 +126,14 @@
         S.t = null;
         render();
         await load(id);
-        if (S.t) openStream(id);
+        if (S.t) schedulePoll();
         if (key && S.t && !S.t.isAdmin) {
           keys.remove(id);
           toast('That organiser link is not valid', true);
         }
       }
     } else {
-      closeStream();
+      clearTimeout(pollTimer);
       S.t = null;
       if (parts[0] === 'new') {
         S.route = { name: 'new' };
@@ -149,19 +152,10 @@
     try {
       S.t = await api('GET', `/tournaments/${encodeURIComponent(id)}`, undefined, id);
       S.error = null;
+      S.connected = true;
     } catch (e) {
       S.error = e.message;
     }
-  }
-
-  let refreshTimer;
-  function refresh() {
-    clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(async () => {
-      if (!S.t) return;
-      await load(S.t.id);
-      render(true);
-    }, 100);
   }
 
   function mergeMatch(m) {
@@ -170,42 +164,50 @@
     if (i >= 0) S.t.matches[i] = m;
   }
 
-  // ---------- live updates (Server-Sent Events)
-  function openStream(id) {
-    closeStream();
-    const es = new EventSource(`/api/tournaments/${encodeURIComponent(id)}/stream`);
-    S.es = es;
-    es.onopen = () => {
-      S.connected = true;
-      if (S.reconnecting) refresh(); // catch up on anything missed while offline
-      S.reconnecting = false;
-      render(true);
-    };
-    es.onerror = () => {
-      S.connected = false;
-      S.reconnecting = true;
-      render(true);
-    };
-    es.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg.type === 'match') {
-        mergeMatch(msg.match);
-        render(true);
-      } else if (msg.type === 'tournament') {
-        refresh();
-      } else if (msg.type === 'deleted') {
-        toast('This tournament was deleted');
-        location.hash = '#/';
-      }
-    };
+  // ---------- live updates (polling)
+  // Every viewer re-fetches the tournament: every 2s while a match is live,
+  // otherwise every 5s, and slowly when the tab is in the background. Public
+  // responses are cached by the CDN for 1s, so spectators share one fetch.
+  let pollTimer;
+  function schedulePoll(delay) {
+    clearTimeout(pollTimer);
+    if (!S.t) return;
+    const live = S.t.matches.some((m) => m.status === 'live');
+    pollTimer = setTimeout(poll, delay ?? (document.hidden ? 30000 : live ? 2000 : 5000));
   }
 
-  function closeStream() {
-    if (S.es) S.es.close();
-    S.es = null;
-    S.connected = false;
+  async function poll() {
+    const id = S.t && S.t.id;
+    if (!id) return;
+    const seq = S.seq;
+    try {
+      const data = await api('GET', `/tournaments/${encodeURIComponent(id)}`, undefined, id);
+      S.connected = true;
+      // Ignore the result if we changed something while it was in flight.
+      if (S.t && S.t.id === id && S.seq === seq && !S.pending) {
+        S.t = data;
+        render(true);
+      }
+    } catch (e) {
+      if (/not found/i.test(e.message)) {
+        toast('This tournament was deleted');
+        location.hash = '#/';
+        return;
+      }
+      S.connected = false;
+      render(true);
+    }
+    if (S.t && S.t.id === id) schedulePoll();
   }
+
+  // Fetch now (after our own changes that affect standings or the bracket).
+  function refresh() {
+    if (S.t) schedulePoll(0);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refresh();
+  });
 
   // ---------- render
   // soft renders (from live updates) wait while the user is typing in a field
@@ -760,7 +762,10 @@
     try {
       const updated = await api('POST', `${tPath(t)}/matches/${m.id}/rally`, { side }, t.id);
       mergeMatch(updated);
-      if (updated.status === 'done') toast(`🏸 ${updated[side].name} wins ${updated.summary}`);
+      if (updated.status === 'done') {
+        toast(`🏸 ${updated[side].name} wins ${updated.summary}`);
+        refresh(); // standings / bracket changed
+      }
     } catch (e) {
       toast(e.message, true);
     } finally {
@@ -775,6 +780,7 @@
     S.pending = true;
     try {
       mergeMatch(await api('POST', `${tPath(t)}/matches/${m.id}/undo`, {}, t.id));
+      if (m.status === 'done') refresh(); // reopened: standings / bracket changed
     } catch (e) {
       toast(e.message, true);
     } finally {
