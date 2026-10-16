@@ -26,7 +26,7 @@ npm run dev        # restarts on file changes
 npm test
 ```
 
-You don't need to install a database to run it locally. Without `DATABASE_URL`, the app uses an embedded Postgres ([PGlite](https://pglite.dev)) and stores its files in `data/pglite`; delete that folder to start fresh. To use a real Postgres server instead, set `DATABASE_URL=postgres://…`. To run the tests against a real server, set `TEST_DATABASE_URL`.
+To test emails locally without sending anything, run `EMAIL_LOG=1 npm start`; emails are printed in the terminal instead. You don't need to install a database to run it locally. Without `DATABASE_URL`, the app uses an embedded Postgres ([PGlite](https://pglite.dev)) and stores its files in `data/pglite`; delete that folder to start fresh. To use a real Postgres server instead, set `DATABASE_URL=postgres://…`. To run the tests against a real server, set `TEST_DATABASE_URL`.
 
 ## Deploying to Vercel
 
@@ -34,7 +34,13 @@ You don't need to install a database to run it locally. Without `DATABASE_URL`, 
 2. **Add a database.** In the project, open *Storage → Create Database → Neon (Postgres)* and connect it to the project. This sets `DATABASE_URL` for you. The tables are created automatically on the first request.
 3. **Make yourself site admin.** Under *Settings → Environment Variables*, add `ADMIN_EMAILS` with your email address. For several admins, separate the addresses with commas.
 4. **Redeploy** so the new environment variables are picked up.
-5. **Add the domain.** Under *Settings → Domains*, add `tonament.com` and `www.tonament.com`, then follow the DNS instructions Vercel shows.
+5. **Optional: turn on email** (password reset and team invites) with [Resend](https://resend.com). Verify `tonament.com` in Resend by adding its DNS records at your domain registrar, then set:
+   - `RESEND_API_KEY`: a key with sending access
+   - `EMAIL_FROM`: e.g. `Tonament <noreply@tonament.com>`
+   - `APP_URL`: `https://tonament.com` (the base for links in emails)
+
+   Without these the app works normally; it just doesn't send email.
+6. **Add the domain.** Under *Settings → Domains*, add `tonament.com` and `www.tonament.com`, then follow the DNS instructions Vercel shows.
 
 How it works on Vercel:
 - `public/` is served as static files from Vercel's CDN.
@@ -47,7 +53,8 @@ How it works on Vercel:
 - After 10 wrong passwords, an account is locked for 15 minutes.
 - Write requests whose `Origin` is another site are rejected.
 - Public tournament responses never depend on who is asking, so the CDN can't serve one person's data to someone else. Personal views use `?me=1` and are never cached.
-- Password reset is not available yet; it needs an email service.
+- **Password reset:** the emailed link works once and expires after 1 hour. Only a hash of the token is stored, and the token sits in the URL fragment so it never reaches server logs. Using the link signs the account out on every other device. The "forgot password" form always gives the same reply, so it doesn't reveal which emails have accounts, and it sends at most one email per minute per account.
+- Links in emails use `APP_URL` (or the project's production domain on Vercel), never the request's Host header.
 
 ## Code layout
 
@@ -57,7 +64,8 @@ server/
   index.js            local / self-hosted HTTP server
   app.js              routing, caching headers, static files
   service.js          tournament lifecycle and role checks: entries, draw, scoring, team
-  auth.js             sign up / sign in, password hashing, sessions
+  auth.js             sign up / sign in, password hashing, sessions, password reset
+  email.js            Resend sender and email templates
   formats.js          round-robin, snake groups, bracket seeding, standings (works for any sport)
   db.js               Postgres (pg) or embedded PGlite, plus the schema
   sports/badminton.js scoring rules (score = replay of the rally log)
@@ -78,6 +86,7 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/auth/signup`, `/auth/login`, `/auth/logout` | Accounts (session cookie) |
+| POST | `/auth/forgot` `{ email }`, `/auth/reset` `{ token, password }` | Password reset by email |
 | GET | `/auth/me`, `/me/tournaments` | Current user; tournaments you're on the team of |
 | GET | `/admin/users` | All users (site admins only) |
 | GET | `/sports` | Sports and their scoring options |

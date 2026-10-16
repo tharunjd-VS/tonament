@@ -199,7 +199,7 @@ test('roles: owner, organiser, umpire, share links and site admin', async () => 
 
   // Team members are added by email, before or after they sign up.
   await svc.addMember(id, OWNER, { email: 'ORG@example.com ', role: 'organiser' });
-  const team = await svc.addMember(id, OWNER, { email: 'ump@example.com', role: 'umpire' });
+  const { members: team } = await svc.addMember(id, OWNER, { email: 'ump@example.com', role: 'umpire' });
   assert.deepEqual(team.map((m) => [m.email, m.role]), [
     ['owner@example.com', 'owner'], ['org@example.com', 'organiser'], ['ump@example.com', 'umpire'],
   ]);
@@ -262,8 +262,8 @@ test('ownerless tournaments can be claimed with the organiser link', async () =>
 
 // ---------- HTTP
 
-async function withServer(fn) {
-  const server = http.createServer(app.handle);
+async function withServer(fn, handler = app.handle) {
+  const server = http.createServer(handler);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   // Tiny client with its own cookie jar.
@@ -417,5 +417,129 @@ test('Vercel entry: rewritten path, pre-parsed body and cookies', async () => {
     assert.equal(got.data.role, 'owner');
   } finally {
     delete process.env.DATABASE_URL;
+  }
+});
+
+// ---------- email
+
+function fakeMailer() {
+  return { enabled: true, sent: [], async send(m) { this.sent.push(m); return { sent: true }; } };
+}
+
+test('password reset by email', async () => {
+  const mailer = fakeMailer();
+  const mailApp = createApp(db, { mailer });
+  process.env.APP_URL = 'https://tonament.example/';
+  try {
+    await withServer(async ({ client }) => {
+      const me = client();
+      const otherDevice = client();
+      await me('POST', '/api/auth/signup', { name: 'Rita', email: 'rita@x.dev', password: 'old-password' });
+      await otherDevice('POST', '/api/auth/login', { email: 'rita@x.dev', password: 'old-password' });
+      assert.equal((await me('GET', '/api/auth/me')).data.emailEnabled, true);
+
+      // Unknown emails get the same answer and no email.
+      const anon = client();
+      assert.deepEqual((await anon('POST', '/api/auth/forgot', { email: 'nobody@x.dev' })).data, { ok: true });
+      assert.equal(mailer.sent.length, 0);
+
+      // Links point at APP_URL even if the Host header is forged.
+      assert.equal((await anon('POST', '/api/auth/forgot', { email: 'RITA@x.dev' }, { 'X-Forwarded-Host': 'evil.example' })).status, 200);
+      assert.equal(mailer.sent.length, 1);
+      const mail = mailer.sent[0];
+      assert.equal(mail.to, 'rita@x.dev');
+      assert.match(mail.subject, /Reset your Tonament password/);
+      const [link, token] = mail.text.match(/https:\/\/tonament\.example\/#\/reset\?token=([\w-]+)/);
+      assert.ok(mail.html.includes(link));
+
+      // At most one email a minute.
+      await anon('POST', '/api/auth/forgot', { email: 'rita@x.dev' });
+      assert.equal(mailer.sent.length, 1);
+
+      assert.equal((await anon('POST', '/api/auth/reset', { token, password: 'short' })).status, 400);
+      assert.equal((await anon('POST', '/api/auth/reset', { token: 'forged', password: 'new-password' })).status, 400);
+      const reset = await anon('POST', '/api/auth/reset', { token, password: 'new-password' });
+      assert.equal(reset.status, 200);
+      assert.equal(reset.data.user.email, 'rita@x.dev');
+      assert.equal((await anon('GET', '/api/auth/me')).data.user.email, 'rita@x.dev'); // signed in
+
+      // Other sessions are signed out; the link works only once; old password is gone.
+      assert.equal((await otherDevice('GET', '/api/auth/me')).data.user, null);
+      assert.equal((await me('GET', '/api/auth/me')).data.user, null);
+      assert.equal((await anon('POST', '/api/auth/reset', { token, password: 'another-pass' })).status, 400);
+      assert.equal((await client()('POST', '/api/auth/login', { email: 'rita@x.dev', password: 'old-password' })).status, 401);
+      assert.equal((await client()('POST', '/api/auth/login', { email: 'rita@x.dev', password: 'new-password' })).status, 200);
+
+      // Expired links are rejected.
+      await db.query(`DELETE FROM password_resets`);
+      await anon('POST', '/api/auth/forgot', { email: 'rita@x.dev' });
+      const [, token2] = mailer.sent[1].text.match(/token=([\w-]+)/);
+      await db.query(`UPDATE password_resets SET expires_at = now() - interval '1 second'`);
+      assert.equal((await anon('POST', '/api/auth/reset', { token: token2, password: 'new-password-2' })).status, 400);
+    }, mailApp.handle);
+  } finally {
+    delete process.env.APP_URL;
+  }
+});
+
+test('team invites are emailed', async () => {
+  const mailer = fakeMailer();
+  const mailApp = createApp(db, { mailer });
+  process.env.APP_URL = 'https://tonament.example';
+  try {
+    await withServer(async ({ client }) => {
+      const owner = client();
+      await owner('POST', '/api/auth/signup', { name: 'Omar <Owner>', email: 'omar@x.dev', password: 'password123' });
+      await client()('POST', '/api/auth/signup', { name: 'Has Account', email: 'has@x.dev', password: 'password123' });
+      const { id } = (await owner('POST', '/api/tournaments', { name: 'Invite Cup' })).data;
+
+      const added = await owner('POST', `/api/tournaments/${id}/members`, { email: 'new@x.dev', role: 'umpire' });
+      assert.equal(added.data.emailed, true);
+      assert.equal(added.data.members.length, 2);
+      let mail = mailer.sent.at(-1);
+      assert.equal(mail.to, 'new@x.dev');
+      assert.equal(mail.subject, "You've been added to Invite Cup as umpire");
+      assert.match(mail.text, /#\/signup\?next=%2Ft%2Finvite-cup-\w+&email=new%40x\.dev/);
+      assert.ok(mail.html.includes('Omar &lt;Owner&gt;')); // names are escaped
+
+      await owner('POST', `/api/tournaments/${id}/members`, { email: 'has@x.dev', role: 'organiser' });
+      mail = mailer.sent.at(-1);
+      assert.match(mail.text, /#\/signin\?next=/);
+      assert.match(mail.html, /Open the tournament/);
+
+      // Same role again: no email. Role change: email. Adding yourself: no email.
+      const count = mailer.sent.length;
+      assert.equal((await owner('POST', `/api/tournaments/${id}/members`, { email: 'new@x.dev', role: 'umpire' })).data.emailed, false);
+      assert.equal(mailer.sent.length, count);
+      await owner('POST', `/api/tournaments/${id}/members`, { email: 'new@x.dev', role: 'organiser' });
+      assert.equal(mailer.sent.length, count + 1);
+    }, mailApp.handle);
+  } finally {
+    delete process.env.APP_URL;
+  }
+});
+
+test('Resend request format, and no-op without an API key', async () => {
+  const { createMailer } = require('../server/email');
+  const calls = [];
+  const fetchImpl = async (url, init) => { calls.push({ url, init }); return { ok: true }; };
+  const mailer = createMailer({ apiKey: 're_test', from: 'Tonament <noreply@tonament.com>', fetchImpl });
+  assert.equal(mailer.enabled, true);
+  await mailer.send({ to: 'a@x.dev', subject: 'Hi', html: '<p>Hi</p>', text: 'Hi' });
+  assert.equal(calls[0].url, 'https://api.resend.com/emails');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer re_test');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { from: 'Tonament <noreply@tonament.com>', to: ['a@x.dev'], subject: 'Hi', html: '<p>Hi</p>', text: 'Hi' });
+
+  const failing = createMailer({ apiKey: 're_test', fetchImpl: async () => ({ ok: false, status: 403, text: async () => 'domain not verified' }) });
+  await assert.rejects(failing.send({ to: 'a@x.dev', subject: 'x', html: 'x', text: 'x' }), /403: domain not verified/);
+
+  const off = createMailer({ apiKey: '', logOnly: false });
+  assert.equal(off.enabled, false);
+  const log = console.log;
+  console.log = () => {};
+  try {
+    assert.deepEqual(await off.send({ to: 'a@x.dev', subject: 'x', html: 'x', text: 'x' }), { sent: false });
+  } finally {
+    console.log = log;
   }
 });

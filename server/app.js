@@ -6,6 +6,7 @@ const sports = require('./sports');
 const { createService } = require('./service');
 const { createAuth } = require('./auth');
 const { HttpError } = require('./errors');
+const { createMailer } = require('./email');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MAX_BODY = 100 * 1024;
@@ -97,9 +98,18 @@ function sameOrigin(req) {
   }
 }
 
-function createApp(db) {
-  const svc = createService(db);
-  const auth = createAuth(db);
+// Base URL for links in emails. Never taken from a request header in
+// production, so a forged Host header can't redirect reset links elsewhere.
+function baseUrl(req) {
+  if (process.env.APP_URL) return process.env.APP_URL.replace(/\/+$/, '');
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  if (process.env.VERCEL) return null;
+  return `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`;
+}
+
+function createApp(db, { mailer = createMailer() } = {}) {
+  const svc = createService(db, { mailer });
+  const auth = createAuth(db, { mailer });
 
   const T = '/api/tournaments/([a-z0-9-]+)';
   const N = '(\\d+)';
@@ -117,7 +127,7 @@ function createApp(db) {
     ['DELETE', T, (c, id) => svc.deleteTournament(id, c.actor)],
     ['POST', `${T}/claim`, (c, id) => svc.claim(id, c.actor)],
     ['GET', `${T}/members`, (c, id) => svc.listMembers(id, c.actor)],
-    ['POST', `${T}/members`, (c, id) => svc.addMember(id, c.actor, c.body)],
+    ['POST', `${T}/members`, (c, id) => svc.addMember(id, c.actor, c.body, { baseUrl: baseUrl(c.req) })],
     ['DELETE', `${T}/members/${N}`, (c, id, mid) => svc.removeMember(id, c.actor, mid)],
     ['POST', `${T}/entries`, (c, id) => svc.addEntries(id, c.actor, c.body.names)],
     ['PUT', `${T}/entries/order`, (c, id) => svc.reorderEntries(id, c.actor, c.body.ids)],
@@ -128,7 +138,18 @@ function createApp(db) {
     ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.actor, mid, c.body.side)],
     ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid)],
 
-    ['GET', '/api/auth/me', (c) => ({ user: c.actor.user })],
+    ['GET', '/api/auth/me', (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled })],
+    ['POST', '/api/auth/forgot', async (c) => {
+      const url = baseUrl(c.req);
+      if (!url) throw new HttpError(503, 'Set APP_URL in the project settings to enable password reset');
+      await auth.forgotPassword(c.body, url);
+      return { ok: true };
+    }],
+    ['POST', '/api/auth/reset', async (c) => {
+      const { user, cookie } = await auth.resetPassword(c.req, c.body);
+      c.setCookie(cookie);
+      return { user };
+    }],
     ['POST', '/api/auth/signup', async (c) => {
       const { user, cookie } = await auth.signup(c.req, c.body);
       c.setCookie(cookie);

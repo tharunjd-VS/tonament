@@ -6,6 +6,7 @@
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
 const { HttpError } = require('./errors');
+const { passwordResetEmail } = require('./email');
 
 const scrypt = promisify(crypto.scrypt);
 const COOKIE = 'tn_session';
@@ -13,6 +14,7 @@ const SESSION_DAYS = 30;
 const MAX_FAILED_LOGINS = 10;
 const LOCK_MINUTES = 15;
 const SCRYPT = { N: 16384, r: 8, p: 1 };
+const RESET_MINUTES = 60;
 
 const fail = (status, message) => {
   throw new HttpError(status, message);
@@ -67,7 +69,12 @@ function userView(row) {
   return { id: row.id, email: row.email, name: row.name, isAdmin: adminEmails().has(row.email) };
 }
 
-function createAuth(db) {
+function checkPassword(password) {
+  if (password.length < 8) fail(400, 'Password must be at least 8 characters');
+  if (password.length > 200) fail(400, 'Password is too long');
+}
+
+function createAuth(db, { mailer } = {}) {
   function sessionCookie(req, token, maxAgeSeconds) {
     const secure = req.headers['x-forwarded-proto'] === 'https' || process.env.VERCEL;
     return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`;
@@ -88,8 +95,7 @@ function createAuth(db) {
     const password = typeof input.password === 'string' ? input.password : '';
     if (!name || name.length > 60) fail(400, 'Enter your name (up to 60 characters)');
     if (!validEmail(email)) fail(400, 'Enter a valid email address');
-    if (password.length < 8) fail(400, 'Password must be at least 8 characters');
-    if (password.length > 200) fail(400, 'Password is too long');
+    checkPassword(password);
     let row;
     try {
       [row] = await db.query(
@@ -136,6 +142,54 @@ function createAuth(db) {
     return sessionCookie(req, '', 0);
   }
 
+  // Emails a one-time reset link. Always succeeds from the caller's point of
+  // view, so it can't be used to find out which emails have accounts.
+  async function forgotPassword(input = {}, baseUrl) {
+    const email = normalizeEmail(input.email);
+    if (!validEmail(email)) fail(400, 'Enter a valid email address');
+    const [user] = await db.query('SELECT id, name, email FROM users WHERE email = $1', [email]);
+    if (!user) return;
+    const [recent] = await db.query(
+      `SELECT 1 FROM password_resets WHERE user_id = $1 AND created_at > now() - interval '1 minute'`,
+      [user.id],
+    );
+    if (recent) return; // one email a minute per account
+    const token = crypto.randomBytes(32).toString('base64url');
+    await db.query(
+      `INSERT INTO password_resets (id, user_id, expires_at) VALUES ($1, $2, now() + interval '${RESET_MINUTES} minutes')`,
+      [tokenHash(token), user.id],
+    );
+    // The token travels in the URL fragment, so it never reaches server logs.
+    const url = `${baseUrl}/#/reset?token=${token}`;
+    try {
+      await mailer?.send({ to: user.email, ...passwordResetEmail({ name: user.name, url }) });
+    } catch (err) {
+      console.error('Password reset email failed:', err.message);
+    }
+  }
+
+  // Sets a new password from a reset link, signs out every other device and
+  // signs this one in.
+  async function resetPassword(req, input = {}) {
+    const token = typeof input.token === 'string' ? input.token : '';
+    const password = typeof input.password === 'string' ? input.password : '';
+    checkPassword(password);
+    const hash = await hashPassword(password);
+    const row = await db.tx(async (q) => {
+      const [reset] = await q(
+        'SELECT * FROM password_resets WHERE id = $1 AND used_at IS NULL AND expires_at > now() FOR UPDATE',
+        [tokenHash(token)],
+      );
+      if (!reset) fail(400, 'This reset link is invalid or has expired. Request a new one.');
+      await q('UPDATE users SET password_hash = $1, failed_logins = 0, locked_until = NULL WHERE id = $2', [hash, reset.user_id]);
+      await q('UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [reset.user_id]);
+      await q('DELETE FROM sessions WHERE user_id = $1', [reset.user_id]);
+      const [user] = await q('SELECT * FROM users WHERE id = $1', [reset.user_id]);
+      return user;
+    });
+    return { user: userView(row), cookie: await startSession(req, row.id) };
+  }
+
   async function userFromRequest(req) {
     const token = parseCookies(req.headers.cookie)[COOKIE];
     if (!token) return null;
@@ -157,7 +211,7 @@ function createAuth(db) {
     return rows.map((r) => ({ ...r, isAdmin: admins.has(r.email) }));
   }
 
-  return { signup, login, logout, userFromRequest, listUsers };
+  return { signup, login, logout, forgotPassword, resetPassword, userFromRequest, listUsers };
 }
 
 module.exports = { createAuth, normalizeEmail, validEmail, hashPassword, verifyPassword, parseCookies };

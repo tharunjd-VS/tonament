@@ -5,6 +5,7 @@ const sports = require('./sports');
 const formats = require('./formats');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
+const { inviteEmail } = require('./email');
 
 const FORMATS = {
   league_knockout: 'League + Knockout',
@@ -53,7 +54,7 @@ const nextSlotColumn = (m) => (m.slot % 2 ? 'b_id' : 'a_id');
 // Every write runs in a transaction that first locks the tournament row, so
 // concurrent requests for one tournament (two umpires, retries, several
 // serverless instances) are applied one at a time.
-function createService(db) {
+function createService(db, { mailer } = {}) {
   // ---------- queries (q is db.query or a transaction's query)
 
   async function load(q, id, { lock = false } = {}) {
@@ -583,12 +584,13 @@ function createService(db) {
   }
 
   // Adds someone by email, or changes their role. They get access as soon as
-  // they sign up (or sign in) with that email.
-  async function addMember(id, actor, input = {}) {
+  // they sign up (or sign in) with that email, and are told by email when
+  // email is set up. Returns { members, emailed }.
+  async function addMember(id, actor, input = {}, { baseUrl } = {}) {
     const email = normalizeEmail(input.email);
     if (!validEmail(email)) fail(400, 'Enter a valid email address');
     if (input.role !== 'organiser' && input.role !== 'umpire') fail(400, 'Role must be organiser or umpire');
-    return db.tx(async (q) => {
+    const { t, members, changed, hasAccount } = await db.tx(async (q) => {
       const { t } = await lockWith(q, id, actor, 'manage');
       const [existing] = await q('SELECT role FROM members WHERE tournament_id = $1 AND email = $2', [t.id, email]);
       if (existing?.role === 'owner') fail(409, 'That person is the owner');
@@ -597,8 +599,28 @@ function createService(db) {
          ON CONFLICT (tournament_id, email) DO UPDATE SET role = EXCLUDED.role`,
         [t.id, email, input.role],
       );
-      return membersOf(q, t);
+      const [account] = await q('SELECT 1 FROM users WHERE email = $1', [email]);
+      return { t, members: await membersOf(q, t), changed: existing?.role !== input.role, hasAccount: Boolean(account) };
     });
+
+    let emailed = false;
+    if (changed && mailer?.enabled && baseUrl && email !== actor.user?.email) {
+      const next = `/t/${t.id}`;
+      const url = hasAccount
+        ? `${baseUrl}/#/signin?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`
+        : `${baseUrl}/#/signup?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`;
+      const roleHint = input.role === 'umpire' ? 'you can score matches' : 'you can manage the tournament';
+      try {
+        await mailer.send({
+          to: email,
+          ...inviteEmail({ inviter: actor.user?.name, tournament: t.name, roleName: ROLES[input.role], roleHint, url, hasAccount }),
+        });
+        emailed = true;
+      } catch (err) {
+        console.error('Invite email failed:', err.message);
+      }
+    }
+    return { members, emailed };
   }
 
   async function removeMember(id, actor, memberId) {

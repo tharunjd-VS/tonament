@@ -7,6 +7,7 @@
   const S = {
     route: { name: 'home' },
     me: null, // signed-in user
+    emailEnabled: false, // can the server send email (password reset, invites)?
     mine: null, // tournaments I'm on the team of
     members: null, // team list for the open tournament (managers only)
     sports: [],
@@ -147,7 +148,12 @@
         }
         S.route = { name: 'new' };
       } else if (parts[0] === 'signin' || parts[0] === 'signup') {
-        S.route = { name: parts[0], next: params.get('next') || '/' };
+        S.route = { name: parts[0], next: params.get('next') || '/', email: params.get('email') || '' };
+      } else if (parts[0] === 'forgot') {
+        S.route = { name: 'forgot', email: params.get('email') || '', sent: false };
+      } else if (parts[0] === 'reset') {
+        S.route = { name: 'reset', token: params.get('token') || '' };
+        history.replaceState(null, '', '#/reset'); // keep the token out of history
       } else if (parts[0] === 'admin') {
         S.route = { name: 'admin', users: null };
         render();
@@ -239,6 +245,8 @@
     if (S.error) view = errorView(S.error);
     else if (S.route.name === 'new') view = viewNew();
     else if (S.route.name === 'signin' || S.route.name === 'signup') view = viewAuth();
+    else if (S.route.name === 'forgot') view = viewForgot();
+    else if (S.route.name === 'reset') view = viewReset();
     else if (S.route.name === 'admin') view = viewAdmin();
     else if (S.route.name === 'tournament') view = S.t ? viewTournament() : loading();
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
@@ -891,7 +899,8 @@
     return [
       h('div', { class: 'card' },
         h('h2', {}, 'Team'),
-        h('p', { class: 'muted small' }, 'Add people by email. If they don\'t have an account yet, they get access as soon as they sign up with that email.'),
+        h('p', { class: 'muted small' }, 'Add people by email. If they don\'t have an account yet, they get access as soon as they sign up with that email.',
+          S.emailEnabled ? ' We\'ll email them to let them know.' : ' Let them know yourself — invite emails aren\'t set up on this site yet.'),
         list == null ? loading()
           : h('ul', { class: 'members' }, list.map((m) => h('li', {},
             h('div', { class: 'name' },
@@ -911,9 +920,11 @@
             e.preventDefault();
             const email = emailInput.value;
             act(async () => {
-              setMembers(await api('POST', `${tPath(t)}/members`, { email, role: roleSelect.value }, t.id));
+              const { members, emailed } = await api('POST', `${tPath(t)}/members`, { email, role: roleSelect.value }, t.id);
+              setMembers(members);
               emailInput.value = '';
-            }, `${email} added`);
+              toast(emailed ? `${email} added — we've emailed them` : `${email} added`);
+            });
           },
         }, emailInput, roleSelect, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add'))),
       t.links ? h('div', { class: 'card' },
@@ -999,16 +1010,104 @@
       ? 'Run your own tournaments, and score matches you\'ve been added to.'
       : 'Welcome back.'),
     signup ? field('Your name', h('input', { name: 'name', required: true, maxlength: 60, autocomplete: 'name' })) : null,
-    field('Email', h('input', { name: 'email', type: 'email', required: true, autocomplete: 'email' })),
+    field('Email', h('input', { name: 'email', type: 'email', required: true, autocomplete: 'email', value: S.route.email || null })),
     field('Password', h('input', {
       name: 'password', type: 'password', required: true, minlength: signup ? 8 : null,
       autocomplete: signup ? 'new-password' : 'current-password',
     }), null, signup ? 'At least 8 characters.' : null),
+    signup ? null : h('p', { class: 'small', style: 'margin:-6px 0 0' },
+      h('a', {
+        href: '#/forgot',
+        onclick: (e) => {
+          e.preventDefault();
+          const email = form.querySelector('input[name=email]').value;
+          location.hash = `#/forgot${email ? `?email=${encodeURIComponent(email)}` : ''}`;
+        },
+      }, 'Forgot password?')),
     btn,
     h('p', { class: 'center small', style: 'margin:0' },
       signup ? 'Already have an account? ' : 'New to Tonament? ',
       h('a', { href: `#/${signup ? 'signin' : 'signup'}?next=${encodeURIComponent(next)}` }, signup ? 'Sign in' : 'Create an account')));
     return form;
+  }
+
+  function viewForgot() {
+    document.title = 'Reset password · Tonament';
+    if (!S.emailEnabled) {
+      return h('div', { class: 'card auth-card' },
+        h('h1', {}, 'Forgot your password?'),
+        h('p', { class: 'muted' }, 'Password reset by email isn\'t set up on this site yet. Please contact the site admin.'),
+        h('a', { class: 'btn', href: '#/signin' }, 'Back to sign in'));
+    }
+    if (S.route.sent) {
+      return h('div', { class: 'card auth-card' },
+        h('h1', {}, 'Check your email'),
+        h('p', {}, 'If an account exists for ', h('strong', {}, S.route.email), ', we\'ve sent a link to reset its password. It works once and expires in 1 hour.'),
+        h('p', { class: 'muted small' }, 'Nothing there? Check your spam folder, or try again in a minute.'),
+        h('a', { class: 'btn', href: '#/signin' }, 'Back to sign in'));
+    }
+    const input = h('input', { name: 'email', type: 'email', required: true, autocomplete: 'email', value: S.route.email || null });
+    const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Send reset link');
+    return h('form', {
+      class: 'card form auth-card',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        btn.disabled = true;
+        try {
+          await api('POST', '/auth/forgot', { email: input.value });
+          S.route.email = input.value;
+          S.route.sent = true;
+          render();
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+        }
+      },
+    },
+    h('h1', {}, 'Forgot your password?'),
+    h('p', { class: 'muted' }, 'Enter your email and we\'ll send you a link to choose a new one.'),
+    field('Email', input),
+    btn,
+    h('p', { class: 'center small', style: 'margin:0' }, h('a', { href: '#/signin' }, 'Back to sign in')));
+  }
+
+  function viewReset() {
+    document.title = 'Choose a new password · Tonament';
+    if (!S.route.token) {
+      return h('div', { class: 'card auth-card' },
+        h('h1', {}, 'Link not valid'),
+        h('p', { class: 'muted' }, 'This reset link is incomplete. Open the link from your email again, or request a new one.'),
+        h('a', { class: 'btn', href: '#/forgot' }, 'Request a new link'));
+    }
+    const pw = h('input', { name: 'password', type: 'password', required: true, minlength: 8, autocomplete: 'new-password' });
+    const confirmPw = h('input', { name: 'confirm', type: 'password', required: true, minlength: 8, autocomplete: 'new-password' });
+    const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Set new password');
+    return h('form', {
+      class: 'card form auth-card',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        if (pw.value !== confirmPw.value) {
+          toast('The passwords don\'t match', true);
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const { user } = await api('POST', '/auth/reset', { token: S.route.token, password: pw.value });
+          S.me = user;
+          S.t = null;
+          toast('Password changed — you\'re signed in');
+          location.hash = '#/';
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+        }
+      },
+    },
+    h('h1', {}, 'Choose a new password'),
+    h('p', { class: 'muted' }, 'You\'ll be signed out on your other devices.'),
+    field('New password', pw, null, 'At least 8 characters.'),
+    field('Confirm new password', confirmPw),
+    btn);
   }
 
   function viewAdmin() {
@@ -1036,6 +1135,7 @@
   ]).then(([list, me]) => {
     S.sports = list;
     S.me = me.user;
+    S.emailEnabled = Boolean(me.emailEnabled);
     route();
   });
 })();

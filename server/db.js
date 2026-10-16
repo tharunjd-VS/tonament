@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS members (
 );
 CREATE INDEX IF NOT EXISTS members_email ON members(email);
 
+CREATE TABLE IF NOT EXISTS password_resets (
+  id          TEXT PRIMARY KEY,                    -- sha256 of the emailed token
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  used_at     TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Scoring-only share link, alongside the organiser link (admin_key).
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS scorer_key TEXT;
 UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WHERE scorer_key IS NULL;
