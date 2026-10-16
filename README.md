@@ -56,6 +56,12 @@ How it works on Vercel:
 - **Password reset:** the emailed link works once and expires after 1 hour. Only a hash of the token is stored, and the token sits in the URL fragment so it never reaches server logs. Using the link signs the account out on every other device. The "forgot password" form always gives the same reply, so it doesn't reveal which emails have accounts, and it sends at most one email per minute per account.
 - Links in emails use `APP_URL` (or the project's production domain on Vercel), never the request's Host header.
 
+### Speed
+- **Scoring feels instant.** The umpire's screen applies each tap straight away, using the same rules file as the server (`public/sports/badminton.js`), then saves it in the background. Each request says which rally count it applies to (`at`), so retries can't double-count and two devices can't overwrite each other. If the connection drops, points are kept and sent automatically when it returns.
+- **Put the server next to the database.** Each saved point is one request that makes about 8 database round trips, so the Vercel function region should match the Neon region. Check it in Vercel under *Settings → Functions → Function Region*, and in Neon on the project dashboard. To pin the function region, add `"regions": ["sin1"]` (for example) to `vercel.json`. For players in India, Singapore is a good region for both (`sin1` on Vercel, `aws-ap-southeast-1` on Neon).
+- **Server-Timing.** Every API response includes a `Server-Timing: app;dur=…` header. In DevTools (Network → Timing), a large gap between that number and the total request time means the time is going on the network, not on the server.
+- **Neon's free plan pauses an idle database** after about 5 minutes, so the first request after a quiet spell takes about a second longer.
+
 ## Code layout
 
 ```
@@ -68,7 +74,7 @@ server/
   email.js            Resend sender and email templates
   formats.js          round-robin, snake groups, bracket seeding, standings (works for any sport)
   db.js               Postgres (pg) or embedded PGlite, plus the schema
-  sports/badminton.js scoring rules (score = replay of the rally log)
+  sports/badminton.js re-exports public/sports/badminton.js (the scoring rules, shared with the browser)
   sports/index.js     sport registry
 public/               single-page front end (plain JS, no build step)
 test/                 unit and integration tests

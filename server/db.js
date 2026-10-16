@@ -88,9 +88,22 @@ ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS scorer_key TEXT;
 UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WHERE scorer_key IS NULL;
 `;
 
+// Bump when SCHEMA changes. Each cold start does one cheap check instead of
+// re-running every CREATE/ALTER statement.
+const SCHEMA_VERSION = 5;
+
 async function migrate(db) {
   try {
-    await db.exec(SCHEMA);
+    const [row] = await db.query('SELECT version FROM schema_meta');
+    if (row && row.version >= SCHEMA_VERSION) return;
+  } catch {
+    /* first run: schema_meta doesn't exist yet */
+  }
+  try {
+    await db.exec(`${SCHEMA}
+CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);
+DELETE FROM schema_meta;
+INSERT INTO schema_meta (version) VALUES (${SCHEMA_VERSION});`);
   } catch (err) {
     // Two cold starts racing to create the same table; the other one won.
     if (!['23505', '42P07', '42701'].includes(err.code)) throw err;

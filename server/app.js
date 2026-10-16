@@ -135,8 +135,8 @@ function createApp(db, { mailer = createMailer() } = {}) {
     ['POST', `${T}/start`, (c, id) => svc.start(id, c.actor)],
     ['POST', `${T}/knockout`, (c, id) => svc.startKnockout(id, c.actor)],
     ['PATCH', `${T}/matches/${N}`, (c, id, mid) => svc.updateMatch(id, c.actor, mid, c.body)],
-    ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.actor, mid, c.body.side)],
-    ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid)],
+    ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.actor, mid, c.body.side, c.body.at)],
+    ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid, c.body.at)],
 
     ['GET', '/api/auth/me', (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled })],
     ['POST', '/api/auth/forgot', async (c) => {
@@ -195,6 +195,14 @@ function createApp(db, { mailer = createMailer() } = {}) {
   }
 
   async function handle(req, res) {
+    // Server-Timing shows up in the browser's DevTools (Network → Timing),
+    // which helps tell server time apart from network time.
+    const started = performance.now();
+    const writeHead = res.writeHead;
+    res.writeHead = function (...args) {
+      res.setHeader('Server-Timing', `app;dur=${(performance.now() - started).toFixed(1)}`);
+      return writeHead.apply(this, args);
+    };
     const url = new URL(req.url, 'http://localhost');
     const pathname = apiPath(url);
     try {
@@ -228,7 +236,7 @@ function createApp(db, { mailer = createMailer() } = {}) {
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'Method not allowed' });
       return await serveStatic(req, res, pathname);
     } catch (err) {
-      if (err instanceof HttpError) return send(res, err.status, { error: err.message });
+      if (err instanceof HttpError) return send(res, err.status, { error: err.message, ...(err.code && { code: err.code }) });
       console.error(err);
       return send(res, 500, { error: 'Something went wrong' });
     }

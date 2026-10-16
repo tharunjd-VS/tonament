@@ -543,3 +543,21 @@ test('Resend request format, and no-op without an API key', async () => {
     console.log = log;
   }
 });
+
+test('scoring with the expected rally count rejects stale or repeated requests', async () => {
+  const { id } = await svc.createTournament(OWNER, { name: 'Stale', format: 'knockout' });
+  await svc.addEntries(id, OWNER, ['A', 'B']);
+  const [m] = (await svc.start(id, OWNER)).matches;
+  let r = await svc.rally(id, OWNER, m.id, 'a', 0);
+  assert.equal(r.log, 'a');
+  // A retry of the same request (still saying at=0) is refused, not double-counted.
+  await assert.rejects(svc.rally(id, OWNER, m.id, 'a', 0), (err) => err.status === 409 && err.code === 'stale');
+  r = await svc.rally(id, OWNER, m.id, 'b', 1);
+  assert.equal(r.log, 'ab');
+  await assert.rejects(svc.undo(id, OWNER, m.id, 1), /changed on another device/);
+  r = await svc.undo(id, OWNER, m.id, 2);
+  assert.equal(r.log, 'a');
+  assert.deepEqual([r.a.name, r.b.name], ['A', 'B']);
+  // Without `at` (older clients) it still works.
+  assert.equal((await svc.rally(id, OWNER, m.id, 'b')).log, 'ab');
+});

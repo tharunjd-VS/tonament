@@ -15,8 +15,8 @@ const FORMATS = {
 const MAX_ENTRIES = 128;
 
 const ROLES = { owner: 'Owner', organiser: 'Organiser', umpire: 'Umpire' };
-const fail = (status, message) => {
-  throw new HttpError(status, message);
+const fail = (status, message, code) => {
+  throw new HttpError(status, message, code);
 };
 
 function text(value, label, { max = 80, optional = false } = {}) {
@@ -120,15 +120,15 @@ function createService(db, { mailer } = {}) {
   const stronger = (a, b) => ((RANK[a] || 0) >= (RANK[b] || 0) ? a : b);
 
   async function accessOf(q, t, actor = {}) {
-    let role = null;
-    if (actor.user?.isAdmin) role = 'admin';
-    else if (actor.user) {
-      const [m] = await q('SELECT role FROM members WHERE tournament_id = $1 AND email = $2', [t.id, actor.user.email]);
-      role = m?.role ?? null;
-    }
+    // One round trip: my membership (if signed in) and whether an owner exists.
+    const [{ member_role: memberRole, has_owner: owner }] = await q(
+      `SELECT (SELECT role FROM members WHERE tournament_id = $1 AND email = $2) AS member_role,
+              EXISTS (SELECT 1 FROM members WHERE tournament_id = $1 AND role = 'owner') AS has_owner`,
+      [t.id, actor.user?.email ?? ''],
+    );
+    let role = actor.user?.isAdmin ? 'admin' : memberRole ?? null;
     if (keyMatches(actor.key, t.admin_key)) role = stronger(role, 'organiser');
     else if (keyMatches(actor.key, t.scorer_key)) role = stronger(role, 'umpire');
-    const [owner] = await q(`SELECT 1 FROM members WHERE tournament_id = $1 AND role = 'owner'`, [t.id]);
     return {
       role,
       score: RANK[role] >= RANK.umpire,
@@ -190,6 +190,7 @@ function createService(db, { mailer } = {}) {
       court: m.court,
       firstServer: m.first_server,
       rallies: m.rallies.length,
+      log: m.rallies, // rally winners in order, e.g. "abba" — lets the scorer's screen update instantly
       winner: m.winner_id,
       score,
       summary: t.sportDef.summary(score),
@@ -270,8 +271,23 @@ function createService(db, { mailer } = {}) {
 
   async function singleMatchView(q, t, matchId) {
     const [row] = await q('SELECT * FROM matches WHERE id = $1', [matchId]);
-    const names = new Map((await entriesOf(q, t.id)).map((e) => [e.id, e.name]));
-    return matchView(t, row, scoreOf(t, row), names);
+    return viewOfRow(q, t, row);
+  }
+
+  // View of a match row we already have, looking up just its two names.
+  async function viewOfRow(q, t, row) {
+    const ids = [row.a_id, row.b_id].filter((x) => x != null);
+    const rows = ids.length ? await q('SELECT id, name FROM entries WHERE id = ANY($1::int[])', [ids]) : [];
+    return matchView(t, row, scoreOf(t, row), new Map(rows.map((e) => [e.id, e.name])));
+  }
+
+  // Scoring requests carry the rally count the device saw (`at`), so a retry
+  // or a second device can never apply a point to a different score.
+  function checkAt(m, at) {
+    if (at === undefined || at === null) return;
+    if (!Number.isInteger(at) || at !== m.rallies.length) {
+      fail(409, 'The score was changed on another device — showing the latest score', 'stale');
+    }
   }
 
   // ---------- tournaments
@@ -481,7 +497,7 @@ function createService(db, { mailer } = {}) {
     if (!open) fail(409, `This ${m.stage} match cannot be played right now`);
   }
 
-  async function rally(id, actor, mid, side) {
+  async function rally(id, actor, mid, side, at) {
     if (side !== 'a' && side !== 'b') fail(400, 'side must be "a" or "b"');
     return db.tx(async (q) => {
       const { t } = await lockWith(q, id, actor, 'score');
@@ -489,13 +505,15 @@ function createService(db, { mailer } = {}) {
       if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished');
       if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
       requireStageOpen(t, m);
+      checkAt(m, at);
 
       const rallies = m.rallies + side;
       const score = t.sportDef.compute(rallies, t.config.scoring, m.first_server);
       const winnerId = score.winner ? (score.winner === 'a' ? m.a_id : m.b_id) : null;
-      await q(`UPDATE matches SET rallies = $1, status = $2, winner_id = $3, updated_at = now() WHERE id = $4`, [
-        rallies, winnerId ? 'done' : 'live', winnerId, m.id,
-      ]);
+      const [row] = await q(
+        `UPDATE matches SET rallies = $1, status = $2, winner_id = $3, updated_at = now() WHERE id = $4 RETURNING *`,
+        [rallies, winnerId ? 'done' : 'live', winnerId, m.id],
+      );
       if (winnerId) {
         if (m.stage === 'knockout') {
           if (m.round === t.config.knockoutRounds) await setStatus(q, t, 'completed');
@@ -504,17 +522,18 @@ function createService(db, { mailer } = {}) {
           await setStatus(q, t, 'completed');
         }
       }
-      return singleMatchView(q, t, m.id);
+      return viewOfRow(q, t, row);
     });
   }
 
   // Removes the last rally. Undoing the winning point reopens the match, as
   // long as nothing downstream has started yet.
-  async function undo(id, actor, mid) {
+  async function undo(id, actor, mid, at) {
     return db.tx(async (q) => {
       const { t } = await lockWith(q, id, actor, 'score');
       const m = await matchOf(q, t, mid);
       if (m.status === 'bye' || !m.rallies) fail(409, 'Nothing to undo');
+      checkAt(m, at);
       if (m.status === 'done' && m.stage === 'league') {
         if (t.status === 'knockout' || (t.status === 'completed' && t.format === 'league_knockout')) {
           fail(409, 'League results are locked because the knockout has started');
@@ -528,10 +547,11 @@ function createService(db, { mailer } = {}) {
         }
         if (t.status === 'completed') await setStatus(q, t, 'knockout');
       }
-      await q(`UPDATE matches SET rallies = $1, status = 'live', winner_id = NULL, updated_at = now() WHERE id = $2`, [
-        m.rallies.slice(0, -1), m.id,
-      ]);
-      return singleMatchView(q, t, m.id);
+      const [row] = await q(
+        `UPDATE matches SET rallies = $1, status = 'live', winner_id = NULL, updated_at = now() WHERE id = $2 RETURNING *`,
+        [m.rallies.slice(0, -1), m.id],
+      );
+      return viewOfRow(q, t, row);
     });
   }
 

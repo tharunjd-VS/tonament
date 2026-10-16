@@ -16,7 +16,7 @@
     error: null,
     connected: false,
     seq: 0, // bumped on every change we make, so stale poll results are dropped
-    pending: false,
+    offline: false, // scoring requests are waiting for the connection to come back
     draft: '',
     pendingRender: false,
   };
@@ -66,9 +66,20 @@
     // Public tournament reads are shared through the CDN cache. Signed-in users
     // and link holders ask for their own copy (?me=1), which is never cached.
     if (method === 'GET' && (key || S.me) && /^\/tournaments\/[^/?]+$/.test(path)) path += '?me=1';
-    const res = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    let res;
+    try {
+      res = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    } catch {
+      throw Object.assign(new Error('No connection'), { network: true });
+    }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    if (!res.ok) {
+      throw Object.assign(new Error(data.error || `Request failed (${res.status})`), {
+        status: res.status,
+        code: data.code,
+        network: res.status === 502 || res.status === 503 || res.status === 504,
+      });
+    }
     return data;
   }
 
@@ -208,7 +219,7 @@
       const data = await api('GET', `/tournaments/${encodeURIComponent(id)}`, undefined, id);
       S.connected = true;
       // Ignore the result if we changed something while it was in flight.
-      if (S.t && S.t.id === id && S.seq === seq && !S.pending) {
+      if (S.t && S.t.id === id && S.seq === seq && !scoringBusy()) {
         S.t = data;
         render(true);
       }
@@ -717,8 +728,10 @@
 
   function viewMatch() {
     const t = S.t;
-    const m = t.matches.find((x) => x.id === S.route.mid);
-    if (!m) return errorView('Match not found.');
+    const confirmed = t.matches.find((x) => x.id === S.route.mid);
+    if (!confirmed) return errorView('Match not found.');
+    const m = withPending(t, confirmed);
+    if (pendingOps(m.id).length && !sending.has(m.id)) sendQueue(t, m.id); // resume after navigating away
     document.title = `${nameOf(m.a)} v ${nameOf(m.b)} · ${t.name}`;
     const backTab = m.stage === 'knockout' ? 'bracket' : 'live';
     return [
@@ -778,6 +791,10 @@
             ? h('button', { class: 'btn btn-small', onclick: () => patchMatch(t, m, { status: 'live' }, 'Match marked as on court') }, 'Mark on court')
             : null)) : null,
       h('div', { class: 'score-btns' }, btn('a'), btn('b')),
+      h('div', { class: `sync ${S.offline && m.pending ? 'offline' : m.pending ? 'saving' : 'saved'}`, role: 'status' },
+        S.offline && m.pending
+          ? `No connection — ${m.pending} point${m.pending === 1 ? '' : 's'} waiting, will send automatically`
+          : m.pending ? 'Saving…' : 'All points saved'),
       h('div', { class: 'scorer-tools' },
         h('button', { class: 'btn', disabled: fresh, onclick: () => undo(t, m) }, '↶ Undo'),
         h('form', {
@@ -797,39 +814,116 @@
         games.map((g) => h('td', { class: `num${g.winner === s ? ' won' : ''}` }, g[s]))))))));
   }
 
-  async function rally(t, m, side) {
-    if (S.pending) return;
-    S.pending = true;
+  // ---------- scoring queue
+  // A tap updates the screen at once — the new score is worked out locally
+  // with the same rules file the server uses — and is then sent in the
+  // background, one request at a time, in order. Each request names the rally
+  // count it applies to, so a retry after a dropped connection can never be
+  // counted twice. Points survive flaky venue Wi-Fi: they're retried until
+  // the connection is back.
+  const queues = new Map(); // matchId -> [{ type: 'rally', side } | { type: 'undo' }]
+  const sending = new Set();
+  const pendingOps = (mid) => queues.get(mid) || [];
+  const scoringBusy = () => sending.size > 0 || [...queues.values()].some((q) => q.length);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const confirmedMatch = (mid) => S.t && S.t.matches.find((x) => x.id === mid);
+
+  // The match as the umpire should see it: confirmed state plus queued taps.
+  function withPending(t, m) {
+    const ops = pendingOps(m.id);
+    const sport = window.TonamentSports && window.TonamentSports[t.sport.id];
+    if (!ops.length || !sport) return m;
+    let log = m.log;
+    for (const op of ops) log = op.type === 'rally' ? log + op.side : log.slice(0, -1);
+    const score = sport.compute(log, t.config.scoring, m.firstServer);
+    return {
+      ...m,
+      log,
+      rallies: log.length,
+      score,
+      summary: sport.summary(score),
+      status: score.winner ? 'done' : 'live',
+      winner: score.winner ? m[score.winner].id : null,
+      pending: ops.length,
+    };
+  }
+
+  function enqueue(t, mid, op) {
+    queues.set(mid, [...pendingOps(mid), op]);
+    render();
+    sendQueue(t, mid);
+  }
+
+  function rally(t, m, side) {
+    const shown = withPending(t, confirmedMatch(m.id) || m);
+    if (shown.status === 'done') return;
     if (navigator.vibrate) navigator.vibrate(12);
+    enqueue(t, m.id, { type: 'rally', side });
+    const after = withPending(t, confirmedMatch(m.id) || m);
+    if (after.status === 'done') toast(`🏸 ${after[side].name} wins ${after.summary}`);
+  }
+
+  function undo(t, m) {
+    const shown = withPending(t, confirmedMatch(m.id) || m);
+    if (!shown.rallies) return;
+    if (shown.status === 'done' && !confirm('Undo the winning point and reopen this match?')) return;
+    enqueue(t, m.id, { type: 'undo' });
+  }
+
+  async function sendQueue(t, mid) {
+    if (sending.has(mid)) return;
+    sending.add(mid);
+    let delay = 1000;
     try {
-      const updated = await api('POST', `${tPath(t)}/matches/${m.id}/rally`, { side }, t.id);
-      mergeMatch(updated);
-      if (updated.status === 'done') {
-        toast(`🏸 ${updated[side].name} wins ${updated.summary}`);
-        refresh(); // standings / bracket changed
+      while (pendingOps(mid).length && S.t && S.t.id === t.id) {
+        const op = pendingOps(mid)[0];
+        const base = confirmedMatch(mid);
+        const at = base.rallies;
+        const expected = op.type === 'rally' ? base.log + op.side : base.log.slice(0, -1);
+        try {
+          const updated = await api('POST', `${tPath(t)}/matches/${mid}/${op.type}`, op.type === 'rally' ? { side: op.side, at } : { at }, t.id);
+          mergeMatch(updated);
+          queues.set(mid, pendingOps(mid).slice(1));
+          S.offline = false;
+          delay = 1000;
+          if (updated.status === 'done' || base.status === 'done') refresh(); // standings / bracket changed
+        } catch (e) {
+          if (e.network) {
+            // Keep the points and try again; the `at` guard makes this safe.
+            S.offline = true;
+            render(true);
+            await sleep(delay);
+            delay = Math.min(delay * 2, 15000);
+            continue;
+          }
+          if (e.code === 'stale') {
+            // Perhaps an earlier attempt did reach the server before the
+            // connection dropped. If so, the point is already saved.
+            await load(t.id);
+            const fresh = confirmedMatch(mid);
+            if (fresh && fresh.log === expected) {
+              queues.set(mid, pendingOps(mid).slice(1));
+              continue;
+            }
+          }
+          queues.set(mid, []);
+          S.offline = false;
+          toast(e.message, true);
+          refresh();
+          break;
+        }
+        render(true);
       }
-    } catch (e) {
-      toast(e.message, true);
     } finally {
-      S.pending = false;
-      render();
+      sending.delete(mid);
+      render(true);
     }
   }
 
-  async function undo(t, m) {
-    if (S.pending) return;
-    if (m.status === 'done' && !confirm('Undo the winning point and reopen this match?')) return;
-    S.pending = true;
-    try {
-      mergeMatch(await api('POST', `${tPath(t)}/matches/${m.id}/undo`, {}, t.id));
-      if (m.status === 'done') refresh(); // reopened: standings / bracket changed
-    } catch (e) {
-      toast(e.message, true);
-    } finally {
-      S.pending = false;
-      render();
-    }
-  }
+  // Don't lose points that haven't reached the server yet.
+  window.addEventListener('beforeunload', (e) => {
+    if (scoringBusy()) e.preventDefault();
+  });
 
   function patchMatch(t, m, body, msg) {
     act(async () => { mergeMatch(await api('PATCH', `${tPath(t)}/matches/${m.id}`, body, t.id)); }, msg);
@@ -838,8 +932,9 @@
   // Keyboard scoring for umpires on a laptop.
   document.addEventListener('keydown', (e) => {
     if (S.route.name !== 'match' || !S.t || !S.t.can.score || isEditing() || e.metaKey || e.ctrlKey || e.altKey) return;
-    const m = S.t.matches.find((x) => x.id === S.route.mid);
-    if (!m) return;
+    const confirmed = S.t.matches.find((x) => x.id === S.route.mid);
+    if (!confirmed) return;
+    const m = withPending(S.t, confirmed);
     const k = e.key.toLowerCase();
     if ((k === 'a' || k === 'arrowleft') && canScore(S.t, m)) rally(S.t, m, 'a');
     else if ((k === 'l' || k === 'arrowright') && canScore(S.t, m)) rally(S.t, m, 'b');
