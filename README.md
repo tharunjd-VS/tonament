@@ -94,7 +94,7 @@ Badminton is playable today. `server/sports/index.js` also lists the sports on t
 
 ### Adding a sport
 
-Create `server/sports/<sport>.js` with the same exports as `badminton.js` (`id`, `name`, `defaults`, `fields`, `normalizeConfig`, `compute(rallies, config, firstServer)` and `summary`), then register it in `sports/index.js`. Rally-scored sports such as table tennis, volleyball, squash and pickleball fit the same model directly.
+Create `public/sports/<sport>.js` with the same exports as `badminton.js` (`id`, `name`, `defaults`, `fields`, `normalizeConfig`, `compute(rallies, config, firstServer)` and `summary`), wrapped the same way so both the server and the browser can load it. Then add it to `MODULES` in `server/sports/index.js`, set its catalogue status to `live`, and add its `<script>` tag to `public/index.html`. Rally-scored sports such as table tennis, volleyball, squash and pickleball fit the same model directly.
 
 ## API
 
