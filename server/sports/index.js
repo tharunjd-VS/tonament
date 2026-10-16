@@ -1,15 +1,46 @@
 'use strict';
 
-// Sport registry. To add a sport, create a module exposing the same shape as
-// badminton.js (id, name, defaults, fields, normalizeConfig, compute, summary)
-// and register it here.
+// Sport registry and catalogue.
+//
+// Live sports have a rules module (same shape as badminton.js: id, name,
+// defaults, fields, normalizeConfig, compute, summary). Everything else is
+// listed so people can see what's coming and vote for it; when a sport's
+// module ships, register it in MODULES and flip its status to 'live'.
 
 const badminton = require('./badminton');
 
-const sports = new Map([[badminton.id, badminton]]);
+const MODULES = new Map([[badminton.id, badminton]]);
+
+// status: live (playable) | soon (next up) | later (planned, further out)
+const CATALOGUE = [
+  { id: 'badminton', name: 'Badminton', family: 'rally', status: 'live' },
+  { id: 'table-tennis', name: 'Table tennis', family: 'rally', status: 'soon' },
+  { id: 'squash', name: 'Squash', family: 'rally', status: 'soon' },
+  { id: 'pickleball', name: 'Pickleball', family: 'rally', status: 'soon' },
+  { id: 'volleyball', name: 'Volleyball', family: 'rally', status: 'soon' },
+  { id: 'throwball', name: 'Throwball', family: 'rally', status: 'soon' },
+  { id: 'football', name: 'Football', family: 'goals', status: 'soon' },
+  { id: 'futsal', name: 'Futsal', family: 'goals', status: 'soon' },
+  { id: 'hockey', name: 'Hockey', family: 'goals', status: 'soon' },
+  { id: 'kabaddi', name: 'Kabaddi', family: 'goals', status: 'soon' },
+  { id: 'basketball', name: 'Basketball', family: 'goals', status: 'soon' },
+  { id: 'tennis', name: 'Tennis', family: 'tennis', status: 'later' },
+  { id: 'padel', name: 'Padel', family: 'tennis', status: 'later' },
+  { id: 'cricket', name: 'Cricket', family: 'cricket', status: 'later' },
+];
+
+for (const s of CATALOGUE) {
+  if ((s.status === 'live') !== MODULES.has(s.id)) throw new Error(`Sport catalogue out of sync for ${s.id}`);
+}
 
 module.exports = {
-  get: (id) => sports.get(id) || null,
+  // Only playable sports have rules.
+  get: (id) => MODULES.get(id) || null,
+  // Catalogue entry for any listed sport (live or not).
+  info: (id) => CATALOGUE.find((s) => s.id === id) || null,
   list: () =>
-    [...sports.values()].map(({ id, name, defaults, fields }) => ({ id, name, defaults, fields })),
+    CATALOGUE.map((s) => {
+      const mod = MODULES.get(s.id);
+      return mod ? { ...s, defaults: mod.defaults, fields: mod.fields } : { ...s };
+    }),
 };

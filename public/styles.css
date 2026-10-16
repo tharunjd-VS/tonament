@@ -404,3 +404,20 @@ a.b-match:hover { border-color: var(--accent); }
 /* logo variants that swap with the theme */
 :root[data-theme='light'] .on-dark { display: none; }
 :root:not([data-theme='light']) .on-light { display: none; }
+
+/* ---------- sports catalogue */
+.sport-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.sport-chip {
+  display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: 0.9rem; font-weight: 600;
+  padding: 6px 8px 6px 14px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); cursor: pointer; min-height: 36px;
+}
+button.sport-chip:hover { border-color: var(--muted); }
+.sport-chip.live { background: var(--accent); border-color: var(--accent); color: var(--on-accent); cursor: default; }
+.sport-chip.voted { border-color: var(--accent); background: var(--accent-soft); }
+.chip-tag {
+  font-size: 0.64rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px; background: var(--surface-2); color: var(--muted);
+}
+.sport-chip.live .chip-tag { background: var(--navy); color: var(--lime); }
+.chip-count { font-size: 0.78rem; font-weight: 700; color: var(--accent-text); font-variant-numeric: tabular-nums; padding-right: 4px; }

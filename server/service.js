@@ -321,7 +321,10 @@ function createService(db, { mailer } = {}) {
     const name = text(input.name, 'Tournament name');
     const venue = text(input.venue, 'Venue', { optional: true });
     const sport = sports.get(input.sport || 'badminton');
-    if (!sport) fail(400, 'Unknown sport');
+    if (!sport) {
+      const info = sports.info(input.sport);
+      fail(400, info ? `${info.name} isn't available yet — vote for it on the home page` : 'Unknown sport');
+    }
     const format = FORMATS[input.format] ? input.format : 'league_knockout';
     const config = buildConfig(input, sport);
     const id = `${slugify(name)}-${crypto.randomBytes(3).toString('hex')}`;
@@ -583,6 +586,32 @@ function createService(db, { mailer } = {}) {
     });
   }
 
+  // ---------- sport requests ("Request this sport" votes)
+
+  async function sportInterest(actor = {}) {
+    const rows = await db.query('SELECT sport, COUNT(*)::int AS n FROM sport_interest GROUP BY sport');
+    const mine = actor.user
+      ? (await db.query('SELECT sport FROM sport_interest WHERE user_id = $1', [actor.user.id])).map((r) => r.sport)
+      : [];
+    return { counts: Object.fromEntries(rows.map((r) => [r.sport, r.n])), mine };
+  }
+
+  async function setSportInterest(actor, sportId, want) {
+    if (!actor.user) fail(401, 'Sign in to request a sport');
+    const info = sports.info(sportId);
+    if (!info) fail(404, 'Unknown sport');
+    if (info.status === 'live') fail(400, `${info.name} is already available`);
+    if (want === false) {
+      await db.query('DELETE FROM sport_interest WHERE user_id = $1 AND sport = $2', [actor.user.id, info.id]);
+    } else {
+      await db.query(
+        'INSERT INTO sport_interest (user_id, sport) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [actor.user.id, info.id],
+      );
+    }
+    return sportInterest(actor);
+  }
+
   // ---------- team
 
   async function membersOf(q, t) {
@@ -671,6 +700,8 @@ function createService(db, { mailer } = {}) {
   }
 
   return {
+    sportInterest,
+    setSportInterest,
     myTournaments,
     listMembers,
     addMember,

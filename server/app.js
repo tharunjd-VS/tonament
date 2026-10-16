@@ -118,6 +118,8 @@ function createApp(db, { mailer = createMailer() } = {}) {
   // public: it ignores who is asking so the CDN can share it.
   const routes = [
     ['GET', '/api/sports', () => sports.list(), 300],
+    ['GET', '/api/sports/interest', (c) => svc.sportInterest(c.actor)],
+    ['POST', '/api/sports/([a-z-]+)/interest', (c, id) => svc.setSportInterest(c.actor, id, c.body.want)],
     ['GET', '/api/tournaments', () => svc.listTournaments(), 5],
     ['POST', '/api/tournaments', (c) => svc.createTournament(c.actor, c.body)],
     // Spectators poll the public copy; anyone signed in or holding a link asks

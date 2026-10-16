@@ -89,6 +89,9 @@ test/                 unit and integration tests
 vercel.json           Vercel config: static output and API rewrite
 ```
 
+### Sports roadmap
+Badminton is playable today. `server/sports/index.js` also lists the sports on the way, shown on the home page as "Soon"/"Later" chips that signed-in users can tap to request. Site admins see the totals on the admin page. Planned order: table tennis, squash, pickleball, volleyball, throwball (same rally-scoring engine as badminton), then football, futsal, hockey, kabaddi and basketball (goal/point scoring with draws). Tennis, padel and cricket come later.
+
 ### Adding a sport
 
 Create `server/sports/<sport>.js` with the same exports as `badminton.js` (`id`, `name`, `defaults`, `fields`, `normalizeConfig`, `compute(rallies, config, firstServer)` and `summary`), then register it in `sports/index.js`. Rally-scored sports such as table tennis, volleyball, squash and pickleball fit the same model directly.
@@ -103,7 +106,9 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | POST | `/auth/forgot` `{ email }`, `/auth/reset` `{ token, password }` | Password reset by email |
 | GET | `/auth/me`, `/me/tournaments` | Current user; tournaments you're on the team of |
 | GET | `/admin/users` | All users (site admins only) |
-| GET | `/sports` | Sports and their scoring options |
+| GET | `/sports` | Sport catalogue: playable sports (with scoring options) and upcoming ones (`status: soon / later`) |
+| GET | `/sports/interest` | Request counts per upcoming sport, plus the sports you requested |
+| POST | `/sports/:id/interest` `{ want }` | Request (or withdraw a request for) an upcoming sport; signed-in users, one vote each |
 | GET/POST | `/tournaments` | List tournaments / create one (returns `adminKey`) |
 | GET/PATCH/DELETE | `/tournaments/:id` | View / change settings (during setup) / delete |
 | GET/POST | `/tournaments/:id/members` | Team list / add or change a member `{ email, role }` |

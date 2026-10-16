@@ -10,6 +10,7 @@
     emailEnabled: false, // can the server send email (password reset, invites)?
     mine: null, // tournaments I'm on the team of
     members: null, // team list for the open tournament (managers only)
+    interest: null, // { counts: { sportId: n }, mine: [sportId] } for "Request this sport"
     sports: [],
     list: null,
     t: null,
@@ -168,14 +169,18 @@
       } else if (parts[0] === 'admin') {
         S.route = { name: 'admin', users: null };
         render();
-        S.route.users = await api('GET', '/admin/users').catch((e) => { S.error = e.message; return []; });
+        [S.route.users, S.interest] = await Promise.all([
+          api('GET', '/admin/users').catch((e) => { S.error = e.message; return []; }),
+          api('GET', '/sports/interest').catch(() => null),
+        ]);
       } else {
         S.route = { name: 'home' };
         S.list = null;
         render();
-        [S.list, S.mine] = await Promise.all([
+        [S.list, S.mine, S.interest] = await Promise.all([
           api('GET', '/tournaments').catch((e) => { S.error = e.message; return []; }),
           S.me ? api('GET', '/me/tournaments').catch(() => []) : null,
+          api('GET', '/sports/interest').catch(() => null),
         ]);
       }
     }
@@ -289,14 +294,15 @@
       h('section', { class: 'hero' },
         h('p', { class: 'eyebrow' }, 'One platform.', h('br'), 'Every sport.', h('br'), h('b', {}, 'Every tournament.')),
         h('h1', {}, 'Run your tournament. ', h('span', { class: 'accent' }, 'Score it live.')),
-        h('p', { class: 'lead' }, 'Draw groups, play a round-robin league, send the best into a knockout bracket — and let everyone follow every point as it happens.'),
+        h('p', { class: 'lead' }, `${liveSportNames()} today, more sports on the way. Draw groups, play a round-robin league, send the best into a knockout bracket — and let everyone follow every point as it happens.`),
         h('ul', { class: 'features' },
-          ['Badminton', 'League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'].map((x) => h('li', {}, x))),
+          ['League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'].map((x) => h('li', {}, x))),
         h('div', { class: 'actions' },
           S.me
             ? h('a', { class: 'btn btn-primary btn-lg', href: '#/new' }, 'Create tournament')
             : h('a', { class: 'btn btn-primary btn-lg', href: '#/signup' }, 'Get started — it\'s free'),
           h('a', { class: 'btn btn-lg btn-ghost', href: '#/', onclick: explore }, 'Explore tournaments'))),
+      sportsSection(),
       S.me ? h('section', { class: 'section' },
         h('h2', {}, 'My tournaments'),
         S.mine == null ? loading()
@@ -308,6 +314,55 @@
           : S.list.length === 0 ? empty('No tournaments yet — create the first one.')
             : h('div', { class: 'card-list' }, S.list.map((t) => tournamentCard(t)))),
     ];
+  }
+
+  const liveSports = () => S.sports.filter((s) => s.status === 'live');
+  const liveSportNames = () => liveSports().map((s) => s.name).join(', ') || 'Badminton';
+
+  // Playable sports, plus the ones on the way with a "Request this sport" vote.
+  function sportsSection() {
+    if (!S.sports.length) return null;
+    const counts = (S.interest && S.interest.counts) || {};
+    const mine = new Set((S.interest && S.interest.mine) || []);
+    const upcoming = S.sports.filter((s) => s.status !== 'live');
+    return h('section', { class: 'section', id: 'sports' },
+      h('div', { class: 'card-head' },
+        h('h2', {}, 'Sports'),
+        h('span', { class: 'muted small' }, `${liveSportNames()} today · more on the way`)),
+      h('div', { class: 'sport-chips' },
+        liveSports().map((s) => h('span', { class: 'sport-chip live' }, s.name, h('span', { class: 'chip-tag' }, 'Live'))),
+        upcoming.map((s) => {
+          const voted = mine.has(s.id);
+          const n = counts[s.id] || 0;
+          return h('button', {
+            type: 'button',
+            class: `sport-chip${voted ? ' voted' : ''}`,
+            'aria-pressed': String(voted),
+            'aria-label': `${s.name}, ${s.status === 'later' ? 'planned' : 'coming soon'}, ${n} request${n === 1 ? '' : 's'}. ${voted ? 'You requested it — tap to withdraw.' : 'Tap to request it.'}`,
+            onclick: () => requestSport(s, !voted),
+          },
+          voted ? '✓ ' : null, s.name,
+          h('span', { class: 'chip-tag' }, s.status === 'later' ? 'Later' : 'Soon'),
+          n ? h('span', { class: 'chip-count' }, n) : null);
+        })),
+      h('p', { class: 'hint', style: 'margin:10px 0 0' },
+        S.me
+          ? 'Tap a sport to request it. The most requested sports get built first.'
+          : [h('a', { href: '#/signin?next=/' }, 'Sign in'), ' to request a sport. The most requested sports get built first.']));
+  }
+
+  async function requestSport(s, want) {
+    if (!S.me) {
+      location.hash = '#/signin?next=/';
+      return;
+    }
+    try {
+      S.interest = await api('POST', `/sports/${s.id}/interest`, { want });
+      toast(want ? `Thanks — ${s.name} requested` : `${s.name} request withdrawn`);
+    } catch (e) {
+      toast(e.message, true);
+    }
+    render();
   }
 
   function tournamentCard(t, roleName) {
@@ -366,7 +421,7 @@
 
   function viewNew() {
     document.title = 'New tournament · Tonament';
-    const sport = S.sports[0];
+    const sport = liveSports()[0];
     if (!sport) return loading();
     const form = h('form', {
       class: 'card form',
@@ -388,7 +443,11 @@
     h('h1', {}, 'New tournament'),
     field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, placeholder: 'e.g. Club Championship 2026', autocomplete: 'off' })),
     h('div', { class: 'grid-2' },
-      field('Sport', h('select', { name: 'sport' }, S.sports.map((s) => h('option', { value: s.id }, s.name)))),
+      field('Sport', h('select', { name: 'sport' }, S.sports.map((s) => h('option', {
+        value: s.id,
+        disabled: s.status !== 'live',
+      }, s.status === 'live' ? s.name : `${s.name} (coming soon)`))), null,
+      h('span', {}, 'More sports are on the way — ', h('a', { href: '#/' }, 'request yours on the home page'), '.')),
       field('Venue (optional)', h('input', { name: 'venue', maxlength: 80, placeholder: 'e.g. City Sports Hall' }))),
     settingsFields(sport, { format: 'league_knockout', groups: 2, qualifiers: 2, scoring: sport.defaults }),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
@@ -1245,7 +1304,17 @@
     document.title = 'Admin · Tonament';
     if (!S.me || !S.me.isAdmin) return errorView('Site admins only.');
     const users = S.route.users;
-    return h('div', { class: 'card' },
+    const counts = (S.interest && S.interest.counts) || {};
+    const requested = S.sports.filter((s) => s.status !== 'live').map((s) => ({ ...s, n: counts[s.id] || 0 })).sort((a, b) => b.n - a.n);
+    return [h('div', { class: 'card' },
+      h('h2', {}, 'Most requested sports'),
+      h('div', { class: 'table-wrap' }, h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Sport'), h('th', {}, 'Status'), h('th', { class: 'num' }, 'Requests'))),
+        h('tbody', {}, requested.map((s) => h('tr', {},
+          h('td', { class: 'name' }, s.name),
+          h('td', {}, s.status === 'later' ? 'Later' : 'Soon'),
+          h('td', { class: 'num' }, s.n))))))),
+    h('div', { class: 'card' },
       h('h1', {}, 'Users'),
       users == null ? loading() : h('div', { class: 'table-wrap' }, h('table', {},
         h('thead', {}, h('tr', {}, ['Name', 'Email', 'Joined', 'Owns', 'Helps on'].map((c, i) => h('th', { class: i > 2 ? 'num' : '' }, c)))),
@@ -1255,7 +1324,7 @@
           h('td', {}, new Date(u.createdAt).toLocaleDateString()),
           h('td', { class: 'num' }, u.owned),
           h('td', { class: 'num' }, u.helping)))))),
-      users ? h('p', { class: 'muted small', style: 'margin:8px 0 0' }, `${users.length} user${users.length === 1 ? '' : 's'}`) : null);
+      users ? h('p', { class: 'muted small', style: 'margin:8px 0 0' }, `${users.length} user${users.length === 1 ? '' : 's'}`) : null)];
   }
 
   // ---------- boot

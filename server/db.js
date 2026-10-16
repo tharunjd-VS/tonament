@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS password_resets (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- "Request this sport" votes for sports that aren't playable yet.
+CREATE TABLE IF NOT EXISTS sport_interest (
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sport       TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, sport)
+);
+
 -- Scoring-only share link, alongside the organiser link (admin_key).
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS scorer_key TEXT;
 UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WHERE scorer_key IS NULL;
@@ -90,7 +98,7 @@ UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WH
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 async function migrate(db) {
   try {

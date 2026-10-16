@@ -562,3 +562,50 @@ test('scoring with the expected rally count rejects stale or repeated requests',
   // Without `at` (older clients) it still works.
   assert.equal((await svc.rally(id, OWNER, m.id, 'b')).log, 'ab');
 });
+
+// ---------- sport catalogue & requests
+
+test('sport catalogue lists playable and upcoming sports', async () => {
+  const sports = require('../server/sports');
+  const list = sports.list();
+  const badminton = list.find((s) => s.id === 'badminton');
+  assert.equal(badminton.status, 'live');
+  assert.ok(badminton.fields.length > 0);
+  const tt = list.find((s) => s.id === 'table-tennis');
+  assert.equal(tt.status, 'soon');
+  assert.equal(tt.fields, undefined);
+  assert.equal(list.find((s) => s.id === 'cricket').status, 'later');
+  assert.equal(sports.get('table-tennis'), null); // no rules yet
+  await assert.rejects(svc.createTournament(OWNER, { name: 'TT Open', sport: 'table-tennis' }), /Table tennis isn't available yet/);
+  await assert.rejects(svc.createTournament(OWNER, { name: 'X', sport: 'quidditch' }), /Unknown sport/);
+});
+
+test('HTTP: request a sport (one vote per person, toggleable)', async () => {
+  await withServer(async ({ client }) => {
+    const anon = client();
+    assert.equal((await anon('POST', '/api/sports/volleyball/interest', {})).status, 401);
+    const ana = client();
+    const bo = client();
+    await ana('POST', '/api/auth/signup', { name: 'Ana', email: 'ana.vote@x.dev', password: 'password123' });
+    await bo('POST', '/api/auth/signup', { name: 'Bo', email: 'bo.vote@x.dev', password: 'password123' });
+    const before = (await anon('GET', '/api/sports/interest')).data.counts.volleyball || 0;
+
+    let r = await ana('POST', '/api/sports/volleyball/interest', {});
+    assert.equal(r.status, 200);
+    assert.equal(r.data.counts.volleyball, before + 1);
+    assert.deepEqual(r.data.mine, ['volleyball']);
+    r = await ana('POST', '/api/sports/volleyball/interest', {}); // repeat: still one vote
+    assert.equal(r.data.counts.volleyball, before + 1);
+    r = await bo('POST', '/api/sports/volleyball/interest', { want: true });
+    assert.equal(r.data.counts.volleyball, before + 2);
+    r = await ana('POST', '/api/sports/volleyball/interest', { want: false }); // withdraw
+    assert.equal(r.data.counts.volleyball, before + 1);
+    assert.deepEqual(r.data.mine, []);
+
+    assert.deepEqual((await bo('GET', '/api/sports/interest')).data.mine, ['volleyball']);
+    assert.equal((await anon('GET', '/api/sports/interest')).data.mine.length, 0);
+    assert.equal((await ana('POST', '/api/sports/badminton/interest', {})).status, 400); // already live
+    assert.equal((await ana('POST', '/api/sports/quidditch/interest', {})).status, 404);
+    assert.equal((await ana('POST', '/api/sports/volleyball/interest', {}, { Origin: 'https://evil.example' })).status, 403);
+  });
+});
