@@ -48,6 +48,36 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 CREATE INDEX IF NOT EXISTS entries_t ON entries(tournament_id);
 CREATE INDEX IF NOT EXISTS matches_t ON matches(tournament_id, stage, round, slot);
+
+CREATE TABLE IF NOT EXISTS users (
+  id             SERIAL PRIMARY KEY,
+  email          TEXT NOT NULL UNIQUE,            -- stored lower-case
+  name           TEXT NOT NULL,
+  password_hash  TEXT NOT NULL,
+  failed_logins  INTEGER NOT NULL DEFAULT 0,
+  locked_until   TIMESTAMPTZ,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id          TEXT PRIMARY KEY,                    -- sha256 of the cookie token
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Tournament team, keyed by email so people can be added before they sign up.
+CREATE TABLE IF NOT EXISTS members (
+  id            SERIAL PRIMARY KEY,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  email         TEXT NOT NULL,
+  role          TEXT NOT NULL,                     -- owner | organiser | umpire
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (tournament_id, email)
+);
+CREATE INDEX IF NOT EXISTS members_email ON members(email);
+
+-- Scoring-only share link, alongside the organiser link (admin_key).
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS scorer_key TEXT;
+UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WHERE scorer_key IS NULL;
 `;
 
 async function migrate(db) {
@@ -55,7 +85,7 @@ async function migrate(db) {
     await db.exec(SCHEMA);
   } catch (err) {
     // Two cold starts racing to create the same table; the other one won.
-    if (err.code !== '23505' && err.code !== '42P07') throw err;
+    if (!['23505', '42P07', '42701'].includes(err.code)) throw err;
   }
 }
 

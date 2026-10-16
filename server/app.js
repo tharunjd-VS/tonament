@@ -3,7 +3,9 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const sports = require('./sports');
-const { createService, HttpError } = require('./service');
+const { createService } = require('./service');
+const { createAuth } = require('./auth');
+const { HttpError } = require('./errors');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MAX_BODY = 100 * 1024;
@@ -21,7 +23,8 @@ const TYPES = {
 // cdnSeconds > 0 lets a CDN (Vercel's edge) share the response between
 // viewers for that long. Live viewers poll, so this is what keeps hundreds of
 // spectators from each hitting the database.
-function send(res, status, data, cdnSeconds = 0) {
+function send(res, status, data, cdnSeconds = 0, cookies = []) {
+  if (cookies.length) res.setHeader('Set-Cookie', cookies);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': cdnSeconds
@@ -82,27 +85,66 @@ function apiPath(url) {
   return url.pathname;
 }
 
+// Cookie-authenticated writes must come from our own pages: reject requests
+// whose Origin is another site (SameSite=Lax cookies already block most).
+function sameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === (req.headers['x-forwarded-host'] || req.headers.host);
+  } catch {
+    return false;
+  }
+}
+
 function createApp(db) {
   const svc = createService(db);
+  const auth = createAuth(db);
 
   const T = '/api/tournaments/([a-z0-9-]+)';
   const N = '(\\d+)';
+  // [method, path, handler, cdnSeconds]. Handlers get ctx = { body, query,
+  // actor: { user, key }, req, setCookie }. A route with cdnSeconds > 0 is
+  // public: it ignores who is asking so the CDN can share it.
   const routes = [
     ['GET', '/api/sports', () => sports.list(), 300],
     ['GET', '/api/tournaments', () => svc.listTournaments(), 5],
-    ['POST', '/api/tournaments', (c) => svc.createTournament(c.body)],
-    // Organiser reads (with a key) are personal and never cached.
-    ['GET', T, (c, id) => svc.getTournament(id, c.key), (c) => (c.key ? 0 : 1)],
-    ['PATCH', T, (c, id) => svc.updateSettings(id, c.key, c.body)],
-    ['DELETE', T, (c, id) => svc.deleteTournament(id, c.key)],
-    ['POST', `${T}/entries`, (c, id) => svc.addEntries(id, c.key, c.body.names)],
-    ['PUT', `${T}/entries/order`, (c, id) => svc.reorderEntries(id, c.key, c.body.ids)],
-    ['DELETE', `${T}/entries/${N}`, (c, id, eid) => svc.removeEntry(id, c.key, eid)],
-    ['POST', `${T}/start`, (c, id) => svc.start(id, c.key)],
-    ['POST', `${T}/knockout`, (c, id) => svc.startKnockout(id, c.key)],
-    ['PATCH', `${T}/matches/${N}`, (c, id, mid) => svc.updateMatch(id, c.key, mid, c.body)],
-    ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.key, mid, c.body.side)],
-    ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.key, mid)],
+    ['POST', '/api/tournaments', (c) => svc.createTournament(c.actor, c.body)],
+    // Spectators poll the public copy; anyone signed in or holding a link asks
+    // for their own copy with ?me=1, which is never cached.
+    ['GET', T, (c, id) => svc.getTournament(id, c.query.has('me') ? c.actor : null), (c) => (c.query.has('me') ? 0 : 1)],
+    ['PATCH', T, (c, id) => svc.updateSettings(id, c.actor, c.body)],
+    ['DELETE', T, (c, id) => svc.deleteTournament(id, c.actor)],
+    ['POST', `${T}/claim`, (c, id) => svc.claim(id, c.actor)],
+    ['GET', `${T}/members`, (c, id) => svc.listMembers(id, c.actor)],
+    ['POST', `${T}/members`, (c, id) => svc.addMember(id, c.actor, c.body)],
+    ['DELETE', `${T}/members/${N}`, (c, id, mid) => svc.removeMember(id, c.actor, mid)],
+    ['POST', `${T}/entries`, (c, id) => svc.addEntries(id, c.actor, c.body.names)],
+    ['PUT', `${T}/entries/order`, (c, id) => svc.reorderEntries(id, c.actor, c.body.ids)],
+    ['DELETE', `${T}/entries/${N}`, (c, id, eid) => svc.removeEntry(id, c.actor, eid)],
+    ['POST', `${T}/start`, (c, id) => svc.start(id, c.actor)],
+    ['POST', `${T}/knockout`, (c, id) => svc.startKnockout(id, c.actor)],
+    ['PATCH', `${T}/matches/${N}`, (c, id, mid) => svc.updateMatch(id, c.actor, mid, c.body)],
+    ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.actor, mid, c.body.side)],
+    ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid)],
+
+    ['GET', '/api/auth/me', (c) => ({ user: c.actor.user })],
+    ['POST', '/api/auth/signup', async (c) => {
+      const { user, cookie } = await auth.signup(c.req, c.body);
+      c.setCookie(cookie);
+      return { user };
+    }],
+    ['POST', '/api/auth/login', async (c) => {
+      const { user, cookie } = await auth.login(c.req, c.body);
+      c.setCookie(cookie);
+      return { user };
+    }],
+    ['POST', '/api/auth/logout', async (c) => {
+      c.setCookie(await auth.logout(c.req));
+      return { ok: true };
+    }],
+    ['GET', '/api/me/tournaments', (c) => svc.myTournaments(c.actor)],
+    ['GET', '/api/admin/users', (c) => auth.listUsers(c.actor)],
   ].map(([method, pattern, handler, cache = 0]) => ({ method, re: new RegExp(`^${pattern}$`), handler, cache }));
 
   async function serveStatic(req, res, pathname) {
@@ -142,12 +184,23 @@ function createApp(db) {
           if (!m) continue;
           pathMatched = true;
           if (route.method !== req.method) continue;
-          const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readJson(req) : {};
-          const ctx = { body, key: req.headers['x-admin-key'] };
-          const result = await route.handler(ctx, ...m.slice(1));
+          const write = req.method !== 'GET' && req.method !== 'HEAD';
+          if (write && !sameOrigin(req)) return send(res, 403, { error: 'Cross-site request blocked' });
+          const cookies = [];
+          const ctx = {
+            req,
+            query: url.searchParams,
+            body: write ? await readJson(req) : {},
+            setCookie: (cookie) => cookies.push(cookie),
+          };
           const cache = typeof route.cache === 'function' ? route.cache(ctx) : route.cache;
+          // Public (cacheable) responses never depend on who is asking.
+          ctx.actor = cache
+            ? { user: null, key: null }
+            : { user: await auth.userFromRequest(req), key: req.headers['x-admin-key'] || null };
+          const result = await route.handler(ctx, ...m.slice(1));
           const created = req.method === 'POST' && pathname === '/api/tournaments';
-          return send(res, created ? 201 : 200, result, cache);
+          return send(res, created ? 201 : 200, result, cache, cookies);
         }
         return pathMatched ? send(res, 405, { error: 'Method not allowed' }) : send(res, 404, { error: 'Not found' });
       }

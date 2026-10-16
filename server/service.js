@@ -3,6 +3,8 @@
 const crypto = require('node:crypto');
 const sports = require('./sports');
 const formats = require('./formats');
+const { HttpError } = require('./errors');
+const { normalizeEmail, validEmail } = require('./auth');
 
 const FORMATS = {
   league_knockout: 'League + Knockout',
@@ -11,12 +13,7 @@ const FORMATS = {
 };
 const MAX_ENTRIES = 128;
 
-class HttpError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
+const ROLES = { owner: 'Owner', organiser: 'Organiser', umpire: 'Umpire' };
 const fail = (status, message) => {
   throw new HttpError(status, message);
 };
@@ -105,27 +102,61 @@ function createService(db) {
     t.status = status;
   }
 
-  // ---------- auth
+  // ---------- access
+  // An actor is { user, key }: the signed-in user (or null) and a share-link
+  // key (or null). Roles, strongest first: admin (site admin), owner,
+  // organiser, umpire. The organiser link acts as organiser and the scorer
+  // link as umpire.
 
-  function isAdmin(t, key) {
-    if (typeof key !== 'string' || !key) return false;
+  function keyMatches(key, secret) {
+    if (typeof key !== 'string' || !key || !secret) return false;
     const a = Buffer.from(key);
-    const b = Buffer.from(t.admin_key);
+    const b = Buffer.from(secret);
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
 
-  async function lockAsAdmin(q, id, key) {
-    const t = await load(q, id, { lock: true });
-    if (!isAdmin(t, key)) fail(403, 'Only the organiser can do that');
-    return t;
+  const RANK = { umpire: 1, organiser: 2, owner: 3, admin: 4 };
+  const stronger = (a, b) => ((RANK[a] || 0) >= (RANK[b] || 0) ? a : b);
+
+  async function accessOf(q, t, actor = {}) {
+    let role = null;
+    if (actor.user?.isAdmin) role = 'admin';
+    else if (actor.user) {
+      const [m] = await q('SELECT role FROM members WHERE tournament_id = $1 AND email = $2', [t.id, actor.user.email]);
+      role = m?.role ?? null;
+    }
+    if (keyMatches(actor.key, t.admin_key)) role = stronger(role, 'organiser');
+    else if (keyMatches(actor.key, t.scorer_key)) role = stronger(role, 'umpire');
+    const [owner] = await q(`SELECT 1 FROM members WHERE tournament_id = $1 AND role = 'owner'`, [t.id]);
+    return {
+      role,
+      score: RANK[role] >= RANK.umpire,
+      manage: RANK[role] >= RANK.organiser,
+      // An ownerless (pre-accounts) tournament can be deleted with its organiser link.
+      delete: RANK[role] >= RANK.owner || (!owner && RANK[role] >= RANK.organiser),
+      claim: Boolean(!owner && actor.user && keyMatches(actor.key, t.admin_key)),
+    };
   }
 
-  // Runs fn as the organiser inside a transaction and returns the fresh view.
-  function mutate(id, key, fn) {
+  const NEED = {
+    score: 'Only the tournament team can score matches',
+    manage: 'Only the organisers can do that',
+    delete: 'Only the owner can delete this tournament',
+  };
+
+  async function lockWith(q, id, actor, need) {
+    const t = await load(q, id, { lock: true });
+    const access = await accessOf(q, t, actor);
+    if (!access[need]) fail(actor.user || actor.key ? 403 : 401, actor.user || actor.key ? NEED[need] : 'Sign in to do that');
+    return { t, access };
+  }
+
+  // Runs fn with the tournament locked and returns the fresh view.
+  function mutate(id, actor, fn, need = 'manage') {
     return db.tx(async (q) => {
-      const t = await lockAsAdmin(q, id, key);
+      const { t } = await lockWith(q, id, actor, need);
       await fn(q, t);
-      return view(q, await load(q, id), key);
+      return view(q, await load(q, id), actor);
     });
   }
 
@@ -192,7 +223,7 @@ function createService(db) {
     });
   }
 
-  async function view(q, t, key) {
+  async function view(q, t, actor) {
     const [entries, rows] = await Promise.all([entriesOf(q, t.id), matchesOf(q, t.id)]);
     const names = new Map(entries.map((e) => [e.id, e.name]));
     const scored = rows.map((row) => ({ row, score: scoreOf(t, row) }));
@@ -216,11 +247,23 @@ function createService(db) {
       createdAt: t.created_at,
       sport: { id: t.sportDef.id, name: t.sportDef.name },
       config: t.config,
-      isAdmin: isAdmin(t, key),
+      ...(await accessFields(q, t, actor)),
       entries: entries.map((e) => ({ id: e.id, name: e.name, seed: e.seed, group: e.group_no })),
       groups,
       matches,
       champion: champion && { id: champion.id, name: champion.name },
+    };
+  }
+
+  // Viewer-specific fields. Public (cacheable) views pass no actor.
+  async function accessFields(q, t, actor) {
+    if (!actor) return { role: null, can: { score: false, manage: false, delete: false, claim: false } };
+    const { role, ...can } = await accessOf(q, t, actor);
+    return {
+      role,
+      can,
+      // Share links are only shown to people who could hand them out anyway.
+      links: can.manage ? { organiser: t.admin_key, scorer: t.scorer_key } : null,
     };
   }
 
@@ -240,11 +283,24 @@ function createService(db) {
     return rows.map((r) => ({ ...r, formatName: FORMATS[r.format] }));
   }
 
-  async function getTournament(id, key) {
-    return view(db.query, await load(db.query, id), key);
+  async function getTournament(id, actor) {
+    return view(db.query, await load(db.query, id), actor);
   }
 
-  async function createTournament(input = {}) {
+  async function myTournaments(actor) {
+    if (!actor.user) fail(401, 'Sign in to see your tournaments');
+    const rows = await db.query(
+      `SELECT t.id, t.name, t.venue, t.sport, t.format, t.status, t.created_at AS "createdAt", m.role,
+              (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries
+       FROM members m JOIN tournaments t ON t.id = m.tournament_id
+       WHERE m.email = $1 ORDER BY t.created_at DESC`,
+      [actor.user.email],
+    );
+    return rows.map((r) => ({ ...r, formatName: FORMATS[r.format] }));
+  }
+
+  async function createTournament(actor, input = {}) {
+    if (!actor.user) fail(401, 'Sign in to create a tournament');
     const name = text(input.name, 'Tournament name');
     const venue = text(input.venue, 'Venue', { optional: true });
     const sport = sports.get(input.sport || 'badminton');
@@ -253,15 +309,20 @@ function createService(db) {
     const config = buildConfig(input, sport);
     const id = `${slugify(name)}-${crypto.randomBytes(3).toString('hex')}`;
     const adminKey = crypto.randomBytes(18).toString('base64url');
-    await db.query(
-      'INSERT INTO tournaments (id, name, venue, sport, format, config, admin_key) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)',
-      [id, name, venue, sport.id, format, JSON.stringify(config), adminKey],
-    );
-    return { id, adminKey };
+    const scorerKey = crypto.randomBytes(18).toString('base64url');
+    await db.tx(async (q) => {
+      await q(
+        `INSERT INTO tournaments (id, name, venue, sport, format, config, admin_key, scorer_key)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
+        [id, name, venue, sport.id, format, JSON.stringify(config), adminKey, scorerKey],
+      );
+      await q(`INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, 'owner')`, [id, actor.user.email]);
+    });
+    return { id };
   }
 
-  async function updateSettings(id, key, input = {}) {
-    return mutate(id, key, async (q, t) => {
+  async function updateSettings(id, actor, input = {}) {
+    return mutate(id, actor, async (q, t) => {
       if (t.status !== 'setup') fail(409, 'Settings are locked once the tournament has started');
       const name = input.name === undefined ? t.name : text(input.name, 'Tournament name');
       const venue = input.venue === undefined ? t.venue : text(input.venue, 'Venue', { optional: true });
@@ -274,9 +335,10 @@ function createService(db) {
     });
   }
 
-  async function deleteTournament(id, key) {
+  async function deleteTournament(id, actor) {
     return db.tx(async (q) => {
-      const t = await lockAsAdmin(q, id, key);
+      const { t } = await lockWith(q, id, actor, 'delete');
+      await q('DELETE FROM members WHERE tournament_id = $1', [t.id]);
       await q('DELETE FROM matches WHERE tournament_id = $1', [t.id]);
       await q('DELETE FROM entries WHERE tournament_id = $1', [t.id]);
       await q('DELETE FROM tournaments WHERE id = $1', [t.id]);
@@ -290,11 +352,11 @@ function createService(db) {
     if (t.status !== 'setup') fail(409, 'Entries are locked once the tournament has started');
   }
 
-  async function addEntries(id, key, names) {
+  async function addEntries(id, actor, names) {
     if (!Array.isArray(names)) fail(400, 'names must be a list');
     const clean = names.map((n) => (typeof n === 'string' ? n.trim().replace(/\s+/g, ' ') : '')).filter(Boolean);
     if (!clean.length) fail(400, 'Enter at least one name');
-    return mutate(id, key, async (q, t) => {
+    return mutate(id, actor, async (q, t) => {
       requireSetup(t);
       const existing = await entriesOf(q, t.id);
       if (existing.length + clean.length > MAX_ENTRIES) fail(400, `A tournament can have at most ${MAX_ENTRIES} entries`);
@@ -309,16 +371,16 @@ function createService(db) {
     });
   }
 
-  async function removeEntry(id, key, entryId) {
-    return mutate(id, key, async (q, t) => {
+  async function removeEntry(id, actor, entryId) {
+    return mutate(id, actor, async (q, t) => {
       requireSetup(t);
       const deleted = await q('DELETE FROM entries WHERE id = $1 AND tournament_id = $2 RETURNING id', [Number(entryId) || 0, t.id]);
       if (!deleted.length) fail(404, 'Entry not found');
     });
   }
 
-  async function reorderEntries(id, key, ids) {
-    return mutate(id, key, async (q, t) => {
+  async function reorderEntries(id, actor, ids) {
+    return mutate(id, actor, async (q, t) => {
       requireSetup(t);
       const current = (await entriesOf(q, t.id)).map((e) => e.id);
       const wanted = Array.isArray(ids) ? ids.map(Number) : [];
@@ -363,8 +425,8 @@ function createService(db) {
     await q(`UPDATE matches SET ${nextSlotColumn(m)} = $1 WHERE id = $2`, [winnerId, next.id]);
   }
 
-  async function start(id, key) {
-    return mutate(id, key, async (q, t) => {
+  async function start(id, actor) {
+    return mutate(id, actor, async (q, t) => {
       if (t.status !== 'setup') fail(409, 'The tournament has already started');
       const entries = await entriesOf(q, t.id);
       if (t.format === 'knockout') {
@@ -393,8 +455,8 @@ function createService(db) {
     });
   }
 
-  async function startKnockout(id, key) {
-    return mutate(id, key, async (q, t) => {
+  async function startKnockout(id, actor) {
+    return mutate(id, actor, async (q, t) => {
       if (t.format !== 'league_knockout' || t.status !== 'league') fail(409, 'The knockout stage cannot be started now');
       const pending = await pendingLeague(q, t);
       if (pending) fail(409, `${pending} league match${pending > 1 ? 'es are' : ' is'} still to be played`);
@@ -418,10 +480,10 @@ function createService(db) {
     if (!open) fail(409, `This ${m.stage} match cannot be played right now`);
   }
 
-  async function rally(id, key, mid, side) {
+  async function rally(id, actor, mid, side) {
     if (side !== 'a' && side !== 'b') fail(400, 'side must be "a" or "b"');
     return db.tx(async (q) => {
-      const t = await lockAsAdmin(q, id, key);
+      const { t } = await lockWith(q, id, actor, 'score');
       const m = await matchOf(q, t, mid);
       if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished');
       if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
@@ -447,9 +509,9 @@ function createService(db) {
 
   // Removes the last rally. Undoing the winning point reopens the match, as
   // long as nothing downstream has started yet.
-  async function undo(id, key, mid) {
+  async function undo(id, actor, mid) {
     return db.tx(async (q) => {
-      const t = await lockAsAdmin(q, id, key);
+      const { t } = await lockWith(q, id, actor, 'score');
       const m = await matchOf(q, t, mid);
       if (m.status === 'bye' || !m.rallies) fail(409, 'Nothing to undo');
       if (m.status === 'done' && m.stage === 'league') {
@@ -473,9 +535,9 @@ function createService(db) {
   }
 
   // Court, first server, and marking a match as on court before the first rally.
-  async function updateMatch(id, key, mid, input = {}) {
+  async function updateMatch(id, actor, mid, input = {}) {
     return db.tx(async (q) => {
-      const t = await lockAsAdmin(q, id, key);
+      const { t } = await lockWith(q, id, actor, 'score');
       const m = await matchOf(q, t, mid);
       if (m.status === 'bye') fail(409, 'Byes cannot be edited');
       const court = input.court === undefined ? m.court : text(input.court, 'Court', { max: 20, optional: true });
@@ -500,7 +562,78 @@ function createService(db) {
     });
   }
 
+  // ---------- team
+
+  async function membersOf(q, t) {
+    const rows = await q(
+      `SELECT m.id, m.email, m.role, u.name
+       FROM members m LEFT JOIN users u ON u.email = m.email
+       WHERE m.tournament_id = $1
+       ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'organiser' THEN 1 ELSE 2 END, m.created_at`,
+      [t.id],
+    );
+    return rows.map((r) => ({ ...r, roleName: ROLES[r.role], joined: r.name != null }));
+  }
+
+  async function listMembers(id, actor) {
+    return db.tx(async (q) => {
+      const { t } = await lockWith(q, id, actor, 'manage');
+      return membersOf(q, t);
+    });
+  }
+
+  // Adds someone by email, or changes their role. They get access as soon as
+  // they sign up (or sign in) with that email.
+  async function addMember(id, actor, input = {}) {
+    const email = normalizeEmail(input.email);
+    if (!validEmail(email)) fail(400, 'Enter a valid email address');
+    if (input.role !== 'organiser' && input.role !== 'umpire') fail(400, 'Role must be organiser or umpire');
+    return db.tx(async (q) => {
+      const { t } = await lockWith(q, id, actor, 'manage');
+      const [existing] = await q('SELECT role FROM members WHERE tournament_id = $1 AND email = $2', [t.id, email]);
+      if (existing?.role === 'owner') fail(409, 'That person is the owner');
+      await q(
+        `INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, $3)
+         ON CONFLICT (tournament_id, email) DO UPDATE SET role = EXCLUDED.role`,
+        [t.id, email, input.role],
+      );
+      return membersOf(q, t);
+    });
+  }
+
+  async function removeMember(id, actor, memberId) {
+    return db.tx(async (q) => {
+      const { t } = await lockWith(q, id, actor, 'manage');
+      const [m] = await q('SELECT * FROM members WHERE id = $1 AND tournament_id = $2', [Number(memberId) || 0, t.id]);
+      if (!m) fail(404, 'Member not found');
+      if (m.role === 'owner') fail(409, 'The owner cannot be removed');
+      await q('DELETE FROM members WHERE id = $1', [m.id]);
+      return membersOf(q, t);
+    });
+  }
+
+  // Tournaments created before accounts existed have no owner; whoever holds
+  // the organiser link can attach it to their account.
+  async function claim(id, actor) {
+    return db.tx(async (q) => {
+      const t = await load(q, id, { lock: true });
+      const access = await accessOf(q, t, actor);
+      if (!access.claim) fail(403, 'This tournament cannot be claimed');
+      await q(
+        `INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, 'owner')
+         ON CONFLICT (tournament_id, email) DO UPDATE SET role = 'owner'`,
+        [t.id, actor.user.email],
+      );
+      return view(q, t, actor);
+    });
+  }
+
   return {
+    myTournaments,
+    listMembers,
+    addMember,
+    removeMember,
+    claim,
     listTournaments,
     getTournament,
     createTournament,

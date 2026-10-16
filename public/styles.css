@@ -294,3 +294,34 @@ a.b-match:hover { border-color: var(--brand); }
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 #toast.error { background: #b91c1c; }
+
+/* ---------- accounts & team */
+.nav { display: flex; align-items: center; gap: 10px; }
+.nav-link { font-weight: 600; text-decoration: none; color: var(--text); font-size: 0.92rem; }
+.menu { position: relative; }
+.menu > summary { list-style: none; }
+.menu > summary::-webkit-details-marker { display: none; }
+.avatar {
+  width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+  background: var(--brand-soft); color: var(--brand); font-weight: 800; font-size: 0.85rem; user-select: none;
+}
+.menu-panel {
+  position: absolute; right: 0; top: calc(100% + 8px); min-width: 220px; z-index: 30;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px; display: grid;
+}
+.menu-head { padding: 8px 10px 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; overflow-wrap: anywhere; }
+.menu-panel a, .menu-panel button {
+  font: inherit; text-align: left; background: none; border: 0; color: var(--text); text-decoration: none;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+}
+.menu-panel a:hover, .menu-panel button:hover { background: var(--surface-2); }
+.auth-card { max-width: 420px; margin: 24px auto; }
+.members { list-style: none; margin: 0 0 14px; padding: 0; }
+.members li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.members li:last-child { border-bottom: 0; }
+.members .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.team-form { display: grid; gap: 8px; grid-template-columns: 1fr; }
+@media (min-width: 640px) { .team-form { grid-template-columns: 1fr auto auto; } }
+.link-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.card.danger { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }

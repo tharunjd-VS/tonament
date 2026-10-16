@@ -27,10 +27,14 @@ async function play(id, key, matchId, side = 'a') {
   return m;
 }
 
+// Tournament owner used by most tests (membership is keyed by email).
+const OWNER = { user: { id: 1, email: 'owner@example.com', name: 'Owner', isAdmin: false } };
+
 const names = (n) => Array.from({ length: n }, (_, i) => `Player ${i + 1}`);
 
 test('league + knockout: full tournament from draw to champion', async () => {
-  const { id, adminKey: key } = await svc.createTournament({
+  const key = OWNER;
+  const { id } = await svc.createTournament(OWNER, {
     name: 'Club Open',
     format: 'league_knockout',
     groups: 2,
@@ -90,7 +94,8 @@ test('league + knockout: full tournament from draw to champion', async () => {
 });
 
 test('knockout only with byes', async () => {
-  const { id, adminKey: key } = await svc.createTournament({ name: 'Cup', format: 'knockout' });
+  const key = OWNER;
+  const { id } = await svc.createTournament(OWNER, { name: 'Cup', format: 'knockout' });
   await svc.addEntries(id, key, names(5));
   const t = await svc.start(id, key);
   const ko = t.matches;
@@ -107,7 +112,8 @@ test('knockout only with byes', async () => {
 });
 
 test('undo of a knockout win is blocked once the next match starts', async () => {
-  const { id, adminKey: key } = await svc.createTournament({ name: 'Cup', format: 'knockout' });
+  const key = OWNER;
+  const { id } = await svc.createTournament(OWNER, { name: 'Cup', format: 'knockout' });
   await svc.addEntries(id, key, names(4));
   const t = await svc.start(id, key);
   const [s1, s2] = t.matches.filter((m) => m.round === 1);
@@ -124,7 +130,8 @@ test('undo of a knockout win is blocked once the next match starts', async () =>
 });
 
 test('league only completes when all matches are played', async () => {
-  const { id, adminKey: key } = await svc.createTournament({
+  const key = OWNER;
+  const { id } = await svc.createTournament(OWNER, {
     name: 'Ladder',
     format: 'league',
     groups: 1,
@@ -139,7 +146,8 @@ test('league only completes when all matches are played', async () => {
 });
 
 test('simultaneous rallies on one match are all counted', async () => {
-  const { id, adminKey: key } = await svc.createTournament({ name: 'Race', format: 'knockout' });
+  const key = OWNER;
+  const { id } = await svc.createTournament(OWNER, { name: 'Race', format: 'knockout' });
   await svc.addEntries(id, key, ['A', 'B']);
   const [m] = (await svc.start(id, key)).matches;
   await Promise.all(Array.from({ length: 10 }, (_, i) => svc.rally(id, key, m.id, i % 2 ? 'b' : 'a')));
@@ -149,9 +157,11 @@ test('simultaneous rallies on one match are all counted', async () => {
 });
 
 test('validation and permissions', async () => {
-  await assert.rejects(svc.createTournament({ name: '  ' }), /required/);
-  const { id, adminKey: key } = await svc.createTournament({ name: 'X', groups: 2, qualifiers: 3 });
-  await assert.rejects(svc.addEntries(id, 'wrong', ['A']), /organiser/);
+  await assert.rejects(svc.createTournament(OWNER, { name: '  ' }), /required/);
+  await assert.rejects(svc.createTournament({}, { name: 'X' }), /Sign in/);
+  const key = OWNER;
+  const { id } = await svc.createTournament(OWNER, { name: 'X', groups: 2, qualifiers: 3 });
+  await assert.rejects(svc.addEntries(id, { key: 'wrong' }, ['A']), /organiser/);
   await svc.addEntries(id, key, ['A', 'B', 'C']);
   await assert.rejects(svc.addEntries(id, key, ['a']), /already entered/);
   await assert.rejects(svc.start(id, key), /at least 4 entries/);
@@ -161,12 +171,13 @@ test('validation and permissions', async () => {
   const t = await svc.start(id, key);
   assert.equal(t.status, 'league');
   await assert.rejects(svc.addEntries(id, key, ['E']), /locked/);
-  assert.equal((await svc.getTournament(id)).isAdmin, false);
-  assert.equal((await svc.getTournament(id, key)).isAdmin, true);
+  assert.equal((await svc.getTournament(id)).can.manage, false);
+  assert.equal((await svc.getTournament(id, key)).can.manage, true);
 });
 
 test('reorder entries sets the seeding', async () => {
-  const { id, adminKey: key } = await svc.createTournament({ name: 'X' });
+  const key = OWNER;
+  const { id } = await svc.createTournament(OWNER, { name: 'X' });
   let t = await svc.addEntries(id, key, ['A', 'B', 'C']);
   const ids = t.entries.map((e) => e.id).reverse();
   t = await svc.reorderEntries(id, key, ids);
@@ -174,74 +185,236 @@ test('reorder entries sets the seeding', async () => {
   await assert.rejects(svc.reorderEntries(id, key, ids.slice(1)), /every entry/);
 });
 
-test('HTTP API: auth, scoring and CDN caching', async () => {
+test('roles: owner, organiser, umpire, share links and site admin', async () => {
+  const org = { user: { email: 'org@example.com', isAdmin: false } };
+  const ump = { user: { email: 'ump@example.com', isAdmin: false } };
+  const stranger = { user: { email: 'nobody@example.com', isAdmin: false } };
+  const admin = { user: { email: 'boss@example.com', isAdmin: true } };
+  const { id } = await svc.createTournament(OWNER, { name: 'Roles', format: 'knockout' });
+
+  let t = await svc.getTournament(id, OWNER);
+  assert.equal(t.role, 'owner');
+  assert.deepEqual(t.can, { score: true, manage: true, delete: true, claim: false });
+  const { organiser: orgLink, scorer: scorerLink } = t.links;
+
+  // Team members are added by email, before or after they sign up.
+  await svc.addMember(id, OWNER, { email: 'ORG@example.com ', role: 'organiser' });
+  const team = await svc.addMember(id, OWNER, { email: 'ump@example.com', role: 'umpire' });
+  assert.deepEqual(team.map((m) => [m.email, m.role]), [
+    ['owner@example.com', 'owner'], ['org@example.com', 'organiser'], ['ump@example.com', 'umpire'],
+  ]);
+  await assert.rejects(svc.addMember(id, OWNER, { email: 'owner@example.com', role: 'umpire' }), /owner/);
+  await assert.rejects(svc.addMember(id, ump, { email: 'x@example.com', role: 'umpire' }), /organisers/);
+
+  // Organiser can manage but not delete; umpire can only score.
+  await svc.addEntries(id, org, ['A', 'B']);
+  await assert.rejects(svc.addEntries(id, ump, ['C']), /organisers/);
+  await assert.rejects(svc.addEntries(id, stranger, ['C']), /organisers/);
+  await assert.rejects(svc.addEntries(id, {}, ['C']), /Sign in/);
+  t = await svc.start(id, org);
+  const match = t.matches[0];
+  assert.equal((await svc.rally(id, ump, match.id, 'a')).rallies, 1);
+  await assert.rejects(svc.rally(id, stranger, match.id, 'a'), /team/);
+  t = await svc.getTournament(id, ump);
+  assert.equal(t.role, 'umpire');
+  assert.equal(t.links, null); // umpires don't see share links
+  await assert.rejects(svc.deleteTournament(id, org), /owner/);
+
+  // Share links still work without an account.
+  assert.equal((await svc.rally(id, { key: scorerLink }, match.id, 'b')).rallies, 2);
+  await assert.rejects(svc.startKnockout(id, { key: scorerLink }), /organisers/);
+  assert.equal((await svc.getTournament(id, { key: orgLink })).can.manage, true);
+  assert.equal((await svc.getTournament(id, { key: orgLink })).can.delete, false); // has an owner
+
+  // Public view reveals no links or roles.
+  t = await svc.getTournament(id, null);
+  assert.equal(t.links, undefined);
+  assert.equal(t.can.score, false);
+
+  // Removing a member takes their access away; the owner cannot be removed.
+  const umpRow = (await svc.listMembers(id, OWNER)).find((m) => m.email === 'ump@example.com');
+  await svc.removeMember(id, org, umpRow.id);
+  await assert.rejects(svc.rally(id, ump, match.id, 'a'), /team/);
+  const ownerRow = (await svc.listMembers(id, OWNER)).find((m) => m.role === 'owner');
+  await assert.rejects(svc.removeMember(id, org, ownerRow.id), /owner cannot be removed/);
+
+  // Site admin can do anything.
+  assert.equal((await svc.getTournament(id, admin)).role, 'admin');
+  await svc.deleteTournament(id, admin);
+  await assert.rejects(svc.getTournament(id), /not found/);
+});
+
+test('ownerless tournaments can be claimed with the organiser link', async () => {
+  const { id } = await svc.createTournament(OWNER, { name: 'Legacy' });
+  const { organiser: link } = (await svc.getTournament(id, OWNER)).links;
+  await db.query(`DELETE FROM members WHERE tournament_id = $1`, [id]); // as if created before accounts
+  const me = { user: { email: 'new-owner@example.com', isAdmin: false } };
+
+  assert.equal((await svc.getTournament(id, { key: link })).can.delete, true); // link holder may delete when ownerless
+  await assert.rejects(svc.claim(id, me), /cannot be claimed/); // needs the link
+  const t = await svc.getTournament(id, { ...me, key: link });
+  assert.equal(t.can.claim, true);
+  const claimed = await svc.claim(id, { ...me, key: link });
+  assert.equal(claimed.role, 'owner');
+  assert.equal((await svc.getTournament(id, me)).role, 'owner');
+  assert.deepEqual((await svc.myTournaments(me)).map((x) => [x.id, x.role]), [[id, 'owner']]);
+});
+
+// ---------- HTTP
+
+async function withServer(fn) {
   const server = http.createServer(app.handle);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const call = async (method, path, body, key) => {
-    const headers = { 'Content-Type': 'application/json' };
-    if (key) headers['X-Admin-Key'] = key;
-    const res = await fetch(base + path, { method, headers, body: body && JSON.stringify(body) });
-    return { status: res.status, cache: res.headers.get('cache-control'), data: await res.json() };
+  // Tiny client with its own cookie jar.
+  const client = () => {
+    let cookie = '';
+    return async (method, path, body, headers = {}) => {
+      const h = { 'Content-Type': 'application/json', ...headers };
+      if (cookie) h.Cookie = cookie;
+      const res = await fetch(base + path, { method, headers: h, body: body && JSON.stringify(body) });
+      const set = res.headers.get('set-cookie');
+      if (set) cookie = set.split(';')[0];
+      return { status: res.status, cache: res.headers.get('cache-control'), setCookie: set, data: await res.json() };
+    };
   };
   try {
-    const created = await call('POST', '/api/tournaments', { name: 'Live Test', format: 'knockout' });
-    assert.equal(created.status, 201);
-    const { id, adminKey: key } = created.data;
-    assert.match(id, /^live-test-[0-9a-f]{6}$/);
-
-    assert.equal((await call('POST', `/api/tournaments/${id}/entries`, { names: ['A', 'B'] })).status, 403);
-    await call('POST', `/api/tournaments/${id}/entries`, { names: ['A', 'B'] }, key);
-    const started = await call('POST', `/api/tournaments/${id}/start`, {}, key);
-    const match = started.data.matches[0];
-
-    const scored = await call('POST', `/api/tournaments/${id}/matches/${match.id}/rally`, { side: 'b' }, key);
-    assert.equal(scored.status, 200);
-    assert.equal(scored.cache, 'no-store');
-    assert.deepEqual([scored.data.score.games[0].a, scored.data.score.games[0].b], [0, 1]);
-
-    // Spectators get a CDN-cacheable copy; the organiser's copy is never cached.
-    const pub = await call('GET', `/api/tournaments/${id}`);
-    assert.match(pub.cache, /s-maxage=1/);
-    assert.equal(pub.data.isAdmin, false);
-    assert.equal(pub.data.matches[0].rallies, 1);
-    const own = await call('GET', `/api/tournaments/${id}?admin=1`, undefined, key);
-    assert.equal(own.cache, 'no-store');
-    assert.equal(own.data.isAdmin, true);
-
-    assert.equal((await call('POST', `/api/tournaments/${id}/matches/${match.id}/rally`, { side: 'x' }, key)).status, 400);
-    assert.equal((await call('GET', '/api/tournaments/nope')).status, 404);
-    const page = await fetch(`${base}/t/whatever`);
-    assert.match(page.headers.get('content-type'), /text\/html/);
-    assert.equal((await fetch(`${base}/..%2fpackage.json`)).status, 404);
-    assert.equal((await call('DELETE', `/api/tournaments/${id}`, undefined, key)).status, 200);
-    assert.equal((await call('GET', `/api/tournaments/${id}`)).status, 404);
+    await fn({ base, client });
   } finally {
     await new Promise((r) => server.close(r));
   }
+}
+
+test('HTTP: sign up, sign in, sessions and lockout', async () => {
+  await withServer(async ({ client }) => {
+    const alice = client();
+    assert.equal((await alice('POST', '/api/auth/signup', { name: 'Alice', email: 'bad', password: 'longenough' })).status, 400);
+    assert.equal((await alice('POST', '/api/auth/signup', { name: 'Alice', email: 'a@x.dev', password: 'short' })).status, 400);
+    const signed = await alice('POST', '/api/auth/signup', { name: ' Alice ', email: 'Alice@X.dev', password: 'correct horse' });
+    assert.equal(signed.status, 200);
+    assert.deepEqual(signed.data.user, { id: signed.data.user.id, email: 'alice@x.dev', name: 'Alice', isAdmin: false });
+    assert.match(signed.setCookie, /^tn_session=[\w-]{43}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=2592000$/);
+    assert.equal((await alice('GET', '/api/auth/me')).data.user.email, 'alice@x.dev');
+    assert.equal((await alice('POST', '/api/auth/signup', { name: 'A2', email: 'alice@x.dev', password: 'whatever12' })).status, 409);
+
+    await alice('POST', '/api/auth/logout');
+    assert.equal((await alice('GET', '/api/auth/me')).data.user, null);
+    assert.equal((await alice('POST', '/api/auth/login', { email: 'alice@x.dev', password: 'wrong pass' })).status, 401);
+    assert.equal((await alice('POST', '/api/auth/login', { email: 'ghost@x.dev', password: 'whatever12' })).status, 401);
+    const back = await alice('POST', '/api/auth/login', { email: 'ALICE@x.dev', password: 'correct horse' });
+    assert.equal(back.status, 200);
+    assert.equal((await alice('GET', '/api/auth/me')).data.user.name, 'Alice');
+
+    // 10 wrong passwords lock the account for a while, even for the right one.
+    const mallory = client();
+    for (let i = 0; i < 10; i++) await mallory('POST', '/api/auth/login', { email: 'alice@x.dev', password: `guess-${i}` });
+    const locked = await mallory('POST', '/api/auth/login', { email: 'alice@x.dev', password: 'correct horse' });
+    assert.equal(locked.status, 429);
+  });
 });
 
-test('Vercel entry: rewritten path and pre-parsed body', async () => {
+test('HTTP: roles, invites before signup, caching and cross-site protection', async () => {
+  process.env.ADMIN_EMAILS = 'root@x.dev';
+  try {
+    await withServer(async ({ base, client }) => {
+      const owner = client();
+      const anon = client();
+      assert.equal((await anon('POST', '/api/tournaments', { name: 'Nope' })).status, 401);
+      await owner('POST', '/api/auth/signup', { name: 'Olu', email: 'olu@x.dev', password: 'password123' });
+      const created = await owner('POST', '/api/tournaments', { name: 'Live Test', format: 'knockout' });
+      assert.equal(created.status, 201);
+      const { id } = created.data;
+      assert.match(id, /^live-test-[0-9a-f]{6}$/);
+
+      // Invite an umpire who has no account yet; access arrives when they sign up.
+      await owner('POST', `/api/tournaments/${id}/members`, { email: 'uma@x.dev', role: 'umpire' });
+      await owner('POST', `/api/tournaments/${id}/entries`, { names: ['A', 'B'] });
+      const started = await owner('POST', `/api/tournaments/${id}/start`);
+      const match = started.data.matches[0];
+      const uma = client();
+      assert.equal((await uma('POST', `/api/tournaments/${id}/matches/${match.id}/rally`, { side: 'a' })).status, 401);
+      await uma('POST', '/api/auth/signup', { name: 'Uma', email: 'uma@x.dev', password: 'password123' });
+      const scored = await uma('POST', `/api/tournaments/${id}/matches/${match.id}/rally`, { side: 'b' });
+      assert.equal(scored.status, 200);
+      assert.equal(scored.cache, 'no-store');
+      assert.equal((await uma('POST', `/api/tournaments/${id}/start`)).status, 403);
+      assert.deepEqual((await uma('GET', '/api/me/tournaments')).data.map((x) => x.role), ['umpire']);
+
+      // Public copy is cacheable and anonymous even with a session cookie;
+      // ?me=1 is personal and never cached.
+      const pub = await owner('GET', `/api/tournaments/${id}`);
+      assert.match(pub.cache, /s-maxage=1/);
+      assert.equal(pub.data.role, null);
+      assert.equal(pub.data.links, undefined);
+      assert.equal(pub.data.matches[0].rallies, 1);
+      const mine = await owner('GET', `/api/tournaments/${id}?me=1`);
+      assert.equal(mine.cache, 'no-store');
+      assert.equal(mine.data.role, 'owner');
+      assert.ok(mine.data.links.scorer);
+
+      // Scorer link works with no account at all.
+      const viaLink = await anon('POST', `/api/tournaments/${id}/matches/${match.id}/rally`, { side: 'a' }, { 'X-Admin-Key': mine.data.links.scorer });
+      assert.equal(viaLink.status, 200);
+
+      // Requests from other websites are refused.
+      const evil = await owner('POST', `/api/tournaments/${id}/matches/${match.id}/rally`, { side: 'a' }, { Origin: 'https://evil.example' });
+      assert.equal(evil.status, 403);
+
+      // Site admin (from ADMIN_EMAILS) sees all users.
+      assert.equal((await owner('GET', '/api/admin/users')).status, 403);
+      const root = client();
+      await root('POST', '/api/auth/signup', { name: 'Root', email: 'root@x.dev', password: 'password123' });
+      const users = await root('GET', '/api/admin/users');
+      assert.equal(users.status, 200);
+      const olu = users.data.find((u) => u.email === 'olu@x.dev');
+      assert.equal(olu.owned, 1);
+      assert.equal(olu.password_hash, undefined);
+
+      assert.equal((await anon('GET', '/api/tournaments/nope')).status, 404);
+      const page = await fetch(`${base}/t/whatever`);
+      assert.match(page.headers.get('content-type'), /text\/html/);
+      assert.equal((await fetch(`${base}/..%2fpackage.json`)).status, 404);
+      assert.equal((await uma('DELETE', `/api/tournaments/${id}`)).status, 403);
+      assert.equal((await owner('DELETE', `/api/tournaments/${id}`)).status, 200);
+    });
+  } finally {
+    delete process.env.ADMIN_EMAILS;
+  }
+});
+
+test('passwords are stored as scrypt hashes', async () => {
+  const { hashPassword, verifyPassword } = require('../server/auth');
+  const stored = await hashPassword('s3cret-pass');
+  assert.match(stored, /^scrypt\$16384\$8\$1\$/);
+  assert.ok(!stored.includes('s3cret-pass'));
+  assert.equal(await verifyPassword('s3cret-pass', stored), true);
+  assert.equal(await verifyPassword('s3cret-pasS', stored), false);
+});
+
+test('Vercel entry: rewritten path, pre-parsed body and cookies', async () => {
   process.env.DATABASE_URL = ':memory:';
-  // Minimal stand-ins for Vercel's request/response objects.
-  const invoke = (method, url, body) =>
+  const invoke = (method, url, body, cookie) =>
     new Promise((resolve) => {
-      const req = { method, url, headers: { 'content-type': 'application/json' }, body };
+      const req = { method, url, headers: { 'content-type': 'application/json', ...(cookie && { cookie }) }, body };
       const res = {
         statusCode: 200,
         headers: {},
         writeHead(status, headers) { this.statusCode = status; Object.assign(this.headers, headers); },
-        setHeader(k, v) { this.headers[k] = v; },
-        end(data) { resolve({ status: this.statusCode, data: JSON.parse(data) }); },
+        setHeader(k, v) { this.headers[k.toLowerCase()] = v; },
+        end(data) { resolve({ status: this.statusCode, headers: this.headers, data: JSON.parse(data) }); },
       };
       vercelHandler(req, res);
     });
   try {
-    const created = await invoke('POST', '/api/index?__path=tournaments', { name: 'On Vercel' });
+    const signed = await invoke('POST', '/api/index?__path=auth/signup', { name: 'V', email: 'v@x.dev', password: 'password123' });
+    assert.equal(signed.status, 200);
+    const cookie = signed.headers['set-cookie'][0].split(';')[0];
+    const created = await invoke('POST', '/api/index?__path=tournaments', { name: 'On Vercel' }, cookie);
     assert.equal(created.status, 201);
-    const got = await invoke('GET', `/api/index?__path=tournaments/${created.data.id}`);
+    const got = await invoke('GET', `/api/index?__path=tournaments/${created.data.id}&me=1`, undefined, cookie);
     assert.equal(got.status, 200);
     assert.equal(got.data.name, 'On Vercel');
+    assert.equal(got.data.role, 'owner');
   } finally {
     delete process.env.DATABASE_URL;
   }

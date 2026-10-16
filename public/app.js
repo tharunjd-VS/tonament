@@ -6,6 +6,9 @@
 
   const S = {
     route: { name: 'home' },
+    me: null, // signed-in user
+    mine: null, // tournaments I'm on the team of
+    members: null, // team list for the open tournament (managers only)
     sports: [],
     list: null,
     t: null,
@@ -17,6 +20,7 @@
     pendingRender: false,
   };
 
+  const ROLE_NAMES = { admin: 'Site admin', owner: 'Owner', organiser: 'Organiser', umpire: 'Umpire' };
   const STATUS = { setup: 'Setting up', league: 'League stage', knockout: 'Knockout stage', completed: 'Completed' };
 
   // ---------- organiser keys (kept per tournament in this browser)
@@ -58,9 +62,9 @@
     const key = tid ? keys.get(tid) : null;
     if (key) headers['X-Admin-Key'] = key;
     if (method !== 'GET') S.seq++;
-    // Public reads are shared through the CDN cache; organiser reads use a
-    // distinct URL so they never receive (or populate) the public copy.
-    if (key && method === 'GET') path += `${path.includes('?') ? '&' : '?'}admin=1`;
+    // Public tournament reads are shared through the CDN cache. Signed-in users
+    // and link holders ask for their own copy (?me=1), which is never cached.
+    if (method === 'GET' && (key || S.me) && /^\/tournaments\/[^/?]+$/.test(path)) path += '?me=1';
     const res = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
@@ -122,12 +126,13 @@
         history.replaceState(null, '', `#/${parts.map(encodeURIComponent).join('/')}`);
       }
       S.route = parts[2] === 'm' ? { name: 'match', id, mid: Number(parts[3]) } : { name: 'tournament', id, tab: parts[2] || null };
+      if (S.route.tab === 'team') S.members = null; // reload: invitees may have signed up since
       if (!S.t || S.t.id !== id || key) {
         S.t = null;
         render();
         await load(id);
         if (S.t) schedulePoll();
-        if (key && S.t && !S.t.isAdmin) {
+        if (key && S.t && !S.t.can.score) {
           keys.remove(id);
           toast('That organiser link is not valid', true);
         }
@@ -136,12 +141,25 @@
       clearTimeout(pollTimer);
       S.t = null;
       if (parts[0] === 'new') {
+        if (!S.me) {
+          location.replace('#/signin?next=/new');
+          return;
+        }
         S.route = { name: 'new' };
+      } else if (parts[0] === 'signin' || parts[0] === 'signup') {
+        S.route = { name: parts[0], next: params.get('next') || '/' };
+      } else if (parts[0] === 'admin') {
+        S.route = { name: 'admin', users: null };
+        render();
+        S.route.users = await api('GET', '/admin/users').catch((e) => { S.error = e.message; return []; });
       } else {
         S.route = { name: 'home' };
         S.list = null;
         render();
-        S.list = await api('GET', '/tournaments').catch((e) => { S.error = e.message; return []; });
+        [S.list, S.mine] = await Promise.all([
+          api('GET', '/tournaments').catch((e) => { S.error = e.message; return []; }),
+          S.me ? api('GET', '/me/tournaments').catch(() => []) : null,
+        ]);
       }
     }
     render();
@@ -220,10 +238,13 @@
     let view;
     if (S.error) view = errorView(S.error);
     else if (S.route.name === 'new') view = viewNew();
+    else if (S.route.name === 'signin' || S.route.name === 'signup') view = viewAuth();
+    else if (S.route.name === 'admin') view = viewAdmin();
     else if (S.route.name === 'tournament') view = S.t ? viewTournament() : loading();
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
     else view = viewHome();
     app.replaceChildren(...[view].flat(Infinity).filter(Boolean));
+    renderNav();
   }
 
   app.addEventListener('focusout', () => setTimeout(() => {
@@ -247,21 +268,30 @@
         h('p', { class: 'lead' }, 'Draw groups, play a round-robin league, send the best into a knockout bracket — and let everyone follow every point as it happens.'),
         h('ul', { class: 'features' },
           ['🏸 Badminton', 'League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'].map((x) => h('li', {}, x))),
-        h('a', { class: 'btn btn-primary btn-lg', href: '#/new' }, 'Create a tournament')),
+        S.me
+          ? h('a', { class: 'btn btn-primary btn-lg', href: '#/new' }, 'Create a tournament')
+          : h('div', { class: 'actions' },
+            h('a', { class: 'btn btn-primary btn-lg', href: '#/signup' }, 'Get started — it\'s free'),
+            h('a', { class: 'btn btn-lg btn-ghost', href: '#/signin' }, 'Sign in'))),
+      S.me ? h('section', { class: 'section' },
+        h('h2', {}, 'My tournaments'),
+        S.mine == null ? loading()
+          : S.mine.length === 0 ? empty('Tournaments you create, or are added to as an organiser or umpire, show up here.')
+            : h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role])))) : null,
       h('section', { class: 'section' },
-        h('h2', {}, 'Tournaments'),
+        h('h2', {}, S.me ? 'All tournaments' : 'Tournaments'),
         S.list == null ? loading()
           : S.list.length === 0 ? empty('No tournaments yet — create the first one.')
-            : h('div', { class: 'card-list' }, S.list.map(tournamentCard))),
+            : h('div', { class: 'card-list' }, S.list.map((t) => tournamentCard(t)))),
     ];
   }
 
-  function tournamentCard(t) {
+  function tournamentCard(t, roleName) {
     const sport = S.sports.find((s) => s.id === t.sport);
     return h('a', { class: 'card t-card', href: `#/t/${t.id}` },
       h('div', { class: 'card-head' },
         h('h3', {}, t.name),
-        h('span', {}, keys.get(t.id) ? pill('org', 'Organiser') : null, ' ', pill(t.status, STATUS[t.status]))),
+        h('span', {}, roleName ? pill('org', roleName) : null, ' ', pill(t.status, STATUS[t.status]))),
       h('div', { class: 'muted small' }, [sport ? sport.name : t.sport, t.formatName, `${t.entries} entries`, t.venue].filter(Boolean).join(' · ')));
   }
 
@@ -322,8 +352,7 @@
         btn.disabled = true;
         try {
           const body = { sport: form.sport.value, ...readSettings(form, sport) };
-          const { id, adminKey } = await api('POST', '/tournaments', body);
-          keys.set(id, adminKey);
+          const { id } = await api('POST', '/tournaments', body);
           toast('Tournament created — now add your players');
           location.hash = `#/t/${id}`;
         } catch (err) {
@@ -353,22 +382,24 @@
     return tabs;
   }
 
+  function tabsWithTeam(t) {
+    const tabs = tabsFor(t);
+    if (t.can.manage) tabs.push({ id: 'team', label: 'Team' });
+    return tabs;
+  }
+
   function viewTournament() {
     const t = S.t;
     document.title = `${t.name} · Tonament`;
-    const tabs = tabsFor(t);
+    const tabs = tabsWithTeam(t);
     const active = tabs.some((x) => x.id === S.route.tab) ? S.route.tab : tabs[0].id;
-    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket };
+    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, team: panelTeam };
     return [
       h('header', { class: 't-header' },
         h('div', { class: 't-title' }, h('h1', {}, t.name), pill(t.status, STATUS[t.status])),
         h('p', { class: 'muted small' },
           [t.sport.name, t.formatName, t.venue].filter(Boolean).join(' · '), '  ', connDot())),
-      t.isAdmin ? h('div', { class: 'admin-bar' },
-        h('span', {}, '🔑 You are the organiser of this tournament'),
-        h('span', { class: 'actions' },
-          h('button', { class: 'btn btn-small', onclick: () => copy(`${location.origin}/#/t/${t.id}?key=${encodeURIComponent(keys.get(t.id))}`, 'Organiser link copied — share only with your umpires/co-organisers') }, 'Copy organiser link'),
-          h('button', { class: 'btn btn-small btn-ghost', onclick: () => copy(`${location.origin}/#/t/${t.id}`, 'Public link copied') }, 'Copy public link'))) : null,
+      roleBar(t),
       h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: `#/t/${t.id}/${x.id}`, class: x.id === active ? 'active' : '' }, x.label))),
       h('section', {}, panels[active](t)),
     ];
@@ -376,7 +407,7 @@
 
   // ----- entries tab
   function panelEntries(t) {
-    const editable = t.isAdmin && t.status === 'setup';
+    const editable = t.can.manage && t.status === 'setup';
     const groupLabel = (g) => (g == null || t.format === 'knockout' ? null : h('span', { class: 'pill' }, `Group ${String.fromCharCode(65 + g)}`));
     const list = h('div', { class: 'card' },
       h('div', { class: 'card-head' },
@@ -402,7 +433,7 @@
         list,
       ];
     }
-    return [addEntriesForm(t), list, startCard(t), settingsCard(t), dangerZone(t)];
+    return [addEntriesForm(t), list, startCard(t), settingsCard(t)];
   }
 
   function addEntriesForm(t) {
@@ -502,7 +533,10 @@
   }
 
   function dangerZone(t) {
-    return h('div', { class: 'actions', style: 'justify-content:flex-end' },
+    if (!t.can.delete) return null;
+    return h('div', { class: 'card danger' },
+      h('h2', {}, 'Delete tournament'),
+      h('p', { class: 'muted small' }, 'Removes the tournament, its draw and every result. This cannot be undone.'),
       h('button', {
         class: 'btn btn-small btn-danger',
         onclick: () => {
@@ -551,7 +585,7 @@
       return h('div', { class: 'banner info' },
         h('div', {}, h('strong', {}, 'League stage complete. '),
           `Top ${t.config.qualifiers} from each group go through to the knockout.`),
-        t.isAdmin
+        t.can.manage
           ? h('button', {
             class: 'btn btn-primary',
             onclick: () => act(async () => {
@@ -670,7 +704,7 @@
     return m.stage === 'league' ? t.status === 'league' : t.status === 'knockout';
   }
   function canScore(t, m) {
-    return t.isAdmin && m.a && m.b && (m.status === 'scheduled' || m.status === 'live') && stageOpen(t, m);
+    return t.can.score && m.a && m.b && (m.status === 'scheduled' || m.status === 'live') && stageOpen(t, m);
   }
 
   function viewMatch() {
@@ -686,12 +720,12 @@
         h('span', { class: 'actions' }, connDot(), statusTag(m))),
       scoreboard(m),
       canScore(t, m) ? scorer(t, m) : null,
-      t.isAdmin && m.status === 'done' && m.rallies
+      t.can.score && m.status === 'done' && m.rallies
         ? h('div', { class: 'actions center', style: 'margin-bottom:16px' },
           h('button', { class: 'btn btn-ghost', onclick: () => undo(t, m) }, '↶ Undo last point (reopens the match)'))
         : null,
       gamesTable(m),
-      !t.isAdmin && m.status !== 'done' ? h('p', { class: 'muted center small' }, 'This scoreboard updates live — no need to refresh.') : null,
+      !t.can.score && m.status !== 'done' ? h('p', { class: 'muted center small' }, 'This scoreboard updates live — no need to refresh.') : null,
     ];
   }
 
@@ -795,7 +829,7 @@
 
   // Keyboard scoring for umpires on a laptop.
   document.addEventListener('keydown', (e) => {
-    if (S.route.name !== 'match' || !S.t || !S.t.isAdmin || isEditing() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (S.route.name !== 'match' || !S.t || !S.t.can.score || isEditing() || e.metaKey || e.ctrlKey || e.altKey) return;
     const m = S.t.matches.find((x) => x.id === S.route.mid);
     if (!m) return;
     const k = e.key.toLowerCase();
@@ -806,10 +840,202 @@
     e.preventDefault();
   });
 
+
+  // ---------- roles & team
+  function roleBar(t) {
+    if (t.can.claim) {
+      return h('div', { class: 'admin-bar' },
+        h('span', {}, '🔑 You opened this with its organiser link. Add it to your account to manage it from anywhere.'),
+        h('button', {
+          class: 'btn btn-small btn-primary',
+          onclick: () => act(async () => { S.t = await api('POST', `${tPath(t)}/claim`, {}, t.id); }, 'Tournament added to your account'),
+        }, 'Add to my account'));
+    }
+    if (!t.role) return null;
+    const label = {
+      admin: 'You are a site admin',
+      owner: 'You own this tournament',
+      organiser: 'You are an organiser',
+      umpire: 'You are an umpire — open any match to score it',
+    }[t.role];
+    return h('div', { class: 'admin-bar' },
+      h('span', {}, `🔑 ${label}`,
+        !S.me ? h('span', { class: 'muted' }, ' (via a share link — ', h('a', { href: `#/signin?next=${encodeURIComponent(`/t/${t.id}`)}` }, 'sign in'), ' to keep it in your account)') : null),
+      h('button', { class: 'btn btn-small btn-ghost', onclick: () => copy(`${location.origin}/#/t/${t.id}`, 'Public link copied') }, 'Copy public link'));
+  }
+
+  async function loadMembers(t) {
+    try {
+      S.members = { tid: t.id, list: await api('GET', `${tPath(t)}/members`, undefined, t.id) };
+    } catch (e) {
+      S.members = { tid: t.id, list: [], error: e.message };
+    }
+    render();
+  }
+
+  function panelTeam(t) {
+    if (!S.members || S.members.tid !== t.id) {
+      S.members = { tid: t.id, list: null };
+      loadMembers(t);
+    }
+    const list = S.members.list;
+    const emailInput = h('input', { name: 'email', type: 'email', required: true, placeholder: 'name@example.com', autocomplete: 'off' });
+    const roleSelect = h('select', { name: 'role' },
+      h('option', { value: 'umpire' }, 'Umpire — can score matches'),
+      h('option', { value: 'organiser' }, 'Organiser — can manage everything'));
+    const setMembers = (members) => { S.members = { tid: t.id, list: members }; };
+    const linkRow = (label, hint, url, msg) => h('div', { class: 'link-row' },
+      h('div', {}, h('strong', {}, label), h('div', { class: 'hint' }, hint)),
+      h('button', { class: 'btn btn-small', onclick: () => copy(url, msg) }, 'Copy link'));
+
+    return [
+      h('div', { class: 'card' },
+        h('h2', {}, 'Team'),
+        h('p', { class: 'muted small' }, 'Add people by email. If they don\'t have an account yet, they get access as soon as they sign up with that email.'),
+        list == null ? loading()
+          : h('ul', { class: 'members' }, list.map((m) => h('li', {},
+            h('div', { class: 'name' },
+              h('div', {}, m.name || m.email, ' ', m.joined ? null : h('span', { class: 'pill' }, 'Invited')),
+              m.name ? h('div', { class: 'muted small' }, m.email) : h('div', { class: 'muted small' }, 'Not signed up yet')),
+            pill(m.role === 'owner' ? 'org' : '', m.roleName),
+            m.role === 'owner' ? null : h('button', {
+              class: 'icon-btn', title: 'Remove', 'aria-label': `Remove ${m.email}`,
+              onclick: () => {
+                if (!confirm(`Remove ${m.name || m.email} from the team?`)) return;
+                act(async () => setMembers(await api('DELETE', `${tPath(t)}/members/${m.id}`, undefined, t.id)), 'Removed');
+              },
+            }, '✕')))),
+        h('form', {
+          class: 'team-form',
+          onsubmit: (e) => {
+            e.preventDefault();
+            const email = emailInput.value;
+            act(async () => {
+              setMembers(await api('POST', `${tPath(t)}/members`, { email, role: roleSelect.value }, t.id));
+              emailInput.value = '';
+            }, `${email} added`);
+          },
+        }, emailInput, roleSelect, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add'))),
+      t.links ? h('div', { class: 'card' },
+        h('h2', {}, 'Share links'),
+        h('p', { class: 'muted small' }, 'For people without an account — e.g. a volunteer scoring on a borrowed phone. Anyone with a link gets its access, so share carefully.'),
+        linkRow('Scorer link', 'Can score matches only.', `${location.origin}/#/t/${t.id}?key=${encodeURIComponent(t.links.scorer)}`, 'Scorer link copied'),
+        linkRow('Organiser link', 'Can manage the whole tournament.', `${location.origin}/#/t/${t.id}?key=${encodeURIComponent(t.links.organiser)}`, 'Organiser link copied — keep it private'),
+        linkRow('Public link', 'Anyone can follow live scores.', `${location.origin}/#/t/${t.id}`, 'Public link copied')) : null,
+      dangerZone(t),
+    ];
+  }
+
+  // ---------- accounts
+  const nav = document.getElementById('nav');
+  let navFor;
+  function renderNav() {
+    const who = S.me ? `${S.me.id}` : '';
+    if (!nav || navFor === who) return; // re-rendering would close an open menu
+    navFor = who;
+    const initials = (name) => name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+    nav.replaceChildren(...(S.me
+      ? [
+        h('a', { class: 'btn btn-small btn-primary', href: '#/new' }, 'New tournament'),
+        h('details', { class: 'menu' },
+          h('summary', { class: 'avatar', title: S.me.email, 'aria-label': 'Account menu' }, initials(S.me.name)),
+          h('div', { class: 'menu-panel' },
+            h('div', { class: 'menu-head' }, h('strong', {}, S.me.name), h('div', { class: 'muted small' }, S.me.email)),
+            h('a', { href: '#/', onclick: closeMenu }, 'My tournaments'),
+            S.me.isAdmin ? h('a', { href: '#/admin', onclick: closeMenu }, 'Admin · users') : null,
+            h('button', { onclick: signOut }, 'Sign out'))),
+      ]
+      : [
+        h('a', { class: 'nav-link', href: '#/signin' }, 'Sign in'),
+        h('a', { class: 'btn btn-small btn-primary', href: '#/signup' }, 'Sign up'),
+      ]).filter(Boolean));
+  }
+
+  function closeMenu(e) {
+    e.target.closest('details').removeAttribute('open');
+  }
+
+  async function signOut() {
+    try { await api('POST', '/auth/logout', {}); } catch { /* signed out locally anyway */ }
+    S.me = null;
+    S.t = null;
+    S.members = null;
+    toast('Signed out');
+    if (location.hash === '#/' || location.hash === '') route();
+    else location.hash = '#/';
+  }
+
+  const safeNext = (next) => (typeof next === 'string' && next.startsWith('/') && !next.startsWith('//') ? next : '/');
+
+  function viewAuth() {
+    const signup = S.route.name === 'signup';
+    document.title = `${signup ? 'Sign up' : 'Sign in'} · Tonament`;
+    const next = safeNext(S.route.next);
+    if (S.me) {
+      setTimeout(() => { location.hash = `#${next}`; });
+      return loading();
+    }
+    const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, signup ? 'Create account' : 'Sign in');
+    const form = h('form', {
+      class: 'card form auth-card',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        btn.disabled = true;
+        try {
+          const body = Object.fromEntries(new FormData(form));
+          const { user } = await api('POST', signup ? '/auth/signup' : '/auth/login', body);
+          S.me = user;
+          S.t = null; // reload tournaments with this user's access
+          toast(signup ? `Welcome, ${user.name}!` : `Signed in as ${user.name}`);
+          location.hash = `#${next}`;
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+        }
+      },
+    },
+    h('h1', {}, signup ? 'Create your account' : 'Sign in'),
+    h('p', { class: 'muted' }, signup
+      ? 'Run your own tournaments, and score matches you\'ve been added to.'
+      : 'Welcome back.'),
+    signup ? field('Your name', h('input', { name: 'name', required: true, maxlength: 60, autocomplete: 'name' })) : null,
+    field('Email', h('input', { name: 'email', type: 'email', required: true, autocomplete: 'email' })),
+    field('Password', h('input', {
+      name: 'password', type: 'password', required: true, minlength: signup ? 8 : null,
+      autocomplete: signup ? 'new-password' : 'current-password',
+    }), null, signup ? 'At least 8 characters.' : null),
+    btn,
+    h('p', { class: 'center small', style: 'margin:0' },
+      signup ? 'Already have an account? ' : 'New to Tonament? ',
+      h('a', { href: `#/${signup ? 'signin' : 'signup'}?next=${encodeURIComponent(next)}` }, signup ? 'Sign in' : 'Create an account')));
+    return form;
+  }
+
+  function viewAdmin() {
+    document.title = 'Admin · Tonament';
+    if (!S.me || !S.me.isAdmin) return errorView('Site admins only.');
+    const users = S.route.users;
+    return h('div', { class: 'card' },
+      h('h1', {}, 'Users'),
+      users == null ? loading() : h('div', { class: 'table-wrap' }, h('table', {},
+        h('thead', {}, h('tr', {}, ['Name', 'Email', 'Joined', 'Owns', 'Helps on'].map((c, i) => h('th', { class: i > 2 ? 'num' : '' }, c)))),
+        h('tbody', {}, users.map((u) => h('tr', {},
+          h('td', { class: 'name' }, u.name, u.isAdmin ? [' ', pill('org', 'Admin')] : null),
+          h('td', {}, u.email),
+          h('td', {}, new Date(u.createdAt).toLocaleDateString()),
+          h('td', { class: 'num' }, u.owned),
+          h('td', { class: 'num' }, u.helping)))))),
+      users ? h('p', { class: 'muted small', style: 'margin:8px 0 0' }, `${users.length} user${users.length === 1 ? '' : 's'}`) : null);
+  }
+
   // ---------- boot
   window.addEventListener('hashchange', route);
-  api('GET', '/sports')
-    .then((list) => { S.sports = list; })
-    .catch(() => { S.sports = []; })
-    .finally(route);
+  Promise.all([
+    api('GET', '/sports').catch(() => []),
+    api('GET', '/auth/me').catch(() => ({ user: null })),
+  ]).then(([list, me]) => {
+    S.sports = list;
+    S.me = me.user;
+    route();
+  });
 })();
