@@ -1,0 +1,16 @@
+{
+  "name": "tonament",
+  "version": "0.1.0",
+  "description": "Tournament management with live scoring — league + knockout. Starting with badminton.",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
+  }
+}

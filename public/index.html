@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Tonament — tournaments, scored live</title>
+  <meta name="description" content="Run league and knockout tournaments and score every match live. Starting with badminton.">
+  <meta name="theme-color" content="#0f766e">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="#/" class="brand" aria-label="Tonament home">
+        <img src="/favicon.svg" alt="" width="28" height="28">
+        <span>tonament</span>
+      </a>
+      <a href="#/new" class="btn btn-small btn-primary">New tournament</a>
+    </div>
+  </header>
+  <main id="app" class="container" aria-live="polite"></main>
+  <footer class="footer">tonament.com · League &amp; knockout tournaments with live scoring</footer>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
