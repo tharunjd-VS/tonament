@@ -280,24 +280,29 @@
 
   // ---------- home
   function viewHome() {
-    document.title = 'Tonament — tournaments, scored live';
+    document.title = 'Tonament — One platform. Every sport. Every tournament.';
+    const explore = (e) => {
+      e.preventDefault();
+      document.getElementById('all-tournaments')?.scrollIntoView({ behavior: 'smooth' });
+    };
     return [
       h('section', { class: 'hero' },
+        h('p', { class: 'eyebrow' }, 'One platform.', h('br'), 'Every sport.', h('br'), h('b', {}, 'Every tournament.')),
         h('h1', {}, 'Run your tournament. ', h('span', { class: 'accent' }, 'Score it live.')),
         h('p', { class: 'lead' }, 'Draw groups, play a round-robin league, send the best into a knockout bracket — and let everyone follow every point as it happens.'),
         h('ul', { class: 'features' },
-          ['🏸 Badminton', 'League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'].map((x) => h('li', {}, x))),
-        S.me
-          ? h('a', { class: 'btn btn-primary btn-lg', href: '#/new' }, 'Create a tournament')
-          : h('div', { class: 'actions' },
-            h('a', { class: 'btn btn-primary btn-lg', href: '#/signup' }, 'Get started — it\'s free'),
-            h('a', { class: 'btn btn-lg btn-ghost', href: '#/signin' }, 'Sign in'))),
+          ['Badminton', 'League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'].map((x) => h('li', {}, x))),
+        h('div', { class: 'actions' },
+          S.me
+            ? h('a', { class: 'btn btn-primary btn-lg', href: '#/new' }, 'Create tournament')
+            : h('a', { class: 'btn btn-primary btn-lg', href: '#/signup' }, 'Get started — it\'s free'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '#/', onclick: explore }, 'Explore tournaments'))),
       S.me ? h('section', { class: 'section' },
         h('h2', {}, 'My tournaments'),
         S.mine == null ? loading()
           : S.mine.length === 0 ? empty('Tournaments you create, or are added to as an organiser or umpire, show up here.')
             : h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role])))) : null,
-      h('section', { class: 'section' },
+      h('section', { class: 'section', id: 'all-tournaments' },
         h('h2', {}, S.me ? 'All tournaments' : 'Tournaments'),
         S.list == null ? loading()
           : S.list.length === 0 ? empty('No tournaments yet — create the first one.')
@@ -1032,6 +1037,36 @@
     ];
   }
 
+  // ---------- theme (Auto follows the device; dark is the brand default)
+  const THEMES = [['auto', 'Auto'], ['dark', 'Dark'], ['light', 'Light']];
+  const themeQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+  const themePref = () => document.documentElement.getAttribute('data-theme-pref') || 'auto';
+
+  function applyTheme(pref) {
+    const light = themeQuery && themeQuery.matches;
+    document.documentElement.setAttribute('data-theme', pref === 'auto' ? (light ? 'light' : 'dark') : pref);
+    document.documentElement.setAttribute('data-theme-pref', pref);
+    for (const b of document.querySelectorAll('.theme-switch button')) {
+      b.setAttribute('aria-pressed', String(b.dataset.theme === pref));
+    }
+  }
+
+  function setTheme(pref) {
+    try { localStorage.setItem('tonament:theme', pref); } catch { /* storage unavailable: applies to this visit only */ }
+    applyTheme(pref);
+  }
+
+  function themeSwitch() {
+    return h('div', { class: 'theme-switch', role: 'group', 'aria-label': 'Colour theme' },
+      THEMES.map(([value, label]) => h('button', {
+        type: 'button', 'data-theme': value, 'aria-pressed': String(themePref() === value),
+        onclick: (e) => { e.stopPropagation(); setTheme(value); },
+      }, label)));
+  }
+
+  if (themeQuery) themeQuery.addEventListener('change', () => { if (themePref() === 'auto') applyTheme('auto'); });
+  document.getElementById('theme-switch-footer')?.replaceChildren(themeSwitch());
+
   // ---------- accounts
   const nav = document.getElementById('nav');
   let navFor;
@@ -1049,7 +1084,8 @@
             h('div', { class: 'menu-head' }, h('strong', {}, S.me.name), h('div', { class: 'muted small' }, S.me.email)),
             h('a', { href: '#/', onclick: closeMenu }, 'My tournaments'),
             S.me.isAdmin ? h('a', { href: '#/admin', onclick: closeMenu }, 'Admin · users') : null,
-            h('button', { onclick: signOut }, 'Sign out'))),
+            h('button', { onclick: signOut }, 'Sign out'),
+            h('div', { class: 'menu-theme' }, 'Theme', themeSwitch()))),
       ]
       : [
         h('a', { class: 'nav-link', href: '#/signin' }, 'Sign in'),

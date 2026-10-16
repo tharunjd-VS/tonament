@@ -32,20 +32,39 @@ function createMailer({
   };
 }
 
-// Simple, client-safe layout: one column, inline styles, a single button.
+// Brand layout (docs/BRAND.md): navy header with the white logo, mist page,
+// white card, Electric Lime button with navy text. Inline styles and tables
+// only, so it holds up in Gmail and Outlook. The logo is a PNG (mail apps
+// don't show SVG) served from the same site the email's link points to.
+const NAVY = '#0B1220';
+const LIME = '#A3E635';
+const SLATE = '#475569';
+const FONT = "Outfit,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+
 function layout({ heading, body, button, url, footer }) {
-  const html = `<!doctype html><html><body style="margin:0;background:#f5f7f8;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#11181c">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:32px 16px">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#fff;border:1px solid #dde3e6;border-radius:14px">
+  let logo = '';
+  try {
+    logo = `${new URL(url).origin}/brand/email-logo.png`;
+  } catch {
+    /* no absolute link: fall back to the text logo */
+  }
+  const brand = logo
+    ? `<img src="${esc(logo)}" width="180" height="28" alt="TONAMENT" style="display:block;border:0;height:28px;width:auto;color:#ffffff;font:700 18px ${FONT};letter-spacing:.12em">`
+    : `<span style="color:#ffffff;font:700 18px ${FONT};letter-spacing:.12em">TONAMENT</span>`;
+  return `<!doctype html><html><head><meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"></head>
+<body style="margin:0;background:#E5E7EB;font-family:${FONT};color:${NAVY}">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#E5E7EB"><tr><td align="center" style="padding:32px 16px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:14px;overflow:hidden">
+<tr><td style="background:${NAVY};padding:20px 28px;border-bottom:4px solid ${LIME}">${brand}</td></tr>
 <tr><td style="padding:28px">
-<div style="font-weight:800;font-size:20px;color:#0f766e;margin-bottom:20px">tonament</div>
-<h1 style="font-size:20px;margin:0 0 12px">${esc(heading)}</h1>
-${body.map((p) => `<p style="font-size:15px;line-height:1.5;margin:0 0 12px">${p}</p>`).join('')}
-<p style="margin:24px 0"><a href="${esc(url)}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;font-weight:700;padding:12px 20px;border-radius:10px">${esc(button)}</a></p>
-<p style="font-size:13px;color:#5b676d;line-height:1.5;margin:0">Or open this link: <a href="${esc(url)}" style="color:#0f766e;word-break:break-all">${esc(url)}</a></p>
-${footer ? `<p style="font-size:13px;color:#5b676d;line-height:1.5;margin:16px 0 0">${footer}</p>` : ''}
-</td></tr></table></td></tr></table></body></html>`;
-  return html;
+<h1 style="font:700 21px/1.3 ${FONT};margin:0 0 14px;color:${NAVY}">${esc(heading)}</h1>
+${body.map((p) => `<p style="font:400 15px/1.55 ${FONT};margin:0 0 12px;color:${NAVY}">${p}</p>`).join('')}
+<p style="margin:24px 0"><a href="${esc(url)}" style="display:inline-block;background:${LIME};color:${NAVY};text-decoration:none;font:700 15px ${FONT};padding:13px 22px;border-radius:10px">${esc(button)}</a></p>
+<p style="font:400 13px/1.5 ${FONT};color:${SLATE};margin:0">Or open this link: <a href="${esc(url)}" style="color:${NAVY};word-break:break-all">${esc(url)}</a></p>
+${footer ? `<p style="font:400 13px/1.5 ${FONT};color:${SLATE};margin:16px 0 0">${footer}</p>` : ''}
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #E5E7EB;font:600 10px/1.6 ${FONT};letter-spacing:.2em;text-transform:uppercase;color:${SLATE}">One platform. Every sport. Every tournament.</td></tr>
+</table></td></tr></table></body></html>`;
 }
 
 function passwordResetEmail({ name, url }) {

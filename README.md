@@ -15,6 +15,10 @@ Tournament management with live scoring for **tonament.com**. Starts with badmin
 - **Share links:** each tournament also has a *scorer link* (scoring only) and an *organiser link* (full control) for people without an account, such as a volunteer on a borrowed phone. Tournaments created before accounts existed can be added to your account from the organiser link.
 - **Site admins:** anyone whose email is listed in `ADMIN_EMAILS` can manage every tournament and see all users at `/#/admin`.
 
+## Brand
+
+The look follows the Tonament brand: Deep Navy, Electric Lime, Slate and Mist, the Outfit typeface, and the T mark with its lime dot. Dark theme is the default, with a light theme and an Auto/Dark/Light switch. The full rules are in [docs/BRAND.md](docs/BRAND.md). Logos and icons are in `public/brand/`; to rebuild them, run `python3 scripts/brand/generate_logos.py && node scripts/brand/render.js`.
+
 ## Run it locally
 
 You need Node.js 20 or later.
@@ -77,6 +81,10 @@ server/
   sports/badminton.js re-exports public/sports/badminton.js (the scoring rules, shared with the browser)
   sports/index.js     sport registry
 public/               single-page front end (plain JS, no build step)
+  brand/              logos, app icons, email logo, link-preview image
+  fonts/              Outfit (self-hosted)
+docs/BRAND.md         brand guidelines
+scripts/brand/        logo generator and PNG renderer
 test/                 unit and integration tests
 vercel.json           Vercel config: static output and API rewrite
 ```

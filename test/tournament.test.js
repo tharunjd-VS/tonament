@@ -451,6 +451,7 @@ test('password reset by email', async () => {
       assert.match(mail.subject, /Reset your Tonament password/);
       const [link, token] = mail.text.match(/https:\/\/tonament\.example\/#\/reset\?token=([\w-]+)/);
       assert.ok(mail.html.includes(link));
+      assert.ok(mail.html.includes('src="https://tonament.example/brand/email-logo.png"')); // logo from the same site as the link
 
       // At most one email a minute.
       await anon('POST', '/api/auth/forgot', { email: 'rita@x.dev' });
