@@ -139,6 +139,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
   const auth = createAuth(db, { mailer });
 
   const T = '/api/tournaments/([a-z0-9-]+)';
+  const ev = (c) => c.body.event ?? (c.query.get('event') || undefined);
   const N = '(\\d+)';
   // [method, path, handler, cdnSeconds]. Handlers get ctx = { body, query,
   // actor: { user, key }, req, setCookie }. A route with cdnSeconds > 0 is
@@ -159,19 +160,25 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['GET', `${T}/members`, (c, id) => svc.listMembers(id, c.actor)],
     ['POST', `${T}/members`, (c, id) => svc.addMember(id, c.actor, c.body, { baseUrl: baseUrl(c.req) })],
     ['DELETE', `${T}/members/${N}`, (c, id, mid) => svc.removeMember(id, c.actor, mid)],
-    ['POST', `${T}/entries`, (c, id) => svc.addEntries(id, c.actor, c.body.names, { walkIn: c.body.walkIn })],
+    // Event-scoped calls take `event` (body or ?event=); it can be left out
+    // when the tournament has a single event.
+    ['POST', `${T}/events`, (c, id) => svc.addEvents(id, c.actor, c.body)],
+    ['PUT', `${T}/events/order`, (c, id) => svc.reorderEvents(id, c.actor, c.body.ids)],
+    ['PATCH', `${T}/events/${N}`, (c, id, eid) => svc.updateEvent(id, c.actor, eid, c.body)],
+    ['DELETE', `${T}/events/${N}`, (c, id, eid) => svc.deleteEvent(id, c.actor, eid)],
+    ['POST', `${T}/entries`, (c, id) => svc.addEntries(id, c.actor, c.body.names, { walkIn: c.body.walkIn, event: ev(c) })],
     ['POST', `${T}/visibility`, (c, id) => svc.setVisibility(id, c.actor, c.body.visibility)],
-    ['POST', `${T}/register`, (c, id) => svc.register(id, c.body, { baseUrl: baseUrl(c.req) })],
+    ['POST', `${T}/register`, (c, id) => svc.register(id, { ...c.body, event: ev(c) }, { baseUrl: baseUrl(c.req) })],
     ['POST', `${T}/entries/${N}/confirm`, (c, id, eid) => svc.confirmEntry(id, c.actor, eid)],
     ['POST', `${T}/entries/${N}/check-in`, (c, id, eid) => svc.checkIn(id, c.actor, eid, c.body.here !== false)],
-    ['POST', `${T}/check-in-all`, (c, id) => svc.checkInAll(id, c.actor, c.body.here !== false)],
+    ['POST', `${T}/check-in-all`, (c, id) => svc.checkInAll(id, c.actor, c.body.here !== false, { event: ev(c) })],
     ['POST', `${T}/entries/${N}/withdraw`, (c, id, eid) => svc.withdraw(id, c.actor, eid)],
-    ['POST', `${T}/late-entry`, (c, id) => svc.lateEntry(id, c.actor, c.body)],
-    ['POST', `${T}/redraw`, (c, id) => svc.redraw(id, c.actor)],
-    ['PUT', `${T}/entries/order`, (c, id) => svc.reorderEntries(id, c.actor, c.body.ids)],
+    ['POST', `${T}/late-entry`, (c, id) => svc.lateEntry(id, c.actor, { ...c.body, event: ev(c) })],
+    ['POST', `${T}/redraw`, (c, id) => svc.redraw(id, c.actor, { event: ev(c) })],
+    ['PUT', `${T}/entries/order`, (c, id) => svc.reorderEntries(id, c.actor, c.body.ids, { event: ev(c) })],
     ['DELETE', `${T}/entries/${N}`, (c, id, eid) => svc.removeEntry(id, c.actor, eid)],
-    ['POST', `${T}/start`, (c, id) => svc.start(id, c.actor, { skipUnconfirmed: Boolean(c.body.skipUnconfirmed) })],
-    ['POST', `${T}/knockout`, (c, id) => svc.startKnockout(id, c.actor)],
+    ['POST', `${T}/start`, (c, id) => svc.start(id, c.actor, { skipUnconfirmed: Boolean(c.body.skipUnconfirmed), event: ev(c) })],
+    ['POST', `${T}/knockout`, (c, id) => svc.startKnockout(id, c.actor, { event: ev(c) })],
     ['PATCH', `${T}/matches/${N}`, (c, id, mid) => svc.updateMatch(id, c.actor, mid, c.body)],
     ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.actor, mid, c.body.side, c.body.at)],
     ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid, c.body.at)],

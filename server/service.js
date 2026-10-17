@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const sports = require('./sports');
 const formats = require('./formats');
 const regions = require('../public/regions');
+const catalog = require('../public/sports/events');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
 const { inviteEmail, receiptEmail, waitingEmail } = require('./email');
@@ -16,6 +17,11 @@ const FORMATS = {
 };
 const MAX_ENTRIES = 128;
 const VISIBILITY = ['private', 'link', 'public'];
+// Settings that belong to the tournament as a whole; everything else in a
+// config (format details, scoring, caps) belongs to each event.
+const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
+const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'discipline', 'gender', 'age', 'level'];
+const eventConfigOf = (config) => Object.fromEntries(Object.entries(config).filter(([k]) => !TOURNAMENT_KEYS.includes(k)));
 
 const ROLES = { owner: 'Owner', organiser: 'Organiser', umpire: 'Umpire' };
 const fail = (status, message, code) => {
@@ -100,11 +106,15 @@ const saveDetails = (q, t, d) =>
     ...DETAIL_COLUMNS.map((c) => d[c]), t.id,
   ]);
 
+// Self-entry is open on the tournament and at least one event hasn't started.
+const ENTRIES_OPEN_SQL = `COALESCE((t.config->>'selfEntry')::boolean, true)
+  AND (t.config->>'entriesCloseAt' IS NULL OR (t.config->>'entriesCloseAt')::timestamptz > now())
+  AND EXISTS (SELECT 1 FROM events ev WHERE ev.tournament_id = t.id AND ev.status = 'setup')`;
+
 // Tournament list cards (home page search and "My tournaments").
 const CARD_COLUMNS = `t.id, t.name, t.venue, t.sport, t.format, t.status, t.visibility, t.created_at AS "createdAt",
   t.city, t.region, t.country, t.starts_on AS "startsOn", t.ends_on AS "endsOn",
-  (t.status = 'setup' AND COALESCE((t.config->>'selfEntry')::boolean, false)
-    AND (t.config->>'entriesCloseAt' IS NULL OR (t.config->>'entriesCloseAt')::timestamptz > now())) AS "entriesOpen",
+  (${ENTRIES_OPEN_SQL}) AS "entriesOpen",
   (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries`;
 const WHEN = ['upcoming', 'week', 'month', 'past', 'any'];
 
@@ -123,24 +133,77 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return { ...row, sportDef: sports.get(row.sport) };
   }
 
-  const entriesOf = (q, tid) =>
-    q(
-      `SELECT id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed
-       FROM entries WHERE tournament_id = $1 ORDER BY seed, id`,
-      [tid],
-    );
+  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed';
+
+  // Entries and matches of one event (`ev` is an event context, see eventFor).
+  const entriesOf = (q, ev) =>
+    q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE event_id = $1 ORDER BY seed, id`, [ev.eventId]);
 
   const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true }) =>
     q(
-      `INSERT INTO entries (tournament_id, name, seed, group_no, source, checked_in, contact, confirmed)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-      [t.id, name, seed, group, source, checkedIn, contact, confirmed],
+      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed],
     );
 
-  const matchesOf = (q, tid) =>
-    q(`SELECT * FROM matches WHERE tournament_id = $1 ORDER BY stage = 'knockout', round, group_no, slot, id`, [tid]);
+  const MATCH_ORDER = `stage = 'knockout', round, group_no, slot, id`;
+  const matchesOf = (q, ev) => q(`SELECT * FROM matches WHERE event_id = $1 ORDER BY ${MATCH_ORDER}`, [ev.eventId]);
 
-  async function matchOf(q, t, mid) {
+  // ---------- events
+  // An event context is the tournament row plus one event's format, status
+  // and config (the tournament-wide self-entry settings merged in), so the
+  // draw and scoring code works on "t" just as it did with one draw.
+
+  const eventsOf = (q, tid) => q('SELECT * FROM events WHERE tournament_id = $1 ORDER BY position, id', [tid]);
+
+  function eventContext(t, row) {
+    const config = { ...row.config };
+    for (const k of TOURNAMENT_KEYS) config[k] = t.config[k] ?? (k === 'selfEntry' ? true : null);
+    return { ...t, eventId: row.id, event: row, format: row.format, status: row.status, config };
+  }
+
+  // The event to act on: the one asked for, or the only one.
+  async function eventFor(q, t, eventId) {
+    const rows = await eventsOf(q, t.id);
+    let row;
+    if (given(eventId)) {
+      row = rows.find((r) => r.id === Number(eventId));
+      if (!row) fail(404, 'Event not found');
+    } else if (rows.length === 1) {
+      row = rows[0];
+    } else {
+      fail(400, 'Choose an event', 'event');
+    }
+    return eventContext(t, row);
+  }
+
+  async function eventOfEntry(q, t, entryId) {
+    const [r] = await q('SELECT event_id FROM entries WHERE id = $1 AND tournament_id = $2', [Number(entryId) || 0, t.id]);
+    if (!r) fail(404, 'Entry not found');
+    return eventFor(q, t, r.event_id);
+  }
+
+  const eventLabel = (ev) => catalog.eventName(ev.event);
+
+  async function saveEventConfig(q, ev) {
+    await q('UPDATE events SET config = $1::jsonb WHERE id = $2', [JSON.stringify(eventConfigOf(ev.config)), ev.eventId]);
+  }
+
+  // The tournament's status and format summarise its events: with one event
+  // they are that event's; with several, "live" once any has started.
+  async function syncTournament(q, tid) {
+    const rows = await eventsOf(q, tid);
+    if (!rows.length) return;
+    let status = rows[0].status;
+    if (rows.length > 1) {
+      if (rows.every((r) => r.status === 'setup')) status = 'setup';
+      else if (rows.every((r) => r.status === 'completed')) status = 'completed';
+      else status = 'live';
+    }
+    await q('UPDATE tournaments SET status = $1, format = $2 WHERE id = $3', [status, rows[0].format, tid]);
+  }
+
+  async function matchOf(q, t, mid) { // any event of the tournament
     const [m] = await q('SELECT * FROM matches WHERE id = $1 AND tournament_id = $2', [Number(mid) || 0, t.id]);
     if (!m) fail(404, 'Match not found');
     return m;
@@ -148,30 +211,31 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   async function koMatch(q, t, round, slot) {
     const [m] = await q(
-      `SELECT * FROM matches WHERE tournament_id = $1 AND stage = 'knockout' AND round = $2 AND slot = $3`,
-      [t.id, round, slot],
+      `SELECT * FROM matches WHERE event_id = $1 AND stage = 'knockout' AND round = $2 AND slot = $3`,
+      [t.eventId, round, slot],
     );
     return m;
   }
 
   async function pendingLeague(q, t) {
     const [{ n }] = await q(
-      `SELECT COUNT(*)::int AS n FROM matches WHERE tournament_id = $1 AND stage = 'league' AND status <> 'done'`,
-      [t.id],
+      `SELECT COUNT(*)::int AS n FROM matches WHERE event_id = $1 AND stage = 'league' AND status <> 'done'`,
+      [t.eventId],
     );
     return n;
   }
 
   const insertMatch = (q, t, stage, group, round, slot, a, b, status = 'scheduled', winner = null, extra = {}) =>
     q(
-      `INSERT INTO matches (tournament_id, stage, group_no, round, slot, a_id, b_id, status, winner_id, walkover, catch_up)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [t.id, stage, group, round, slot, a, b, status, winner, Boolean(extra.walkover), Boolean(extra.catchUp)],
+      `INSERT INTO matches (tournament_id, event_id, stage, group_no, round, slot, a_id, b_id, status, winner_id, walkover, catch_up)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [t.id, t.eventId, stage, group, round, slot, a, b, status, winner, Boolean(extra.walkover), Boolean(extra.catchUp)],
     );
 
   async function setStatus(q, t, status) {
-    await q('UPDATE tournaments SET status = $1 WHERE id = $2', [status, t.id]);
+    await q('UPDATE events SET status = $1 WHERE id = $2', [status, t.eventId]);
     t.status = status;
+    await syncTournament(q, t.id);
   }
 
   // ---------- access
@@ -234,6 +298,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
     });
   }
 
+  // The same, for one event (or the event an entry belongs to).
+  const mutateEvent = (id, actor, eventId, fn) => mutate(id, actor, async (q, t) => fn(q, await eventFor(q, t, eventId)));
+  const mutateEntry = (id, actor, entryId, fn) => mutate(id, actor, async (q, t) => fn(q, await eventOfEntry(q, t, entryId)));
+
+  function eventFields(input, prev) {
+    try {
+      return catalog.normalize(input, prev);
+    } catch (err) {
+      return fail(400, err.message);
+    }
+  }
+
   const given = (v) => v !== undefined && v !== null && v !== '';
 
   function closeTime(value) {
@@ -267,9 +343,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // A maximum above the free limit needs the Event Pass.
   function checkMaxEntries(config, plan) {
-    const cfg = billingConfig();
-    if (!cfg.enabled || plan === 'pass' || !config.maxEntries || config.maxEntries <= cfg.freeLimit) return;
-    fail(402, `A maximum of ${config.maxEntries} entries needs the Event Pass (the free plan allows up to ${cfg.freeLimit}).`, 'upgrade');
+    const limit = planLimit(plan);
+    if (!config.maxEntries || config.maxEntries <= limit) return;
+    fail(402, `A maximum of ${config.maxEntries} entries needs the Event Pass (the free plan allows up to ${limit}).`, 'upgrade');
   }
 
   const groupsFor = (t, n) => (t.config.groupSize ? formats.groupCount(n, t.config.groupSize) : t.config.groups);
@@ -293,29 +369,44 @@ function createService(db, { mailer, fetchImpl } = {}) {
     );
   }
 
-  // How many confirmed entries self-entry can fill: the organiser's maximum,
-  // the free plan's limit and the hard cap, whichever is lowest.
-  function capacity(t) {
+  // Confirmed entries the tournament's plan allows, across all its events.
+  function planLimit(plan) {
     const cfg = billingConfig();
-    const caps = [MAX_ENTRIES];
-    if (t.config.maxEntries) caps.push(t.config.maxEntries);
-    if (cfg.enabled && t.plan !== 'pass') caps.push(cfg.freeLimit);
-    return Math.min(...caps);
+    return cfg.enabled && plan !== 'pass' ? cfg.freeLimit : Infinity;
   }
 
-  // Confirms waiting self-entries in sign-up order while there's room (after
-  // the Event Pass is bought). Returns how many were confirmed.
+  // An event's own cap: the organiser's maximum, or the hard cap.
+  const eventCap = (ev) => Math.min(MAX_ENTRIES, ev.config.maxEntries || MAX_ENTRIES);
+
+  // Can one more self-entry be confirmed in this event right now?
+  async function hasRoom(q, ev) {
+    const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM entries WHERE event_id = $1 AND confirmed', [ev.eventId]);
+    if (n >= eventCap(ev)) return false;
+    return (await confirmedCount(q, ev)) < planLimit(ev.plan);
+  }
+
+  // Confirms waiting self-entries in sign-up order wherever there's room
+  // (after an upgrade or a higher maximum). Returns how many were confirmed.
   async function confirmWaiting(q, t) {
-    if (t.status !== 'setup') return 0;
-    const room = capacity(t) - (await confirmedCount(q, t));
-    if (room <= 0) return 0;
-    const rows = await q(
-      `UPDATE entries SET confirmed = true WHERE id IN (
-         SELECT id FROM entries WHERE tournament_id = $1 AND NOT confirmed ORDER BY id LIMIT $2
-       ) RETURNING id`,
-      [t.id, room],
+    const events = new Map((await eventsOf(q, t.id)).filter((e) => e.status === 'setup').map((e) => [e.id, eventContext(t, e)]));
+    const counts = new Map(
+      (await q('SELECT event_id, COUNT(*)::int AS n FROM entries WHERE tournament_id = $1 AND confirmed GROUP BY event_id', [t.id]))
+        .map((r) => [r.event_id, r.n]),
     );
-    return rows.length;
+    let total = await confirmedCount(q, t);
+    const limit = planLimit(t.plan);
+    const waiting = await q('SELECT id, event_id FROM entries WHERE tournament_id = $1 AND NOT confirmed ORDER BY id', [t.id]);
+    let confirmed = 0;
+    for (const w of waiting) {
+      if (total >= limit) break;
+      const ev = events.get(w.event_id);
+      if (!ev || (counts.get(w.event_id) || 0) >= eventCap(ev)) continue;
+      await q('UPDATE entries SET confirmed = true WHERE id = $1', [w.id]);
+      counts.set(w.event_id, (counts.get(w.event_id) || 0) + 1);
+      total++;
+      confirmed++;
+    }
+    return confirmed;
   }
 
   function entriesOpen(t) {
@@ -386,8 +477,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     });
   }
 
-  async function view(q, t, actor) {
-    const [entries, rows] = await Promise.all([entriesOf(q, t.id), matchesOf(q, t.id)]);
+  // One event's draw, results and entries.
+  function eventView(t, entries, rows, access) {
     const names = new Map(entries.map((e) => [e.id, e.name]));
     const scored = rows.map((row) => ({ row, score: scoreOf(t, row) }));
     const groups = groupStandings(t, entries, scored, names);
@@ -400,28 +491,24 @@ function createService(db, { mailer, fetchImpl } = {}) {
       else if (groups.length === 1) champion = groups[0].standings[0];
     }
 
-    const access = await accessFields(q, t, actor);
     const confirmed = entries.filter((e) => e.confirmed).length;
+    const ev = t.event;
     return {
-      id: t.id,
-      name: t.name,
-      venue: t.venue,
-      location: { address: t.address, city: t.city, region: t.region, postcode: t.postcode, country: t.country },
-      startsOn: t.starts_on,
-      endsOn: t.ends_on,
+      id: t.eventId,
+      name: catalog.eventName(ev),
+      shortName: catalog.shortName(ev),
+      discipline: ev.discipline,
+      gender: ev.gender,
+      age: ev.age,
+      level: ev.level,
+      customName: ev.name,
       status: t.status,
       format: t.format,
       formatName: FORMATS[t.format],
-      createdAt: t.created_at,
-      sport: { id: t.sportDef.id, name: t.sportDef.name },
       config: t.config,
-      visibility: t.visibility,
       entriesOpen: entriesOpen(t),
       // Only the organiser's own maximum is shown publicly, never the plan limit.
       placesLeft: t.config.maxEntries ? Math.max(0, t.config.maxEntries - confirmed) : null,
-      plan: t.plan,
-      ...(access.can.manage && { limits: { entries: billingConfig().enabled && t.plan !== 'pass' ? billingConfig().freeLimit : null } }),
-      ...access,
       entries: entries.map((e) => ({
         id: e.id,
         name: e.name,
@@ -437,6 +524,50 @@ function createService(db, { mailer, fetchImpl } = {}) {
       groups,
       matches,
       champion: champion && { id: champion.id, name: champion.name },
+    };
+  }
+
+  async function view(q, t, actor) {
+    const [events, entries, rows, access] = await Promise.all([
+      eventsOf(q, t.id),
+      q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE tournament_id = $1 ORDER BY seed, id`, [t.id]),
+      q(`SELECT * FROM matches WHERE tournament_id = $1 ORDER BY ${MATCH_ORDER}`, [t.id]),
+      accessFields(q, t, actor),
+    ]);
+    const evs = events.map((row) => eventView(
+      eventContext(t, row),
+      entries.filter((e) => e.event_id === row.id),
+      rows.filter((m) => m.event_id === row.id),
+      access,
+    ));
+    const first = evs[0];
+    return {
+      id: t.id,
+      name: t.name,
+      venue: t.venue,
+      location: { address: t.address, city: t.city, region: t.region, postcode: t.postcode, country: t.country },
+      startsOn: t.starts_on,
+      endsOn: t.ends_on,
+      status: t.status,
+      createdAt: t.created_at,
+      sport: { id: t.sportDef.id, name: t.sportDef.name },
+      visibility: t.visibility,
+      plan: t.plan,
+      ...(access.can.manage && { limits: { entries: Number.isFinite(planLimit(t.plan)) ? planLimit(t.plan) : null } }),
+      ...access,
+      events: evs,
+      // The first event's draw at the top level too: single-event pages and
+      // older clients read these directly.
+      eventId: first.id,
+      format: first.format,
+      formatName: first.formatName,
+      config: first.config,
+      entriesOpen: evs.some((x) => x.entriesOpen),
+      placesLeft: first.placesLeft,
+      entries: first.entries,
+      groups: first.groups,
+      matches: first.matches,
+      champion: first.champion,
     };
   }
 
@@ -491,10 +622,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (f('city')) add('lower(t.city) = lower(?)', f('city'));
     if (f('sport')) add('t.sport = ?', f('sport'));
     if (f('q')) add(`(t.name ILIKE ? OR COALESCE(t.venue, '') ILIKE $${params.length + 1})`, `%${f('q').replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
-    if (['1', 'true'].includes(f('open'))) {
-      where.push(`t.status = 'setup' AND COALESCE((t.config->>'selfEntry')::boolean, false)
-        AND (t.config->>'entriesCloseAt' IS NULL OR (t.config->>'entriesCloseAt')::timestamptz > now())`);
-    }
+    if (['1', 'true'].includes(f('open'))) where.push(ENTRIES_OPEN_SQL);
     const today = ISO_DATE.test(f('today')) ? f('today') : new Date().toISOString().slice(0, 10);
     const when = WHEN.includes(f('when')) ? f('when') : 'upcoming';
     const last = 'COALESCE(t.ends_on, t.starts_on)';
@@ -569,6 +697,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (!VISIBILITY.includes(visibility)) fail(400, 'visibility must be "private", "link" or "public"');
     const config = buildConfig(input, sport);
     checkMaxEntries(config, 'free');
+    // Events to create (the quick-add on the create form); one catch-all event by default.
+    const list = Array.isArray(input.events) && input.events.length ? input.events : [{}];
+    if (list.length > 30) fail(400, 'A tournament can have at most 30 events');
+    const events = list.map((e) => ({ ...eventFields({ ...e }), format: FORMATS[e.format] ? e.format : format }));
     const id = `${slugify(name)}-${crypto.randomBytes(3).toString('hex')}`;
     const adminKey = crypto.randomBytes(18).toString('base64url');
     const scorerKey = crypto.randomBytes(18).toString('base64url');
@@ -579,38 +711,120 @@ function createService(db, { mailer, fetchImpl } = {}) {
         [id, name, sport.id, format, JSON.stringify(config), adminKey, scorerKey, visibility],
       );
       await saveDetails(q, { id }, details);
+      for (const [i, e] of events.entries()) await insertEvent(q, id, i, e, eventConfigOf(config));
       await q(`INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, 'owner')`, [id, actor.user.email]);
     });
     return { id };
   }
 
+  const insertEvent = (q, tid, position, e, config) =>
+    q(
+      `INSERT INTO events (tournament_id, position, discipline, gender, age, level, name, format, config)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb) RETURNING id`,
+      [tid, position, e.discipline, e.gender, e.age, e.level, e.name, e.format, JSON.stringify(config)],
+    );
+
+  // Tournament-wide settings: name, venue/dates, self-entry and its deadline
+  // (always editable). Event settings sent here (format, scoring, …) go to
+  // the only event, or to `input.event`, so single-event pages work as before.
   async function updateSettings(id, actor, input = {}) {
     return mutate(id, actor, async (q, t) => {
       const details = detailsOf(input, t);
-      if (t.status !== 'setup') {
-        // Once started, only the late-entry switch, venue and dates can change.
-        const keys = Object.keys(input).filter((k) => input[k] !== undefined);
-        if (!keys.length || keys.some((k) => k !== 'lateEntry' && !DETAIL_KEYS.includes(k))) {
-          fail(409, 'Settings are locked once the tournament has started');
-        }
-        if (input.lateEntry !== undefined) {
-          const config = { ...t.config, lateEntry: Boolean(input.lateEntry) };
-          await q('UPDATE tournaments SET config = $1::jsonb WHERE id = $2', [JSON.stringify(config), t.id]);
-        }
-        await saveDetails(q, t, details);
-        return;
-      }
       const name = input.name === undefined ? t.name : text(input.name, 'Tournament name');
-      if (input.format !== undefined && !FORMATS[input.format]) fail(400, 'Unknown format');
-      const format = input.format ?? t.format;
-      const config = buildConfig(input, t.sportDef, t.config);
-      if (input.maxEntries !== undefined) checkMaxEntries(config, t.plan);
-      await q('UPDATE tournaments SET name = $1, format = $2, config = $3::jsonb WHERE id = $4', [
-        name, format, JSON.stringify(config), t.id,
-      ]);
+      const config = { ...t.config };
+      if (input.selfEntry !== undefined) config.selfEntry = Boolean(input.selfEntry);
+      if (input.entriesCloseAt !== undefined) config.entriesCloseAt = closeTime(input.entriesCloseAt);
+      await q('UPDATE tournaments SET name = $1, config = $2::jsonb WHERE id = $3', [name, JSON.stringify(config), t.id]);
+      t.config = config;
       await saveDetails(q, t, details);
-      // A higher (or no) maximum makes room for players who were waiting.
-      if (input.maxEntries !== undefined) await confirmWaiting(q, { ...t, config });
+      if (EVENT_KEYS.some((k) => input[k] !== undefined)) {
+        const { name: _tournamentName, ...eventInput } = input;
+        await applyEventSettings(q, await eventFor(q, t, input.event), eventInput);
+      }
+    });
+  }
+
+  // Format, scoring, caps and the category of one event. Only the late-entry
+  // switch can change once the event has started.
+  async function applyEventSettings(q, ev, input) {
+    const keys = Object.keys(input).filter((k) => input[k] !== undefined && (EVENT_KEYS.includes(k) || k === 'name' || k === 'fee'));
+    if (ev.status !== 'setup' && keys.some((k) => k !== 'lateEntry')) {
+      fail(409, 'Settings are locked once the tournament has started');
+    }
+    if (input.format !== undefined && !FORMATS[input.format]) fail(400, 'Unknown format');
+    const format = input.format ?? ev.format;
+    const config = buildConfig(input, ev.sportDef, ev.config);
+    if (input.maxEntries !== undefined) checkMaxEntries(config, ev.plan);
+    const f = eventFields(input, ev.event);
+    await q(
+      `UPDATE events SET format = $1, config = $2::jsonb, discipline = $3, gender = $4, age = $5, level = $6, name = $7 WHERE id = $8`,
+      [format, JSON.stringify(eventConfigOf(config)), f.discipline, f.gender, f.age, f.level, f.name, ev.eventId],
+    );
+    await syncTournament(q, ev.id);
+    // A higher (or no) maximum makes room for players who were waiting.
+    if (input.maxEntries !== undefined) await confirmWaiting(q, ev);
+  }
+
+  // ---------- managing events
+
+  async function addEvents(id, actor, input = {}) {
+    const list = Array.isArray(input.events) ? input.events : [input];
+    if (!list.length) fail(400, 'Add at least one event');
+    return mutate(id, actor, async (q, t) => {
+      const existing = await eventsOf(q, t.id);
+      if (existing.length + list.length > 30) fail(400, 'A tournament can have at most 30 events');
+      // New events start with the first event's format and scoring.
+      const base = existing[0] ? eventContext(t, existing[0]) : null;
+      const names = new Set(existing.map((e) => catalog.eventName(e).toLowerCase()));
+      let position = existing.reduce((max, e) => Math.max(max, e.position), -1);
+      for (const raw of list) {
+        const f = eventFields(raw || {});
+        const label = catalog.eventName(f);
+        if (names.has(label.toLowerCase())) fail(409, `${label} already exists`);
+        names.add(label.toLowerCase());
+        const format = FORMATS[raw.format] ? raw.format : base?.format ?? 'league_knockout';
+        const config = eventConfigOf(buildConfig(raw, t.sportDef, base ? { ...base.config, knockoutRounds: undefined, maxEntries: null } : {}));
+        delete config.knockoutRounds;
+        await insertEvent(q, t.id, ++position, { ...f, format }, config);
+      }
+      await syncTournament(q, t.id);
+    });
+  }
+
+  async function updateEvent(id, actor, eventId, input = {}) {
+    return mutateEvent(id, actor, eventId, async (q, ev) => {
+      if (input.discipline !== undefined || input.gender !== undefined || input.age !== undefined || input.level !== undefined || input.name !== undefined) {
+        const f = eventFields(input, ev.event);
+        const others = (await eventsOf(q, ev.id)).filter((e) => e.id !== ev.eventId);
+        if (others.some((e) => catalog.eventName(e).toLowerCase() === catalog.eventName(f).toLowerCase())) {
+          fail(409, `${catalog.eventName(f)} already exists`);
+        }
+      }
+      await applyEventSettings(q, ev, input);
+    });
+  }
+
+  async function deleteEvent(id, actor, eventId) {
+    return mutateEvent(id, actor, eventId, async (q, ev) => {
+      if (ev.status !== 'setup') fail(409, 'This event has started and can\'t be deleted');
+      const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM events WHERE tournament_id = $1', [ev.id]);
+      if (n <= 1) fail(409, 'A tournament needs at least one event');
+      await q('DELETE FROM matches WHERE event_id = $1', [ev.eventId]);
+      await q('DELETE FROM entries WHERE event_id = $1', [ev.eventId]);
+      await q('DELETE FROM events WHERE id = $1', [ev.eventId]);
+      await syncTournament(q, ev.id);
+    });
+  }
+
+  async function reorderEvents(id, actor, ids) {
+    return mutate(id, actor, async (q, t) => {
+      const current = (await eventsOf(q, t.id)).map((e) => e.id);
+      const wanted = Array.isArray(ids) ? ids.map(Number) : [];
+      if (wanted.length !== current.length || new Set(wanted).size !== wanted.length || !wanted.every((x) => current.includes(x))) {
+        fail(400, 'ids must list every event exactly once');
+      }
+      for (const [i, eid] of wanted.entries()) await q('UPDATE events SET position = $1 WHERE id = $2', [i, eid]);
+      await syncTournament(q, t.id);
     });
   }
 
@@ -620,6 +834,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       await q('DELETE FROM members WHERE tournament_id = $1', [t.id]);
       await q('DELETE FROM matches WHERE tournament_id = $1', [t.id]);
       await q('DELETE FROM entries WHERE tournament_id = $1', [t.id]);
+      await q('DELETE FROM events WHERE tournament_id = $1', [t.id]);
       await q('DELETE FROM tournaments WHERE id = $1', [t.id]);
       return { ok: true };
     });
@@ -631,14 +846,14 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (t.status !== 'setup') fail(409, 'Entries are locked once the tournament has started');
   }
 
-  async function addEntries(id, actor, names, { walkIn = false } = {}) {
+  async function addEntries(id, actor, names, { walkIn = false, event } = {}) {
     if (!Array.isArray(names)) fail(400, 'names must be a list');
     const clean = names.map((n) => (typeof n === 'string' ? n.trim().replace(/\s+/g, ' ') : '')).filter(Boolean);
     if (!clean.length) fail(400, 'Enter at least one name');
-    return mutate(id, actor, async (q, t) => {
+    return mutateEvent(id, actor, event, async (q, t) => {
       requireSetup(t);
-      const existing = await entriesOf(q, t.id);
-      if (existing.length + clean.length > MAX_ENTRIES) fail(400, `A tournament can have at most ${MAX_ENTRIES} entries`);
+      const existing = await entriesOf(q, t);
+      if (existing.length + clean.length > MAX_ENTRIES) fail(400, `An event can have at most ${MAX_ENTRIES} entries`);
       await checkEntryLimit(q, t, clean.length);
       const seen = new Set(existing.map((e) => e.name.toLowerCase()));
       for (const n of clean) {
@@ -674,29 +889,32 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (given(input.website)) return { ok: true }; // honeypot: bots fill every field
     const player = text(input.name, 'Your name', { max: 40 });
     const partner = text(input.partner, 'Partner name', { max: 40, optional: true });
-    const name = partner ? `${player} / ${partner}` : player;
     const contact = contactOf(input.contact);
     const result = await db.tx(async (q) => {
-      const t = await load(q, id, { lock: true });
-      await requireVisible(q, t, null);
+      const row = await load(q, id, { lock: true });
+      await requireVisible(q, row, null);
+      const t = await eventFor(q, row, input.event);
+      // Doubles need a partner; singles ignore one.
+      if (t.event.discipline === 'doubles' && !partner) fail(400, `${eventLabel(t)} is a doubles event — add your partner's name`);
+      const name = partner && t.event.discipline !== 'singles' ? `${player} / ${partner}` : player;
       if (t.status !== 'setup') fail(409, 'Entries are closed — the draw has been made');
       if (!t.config.selfEntry) fail(409, 'This tournament doesn\'t take entries online — contact the organiser');
       if (!entriesOpen(t)) fail(409, 'Entries are closed');
-      const existing = await entriesOf(q, t.id);
-      if (existing.length >= MAX_ENTRIES) fail(409, 'This tournament is full');
-      if (existing.some((e) => e.contact === contact)) fail(409, 'This phone number or email has already been used to enter');
+      const existing = await entriesOf(q, t);
+      if (existing.length >= MAX_ENTRIES) fail(409, 'This event is full');
+      if (existing.some((e) => e.contact === contact)) fail(409, 'This phone number or email has already been used to enter this event');
       if (existing.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(409, `"${name}" is already entered`);
       const seed = existing.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
-      const confirmed = existing.filter((e) => e.confirmed).length < capacity(t);
+      const confirmed = await hasRoom(q, t);
       await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed });
       let owners = [];
       if (!confirmed && !t.waiting_notified) {
         await q('UPDATE tournaments SET waiting_notified = true WHERE id = $1', [t.id]);
         owners = (await q(`SELECT email FROM members WHERE tournament_id = $1 AND role = 'owner'`, [t.id])).map((r) => r.email);
       }
-      return { t, name, confirmed, owners };
+      return { t, name, confirmed, owners, eventId: t.eventId };
     });
-    const { t, name: entered, confirmed, owners } = result;
+    const { t, name: entered, confirmed, owners, eventId } = result;
     if (owners.length && mailer?.enabled && baseUrl) {
       try {
         for (const to of owners) {
@@ -706,12 +924,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
         console.error('Waiting-entries email failed:', err.message);
       }
     }
-    return { ok: true, name: entered, confirmed };
+    return { ok: true, name: entered, confirmed, event: eventId };
   }
 
   // The organiser lets a waiting self-entry in (within their plan's limit).
   async function confirmEntry(id, actor, entryId) {
-    return mutate(id, actor, async (q, t) => {
+    return mutateEntry(id, actor, entryId, async (q, t) => {
       requireSetup(t);
       const [e] = await q('SELECT confirmed FROM entries WHERE id = $1 AND tournament_id = $2', [Number(entryId) || 0, t.id]);
       if (!e) fail(404, 'Entry not found');
@@ -722,7 +940,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   }
 
   async function checkIn(id, actor, entryId, here = true) {
-    return mutate(id, actor, async (q, t) => {
+    return mutateEntry(id, actor, entryId, async (q, t) => {
       requireSetup(t);
       const rows = await q('UPDATE entries SET checked_in = $1 WHERE id = $2 AND tournament_id = $3 RETURNING id', [
         Boolean(here), Number(entryId) || 0, t.id,
@@ -731,25 +949,25 @@ function createService(db, { mailer, fetchImpl } = {}) {
     });
   }
 
-  async function checkInAll(id, actor, here = true) {
-    return mutate(id, actor, async (q, t) => {
+  async function checkInAll(id, actor, here = true, { event } = {}) {
+    return mutateEvent(id, actor, event, async (q, t) => {
       requireSetup(t);
-      await q('UPDATE entries SET checked_in = $1 WHERE tournament_id = $2', [Boolean(here), t.id]);
+      await q('UPDATE entries SET checked_in = $1 WHERE event_id = $2', [Boolean(here), t.eventId]);
     });
   }
 
   async function removeEntry(id, actor, entryId) {
-    return mutate(id, actor, async (q, t) => {
+    return mutateEntry(id, actor, entryId, async (q, t) => {
       requireSetup(t);
       const deleted = await q('DELETE FROM entries WHERE id = $1 AND tournament_id = $2 RETURNING id', [Number(entryId) || 0, t.id]);
       if (!deleted.length) fail(404, 'Entry not found');
     });
   }
 
-  async function reorderEntries(id, actor, ids) {
-    return mutate(id, actor, async (q, t) => {
+  async function reorderEntries(id, actor, ids, { event } = {}) {
+    return mutateEvent(id, actor, event, async (q, t) => {
       requireSetup(t);
-      const current = (await entriesOf(q, t.id)).map((e) => e.id);
+      const current = (await entriesOf(q, t)).map((e) => e.id);
       const wanted = Array.isArray(ids) ? ids.map(Number) : [];
       if (wanted.length !== current.length || new Set(wanted).size !== wanted.length || !wanted.every((x) => current.includes(x))) {
         fail(400, 'ids must list every entry exactly once');
@@ -766,7 +984,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const slots = formats.knockoutSlots(seeded);
     const rounds = Math.log2(slots.length);
     t.config = { ...t.config, knockoutRounds: rounds };
-    await q('UPDATE tournaments SET config = $1::jsonb WHERE id = $2', [JSON.stringify(t.config), t.id]);
+    await saveEventConfig(q, t);
     const byes = [];
     for (let r = 1; r <= rounds; r++) {
       for (let s = 0; s < slots.length >> r; s++) {
@@ -812,12 +1030,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
     await finishWalkover(q, t, m, gone.has(m.a_id) ? m.b_id : m.a_id);
   }
 
-  async function start(id, actor, { skipUnconfirmed = false } = {}) {
-    return mutate(id, actor, async (q, t) => {
+  async function start(id, actor, { skipUnconfirmed = false, event } = {}) {
+    return mutateEvent(id, actor, event, async (q, t) => {
       if (t.status !== 'setup') fail(409, 'The tournament has already started');
       // Unconfirmed self-entries are never drawn; the organiser has to decide
       // about them first so nobody is left out by accident.
-      const everyone = await entriesOf(q, t.id);
+      const everyone = await entriesOf(q, t);
       const waiting = everyone.filter((e) => !e.confirmed).length;
       if (waiting && !skipUnconfirmed) {
         fail(409, `${waiting} ${waiting === 1 ? 'entry is' : 'entries are'} still unconfirmed — confirm or remove them first`, 'unconfirmed');
@@ -826,7 +1044,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const all = everyone.filter((e) => e.confirmed);
       const usingCheckIn = all.some((e) => e.checked_in);
       const entries = usingCheckIn ? all.filter((e) => e.checked_in) : all;
-      await q('UPDATE entries SET in_draw = confirmed AND (checked_in OR NOT $2), withdrawn = false WHERE tournament_id = $1', [t.id, usingCheckIn]);
+      await q('UPDATE entries SET in_draw = confirmed AND (checked_in OR NOT $2), withdrawn = false WHERE event_id = $1', [t.eventId, usingCheckIn]);
       if (t.format === 'knockout') {
         if (entries.length < 2) fail(400, 'Add at least 2 entries to start');
         await createBracket(q, t, entries.map((e) => ({ id: e.id, group: null, tier: 0 })));
@@ -837,7 +1055,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const groups = groupsFor(t, entries.length);
       const { qualifiers } = t.config;
       t.config = { ...t.config, groups };
-      await q('UPDATE tournaments SET config = $1::jsonb WHERE id = $2', [JSON.stringify(t.config), t.id]);
+      await saveEventConfig(q, t);
       if (entries.length < groups * 2) {
         fail(400, `${groups} group${groups > 1 ? 's need' : ' needs'} at least ${groups * 2} entries (you have ${entries.length})`);
       }
@@ -857,12 +1075,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
     });
   }
 
-  async function startKnockout(id, actor) {
-    return mutate(id, actor, async (q, t) => {
+  async function startKnockout(id, actor, { event } = {}) {
+    return mutateEvent(id, actor, event, async (q, t) => {
       if (t.format !== 'league_knockout' || t.status !== 'league') fail(409, 'The knockout stage cannot be started now');
       const pending = await pendingLeague(q, t);
       if (pending) fail(409, `${pending} league match${pending > 1 ? 'es are' : ' is'} still to be played`);
-      const { groups } = await view(q, t);
+      const { groups } = eventView(t, await entriesOf(q, t), await matchesOf(q, t), { can: {} });
       const seeded = [];
       for (let tier = 0; tier < t.config.qualifiers; tier++) {
         for (const g of groups) {
@@ -877,21 +1095,22 @@ function createService(db, { mailer, fetchImpl } = {}) {
   }
 
   // Undo the draw (e.g. more players turned up) while no point has been played.
-  async function redraw(id, actor) {
-    return mutate(id, actor, async (q, t) => {
+  async function redraw(id, actor, { event } = {}) {
+    return mutateEvent(id, actor, event, async (q, t) => {
       if (t.status === 'setup') fail(409, 'The draw hasn\'t been made yet');
       if (t.status === 'completed' || (t.format === 'league_knockout' && t.status === 'knockout')) {
         fail(409, 'The draw can only be redone before the first point is played');
       }
       const [{ n }] = await q(
-        `SELECT COUNT(*)::int AS n FROM matches WHERE tournament_id = $1 AND (rallies <> '' OR walkover)`,
-        [t.id],
+        `SELECT COUNT(*)::int AS n FROM matches WHERE event_id = $1 AND (rallies <> '' OR walkover)`,
+        [t.eventId],
       );
       if (n) fail(409, 'Play has started — the draw can only be redone before the first point');
-      await q('DELETE FROM matches WHERE tournament_id = $1', [t.id]);
-      await q('UPDATE entries SET group_no = NULL, in_draw = true WHERE tournament_id = $1', [t.id]);
+      await q('DELETE FROM matches WHERE event_id = $1', [t.eventId]);
+      await q('UPDATE entries SET group_no = NULL, in_draw = true WHERE event_id = $1', [t.eventId]);
       const { knockoutRounds: _r, ...config } = t.config;
-      await q('UPDATE tournaments SET config = $1::jsonb WHERE id = $2', [JSON.stringify(config), t.id]);
+      t.config = config;
+      await saveEventConfig(q, t);
       await setStatus(q, t, 'setup');
     });
   }
@@ -901,12 +1120,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // it. Knockout: takes a first-round bye slot.
   async function lateEntry(id, actor, input = {}) {
     const name = text(input.name, 'Name', { max: 60 });
-    return mutate(id, actor, async (q, t) => {
+    return mutateEvent(id, actor, input.event, async (q, t) => {
       if (t.status === 'setup') fail(409, 'The draw hasn\'t been made yet — just add them to the entries');
       if (t.status === 'completed') fail(409, 'The tournament has finished');
       if (!t.config.lateEntry) fail(409, 'Late entries are switched off for this tournament', 'late_off');
-      const all = await entriesOf(q, t.id);
-      if (all.length >= MAX_ENTRIES) fail(409, `A tournament can have at most ${MAX_ENTRIES} entries`);
+      const all = await entriesOf(q, t);
+      if (all.length >= MAX_ENTRIES) fail(409, `An event can have at most ${MAX_ENTRIES} entries`);
       if (all.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(400, `"${name}" is already entered`);
       await checkEntryLimit(q, t, 1);
       const seed = all.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
@@ -914,8 +1133,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (t.status === 'league') {
         const done = new Map(
           (await q(
-            `SELECT group_no, COUNT(*)::int AS n FROM matches WHERE tournament_id = $1 AND stage = 'league' AND status = 'done' GROUP BY group_no`,
-            [t.id],
+            `SELECT group_no, COUNT(*)::int AS n FROM matches WHERE event_id = $1 AND stage = 'league' AND status = 'done' GROUP BY group_no`,
+            [t.eventId],
           )).map((r) => [r.group_no, r.n]),
         );
         const groups = Array.from({ length: t.config.groups }, (_, g) => ({
@@ -927,8 +1146,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
         const { g, members } = groups[0];
         const [{ id: newId }] = await insertEntry(q, t, { name, seed, group: g, source: 'walk-in', checkedIn: true });
         const [{ last }] = await q(
-          `SELECT COALESCE(MAX(round), 0)::int AS last FROM matches WHERE tournament_id = $1 AND stage = 'league' AND group_no = $2`,
-          [t.id, g],
+          `SELECT COALESCE(MAX(round), 0)::int AS last FROM matches WHERE event_id = $1 AND stage = 'league' AND group_no = $2`,
+          [t.eventId, g],
         );
         for (const [i, m] of members.entries()) {
           if (m.withdrawn) {
@@ -942,8 +1161,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
       if (t.format !== 'knockout') fail(409, 'The knockout has started — late entries can only join during the group stage');
       const byes = await q(
-        `SELECT * FROM matches WHERE tournament_id = $1 AND stage = 'knockout' AND round = 1 AND status = 'bye' ORDER BY slot`,
-        [t.id],
+        `SELECT * FROM matches WHERE event_id = $1 AND stage = 'knockout' AND round = 1 AND status = 'bye' ORDER BY slot`,
+        [t.eventId],
       );
       for (const bye of byes) {
         const next = await koMatch(q, t, 2, bye.slot >> 1);
@@ -963,7 +1182,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // Player pulls out mid-event: their remaining matches become walkovers.
   async function withdraw(id, actor, entryId) {
-    return mutate(id, actor, async (q, t) => {
+    return mutateEntry(id, actor, entryId, async (q, t) => {
       if (t.status === 'setup') fail(409, 'The draw hasn\'t been made — just remove the entry');
       if (t.status === 'completed') fail(409, 'The tournament has finished');
       const [e] = await q('SELECT * FROM entries WHERE id = $1 AND tournament_id = $2', [Number(entryId) || 0, t.id]);
@@ -972,9 +1191,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (!e.in_draw) fail(409, `${e.name} isn't in the draw`);
       await q('UPDATE entries SET withdrawn = true WHERE id = $1', [e.id]);
       const open = await q(
-        `SELECT * FROM matches WHERE tournament_id = $1 AND status IN ('scheduled', 'live') AND (a_id = $2 OR b_id = $2)
+        `SELECT * FROM matches WHERE event_id = $1 AND status IN ('scheduled', 'live') AND (a_id = $2 OR b_id = $2)
          ORDER BY stage = 'knockout', round, slot`,
-        [t.id, e.id],
+        [t.eventId, e.id],
       );
       for (const m of open) {
         const other = m.a_id === e.id ? m.b_id : m.a_id;
@@ -994,8 +1213,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
   async function rally(id, actor, mid, side, at) {
     if (side !== 'a' && side !== 'b') fail(400, 'side must be "a" or "b"');
     return db.tx(async (q) => {
-      const { t } = await lockWith(q, id, actor, 'score');
-      const m = await matchOf(q, t, mid);
+      const { t: tournament } = await lockWith(q, id, actor, 'score');
+      const m = await matchOf(q, tournament, mid);
+      const t = await eventFor(q, tournament, m.event_id);
       if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished');
       if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
       requireStageOpen(t, m);
@@ -1024,8 +1244,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // long as nothing downstream has started yet.
   async function undo(id, actor, mid, at) {
     return db.tx(async (q) => {
-      const { t } = await lockWith(q, id, actor, 'score');
-      const m = await matchOf(q, t, mid);
+      const { t: tournament } = await lockWith(q, id, actor, 'score');
+      const m = await matchOf(q, tournament, mid);
+      const t = await eventFor(q, tournament, m.event_id);
       if (m.walkover) fail(409, 'Walkovers can\'t be undone');
       if (m.status === 'bye' || !m.rallies) fail(409, 'Nothing to undo');
       checkAt(m, at);
@@ -1053,8 +1274,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // Court, first server, and marking a match as on court before the first rally.
   async function updateMatch(id, actor, mid, input = {}) {
     return db.tx(async (q) => {
-      const { t } = await lockWith(q, id, actor, 'score');
-      const m = await matchOf(q, t, mid);
+      const { t: tournament } = await lockWith(q, id, actor, 'score');
+      const m = await matchOf(q, tournament, mid);
+      const t = await eventFor(q, tournament, m.event_id);
       if (m.status === 'bye') fail(409, 'Byes cannot be edited');
       const court = input.court === undefined ? m.court : text(input.court, 'Court', { max: 20, optional: true });
       let firstServer = m.first_server;
@@ -1376,6 +1598,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
     tournamentPlaces,
     getTournament,
     setVisibility,
+    addEvents,
+    updateEvent,
+    deleteEvent,
+    reorderEvents,
     createTournament,
     updateSettings,
     deleteTournament,

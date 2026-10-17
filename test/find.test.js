@@ -57,12 +57,13 @@ test('venue and dates stay editable after the start; other settings do not', asy
   const id = await make({ name: 'Moved Cup', city: 'Chennai', country: 'India', region: 'Tamil Nadu' });
   await svc.addEntries(id, ORG, ['A', 'B']);
   await svc.start(id, ORG);
-  const t = await svc.updateSettings(id, ORG, { venue: 'New Hall', city: 'coimbatore', startsOn: '2030-08-01' });
+  const t = await svc.updateSettings(id, ORG, { name: 'Moved Cup 2030', venue: 'New Hall', city: 'coimbatore', startsOn: '2030-08-01' });
+  assert.equal(t.name, 'Moved Cup 2030'); // the tournament's name and venue stay editable
   assert.equal(t.venue, 'New Hall');
   assert.equal(t.location.city, 'Coimbatore');
   assert.equal(t.location.region, 'Tamil Nadu'); // untouched fields are kept
   assert.equal(t.startsOn, '2030-08-01');
-  await assert.rejects(svc.updateSettings(id, ORG, { name: 'Renamed' }), /locked/);
+  await assert.rejects(svc.updateSettings(id, ORG, { format: 'league' }), /locked/);
 });
 
 test('search: only public tournaments, every filter, sensible order', async () => {

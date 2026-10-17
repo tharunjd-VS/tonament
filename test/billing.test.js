@@ -138,7 +138,7 @@ test('over the free limit, players can still enter: unconfirmed until the organi
     const sentBefore = mailer.sent.length;
     const base = { baseUrl: 'https://tonament.example' };
 
-    assert.deepEqual(await svc.register(id, { name: 'Late Lee', contact: 'lee@x.dev' }, base), { ok: true, name: 'Late Lee', confirmed: false });
+    assert.deepEqual(await svc.register(id, { name: 'Late Lee', contact: 'lee@x.dev' }, base), { ok: true, name: 'Late Lee', confirmed: false, event: (await svc.getTournament(id)).eventId });
     await svc.register(id, { name: 'Late Mo', contact: 'mo@x.dev' }, base);
     // The owner is told once, not for every waiting player.
     const notes = mailer.sent.slice(sentBefore).filter((m) => m.subject === 'Players are waiting to enter Waiting Cup');

@@ -97,7 +97,7 @@ ALTER TABLE entries ADD COLUMN IF NOT EXISTS in_draw BOOLEAN NOT NULL DEFAULT tr
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS withdrawn BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'organiser'; -- organiser | self | walk-in
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS contact TEXT;                              -- self-entry phone/email (organisers only)
-CREATE UNIQUE INDEX IF NOT EXISTS entries_contact ON entries(tournament_id, contact) WHERE contact IS NOT NULL;
+-- (one self-entry per contact is enforced per event: see entries_event_contact below)
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS walkover BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS catch_up BOOLEAN NOT NULL DEFAULT false;  -- added for a late entry
 
@@ -144,11 +144,44 @@ ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS country TEXT;
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS starts_on TEXT;
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS ends_on TEXT;
 CREATE INDEX IF NOT EXISTS tournaments_find ON tournaments (visibility, country, region, city, starts_on);
+
+-- Events (categories) inside a tournament: Men's Singles, Mixed Doubles · U19,
+-- … Each has its own format, entries, draw and status. Tournaments made
+-- before events existed get one catch-all event holding their draw.
+CREATE TABLE IF NOT EXISTS events (
+  id            SERIAL PRIMARY KEY,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  position      INTEGER NOT NULL DEFAULT 0,
+  discipline    TEXT NOT NULL DEFAULT 'any',     -- singles | doubles | any
+  gender        TEXT NOT NULL DEFAULT 'open',    -- men | women | mixed | open
+  age           TEXT NOT NULL DEFAULT 'Open',
+  level         TEXT NOT NULL DEFAULT 'Open',
+  name          TEXT,                            -- optional; otherwise generated
+  format        TEXT NOT NULL,
+  config        JSONB NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'setup',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS events_t ON events(tournament_id, position);
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS event_id INTEGER REFERENCES events(id) ON DELETE CASCADE;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS event_id INTEGER REFERENCES events(id) ON DELETE CASCADE;
+INSERT INTO events (tournament_id, format, config, status)
+  SELECT t.id, t.format, t.config, t.status FROM tournaments t
+  WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.tournament_id = t.id);
+UPDATE entries SET event_id = (SELECT e.id FROM events e WHERE e.tournament_id = entries.tournament_id ORDER BY e.id LIMIT 1)
+  WHERE event_id IS NULL;
+UPDATE matches SET event_id = (SELECT e.id FROM events e WHERE e.tournament_id = matches.tournament_id ORDER BY e.id LIMIT 1)
+  WHERE event_id IS NULL;
+CREATE INDEX IF NOT EXISTS entries_event ON entries(event_id, seed);
+CREATE INDEX IF NOT EXISTS matches_event ON matches(event_id, stage, round, slot);
+-- One self-entry per phone/email per event (players may enter several events).
+DROP INDEX IF EXISTS entries_contact;
+CREATE UNIQUE INDEX IF NOT EXISTS entries_event_contact ON entries(event_id, contact) WHERE contact IS NOT NULL;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 async function migrate(db) {
   try {
@@ -218,4 +251,4 @@ function createDb(url = process.env.DATABASE_URL || process.env.POSTGRES_URL) {
   return connectEmbedded(process.env.PGLITE_DIR || path.join(__dirname, '..', 'data', 'pglite'));
 }
 
-module.exports = { createDb };
+module.exports = { createDb, migrate };
