@@ -477,3 +477,27 @@ tr.out td { color: var(--muted); }
 .upgrade-card h2 { margin-bottom: 6px; }
 .entry-meter { display: grid; gap: 6px; margin: 0 0 10px; }
 .entry-meter .progress { height: 5px; }
+
+/* Venue, location and dates */
+fieldset.details-set { display: grid; gap: 12px; }
+.stack { display: grid; gap: 8px; }
+.venue-card { display: flex; gap: 12px 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.venue-info { display: grid; gap: 10px; min-width: 0; }
+.venue-row { display: flex; gap: 10px; align-items: flex-start; }
+.venue-icon { flex: none; width: 20px; text-align: center; }
+.t-card-when { font-weight: 600; font-size: 0.9rem; margin-bottom: 2px; }
+
+/* Find a tournament */
+.find-bar { display: grid; gap: 10px; margin-bottom: 16px; }
+.find-q { font-size: 1rem; }
+.filters > summary { list-style: none; display: inline-flex; }
+.filters > summary::-webkit-details-marker { display: none; }
+.filter-grid { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; align-items: end; }
+.filter { display: grid; gap: 4px; min-width: 0; }
+.filter select:disabled { opacity: 0.55; }
+.filter-open { margin: 0; align-self: center; }
+@media (min-width: 720px) {
+  .filters > summary { display: none; }
+  .filters[open] > summary { margin: 0; }
+  .filter-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}

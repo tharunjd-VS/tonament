@@ -147,7 +147,8 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['GET', '/api/sports', () => sports.list(), 300],
     ['GET', '/api/sports/interest', (c) => svc.sportInterest(c.actor)],
     ['POST', '/api/sports/([a-z-]+)/interest', (c, id) => svc.setSportInterest(c.actor, id, c.body.want)],
-    ['GET', '/api/tournaments', () => svc.listTournaments(), 5],
+    ['GET', '/api/tournaments', (c) => svc.listTournaments(Object.fromEntries(c.query)), 5],
+    ['GET', '/api/tournaments/places', () => svc.tournamentPlaces(), 60],
     ['POST', '/api/tournaments', (c) => svc.createTournament(c.actor, c.body)],
     // Spectators poll the public copy; anyone signed in or holding a link asks
     // for their own copy with ?me=1, which is never cached.

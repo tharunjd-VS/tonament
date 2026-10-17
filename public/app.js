@@ -15,7 +15,9 @@
     members: null, // team list for the open tournament (managers only)
     interest: null, // { counts: { sportId: n }, mine: [sportId] } for "Request this sport"
     sports: [],
-    list: null,
+    list: null, // home page search results
+    filters: {}, // home page search filters (also kept in the URL)
+    places: null, // { country, region, city } that have public tournaments
     t: null,
     error: null,
     connected: false,
@@ -132,6 +134,27 @@
   const pill = (cls, label) => h('span', { class: `pill ${cls}` }, label);
   const connDot = () => h('span', { class: `conn ${S.connected ? 'on' : ''}` }, S.connected ? 'Live' : 'Connecting…');
 
+  // ---------- venue, location and dates
+  const REGIONS = window.TonamentRegions;
+  const OTHER_COUNTRY = 'Other';
+  const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+  function fmtDates(start, end) {
+    if (!start) return null;
+    const fmt = (iso) => {
+      const d = new Date(`${iso}T00:00:00`);
+      const year = d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {};
+      return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', ...year });
+    };
+    return end ? `${fmt(start)} – ${fmt(end)}` : fmt(start);
+  }
+  const placeLine = (venue, city) => [venue, city].filter(Boolean).join(', ') || null;
+  const detailValues = (t) => ({ venue: t.venue, ...t.location, startsOn: t.startsOn, endsOn: t.endsOn });
+  async function ensurePlaces() {
+    if (S.places) return S.places;
+    S.places = await api('GET', '/tournaments/places').catch(() => []);
+    return S.places;
+  }
+
   function isEditing() {
     const a = document.activeElement;
     return Boolean(a && app.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.type !== 'radio');
@@ -193,14 +216,19 @@
       } else {
         S.route = { name: 'home' };
         S.list = null;
+        S.filters = readFilters(params);
+        const qs = filterQuery(S.filters);
+        if (qs && !params.toString()) history.replaceState(null, '', `#/?${qs}`); // remembered search
         render();
-        [S.list, S.mine, S.interest] = await Promise.all([
-          api('GET', '/tournaments').catch((e) => { S.error = e.message; return []; }),
+        [S.list, S.mine, S.interest, S.places] = await Promise.all([
+          api('GET', `/tournaments?${filterQuery(S.filters, true)}`).catch((e) => { S.error = e.message; return []; }),
           S.me ? api('GET', '/me/tournaments').catch(() => []) : null,
           api('GET', '/sports/interest').catch(() => null),
+          api('GET', '/tournaments/places').catch(() => []),
         ]);
       }
     }
+    if (S.route.name === 'new' || S.route.name === 'tournament') ensurePlaces(); // city suggestions
     render();
     if (prev.name !== S.route.name || prev.mid !== S.route.mid || prev.id !== S.route.id) window.scrollTo(0, 0);
   }
@@ -334,18 +362,107 @@
             ? h('a', { class: 'btn btn-primary btn-lg', href: '#/new' }, 'Create tournament')
             : h('a', { class: 'btn btn-primary btn-lg', href: '#/signup' }, 'Get started — it\'s free'),
           h('a', { class: 'btn btn-lg btn-ghost', href: '#/', onclick: explore }, 'Explore tournaments'))),
-      sportsSection(),
       S.me ? h('section', { class: 'section' },
         h('h2', {}, 'My tournaments'),
         S.mine == null ? loading()
           : S.mine.length === 0 ? empty('Tournaments you create, or are added to as an organiser or umpire, show up here.')
             : h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role])))) : null,
-      h('section', { class: 'section', id: 'all-tournaments' },
-        h('h2', {}, S.me ? 'All tournaments' : 'Tournaments'),
-        S.list == null ? loading()
-          : S.list.length === 0 ? empty('No tournaments yet — create the first one.')
-            : h('div', { class: 'card-list' }, S.list.map((t) => tournamentCard(t)))),
+      findSection(),
+      sportsSection(),
     ];
+  }
+
+  // ----- find a tournament (home page)
+  const FILTER_KEYS = ['q', 'sport', 'country', 'region', 'city', 'when', 'open'];
+  const WHEN = [['upcoming', 'Upcoming & live'], ['week', 'Next 7 days'], ['month', 'Next 30 days'], ['past', 'Past'], ['any', 'Any time']];
+  const FILTERS_KEY = 'tonament:filters';
+
+  // From the URL when it has filters (a shared search), else this viewer's last search.
+  function readFilters(params) {
+    const f = {};
+    for (const k of FILTER_KEYS) if (params.get(k)) f[k] = params.get(k);
+    if (Object.keys(f).length) return f;
+    try { return JSON.parse(localStorage.getItem(FILTERS_KEY)) || {}; } catch { return {}; }
+  }
+  function filterQuery(f, withToday) {
+    const p = new URLSearchParams();
+    for (const k of FILTER_KEYS) if (f[k]) p.set(k, f[k]);
+    if (withToday) p.set('today', localToday());
+    return p.toString();
+  }
+  const activeFilters = (f) => FILTER_KEYS.filter((k) => k !== 'q' && f[k] && !(k === 'when' && f[k] === 'upcoming')).length;
+
+  let searchTimer;
+  let searchSeq = 0;
+  async function search() {
+    const seq = ++searchSeq;
+    const qs = filterQuery(S.filters);
+    history.replaceState(null, '', qs ? `#/?${qs}` : '#/');
+    try { localStorage.setItem(FILTERS_KEY, JSON.stringify(S.filters)); } catch { /* fine */ }
+    const list = await api('GET', `/tournaments?${filterQuery(S.filters, true)}`).catch(() => null);
+    if (seq !== searchSeq || S.route.name !== 'home') return;
+    S.list = list || [];
+    // Only the results change, so typing in the search box keeps its focus.
+    const box = document.getElementById('find-results');
+    if (box) box.replaceChildren(findResults());
+    else render();
+  }
+  function setFilter(key, value) {
+    S.filters = { ...S.filters, [key]: value };
+    if (key === 'country') { delete S.filters.region; delete S.filters.city; }
+    if (key === 'region') delete S.filters.city;
+    for (const k of FILTER_KEYS) if (!S.filters[k]) delete S.filters[k];
+    if (key !== 'q') render(); // dependent dropdowns may change
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(search, key === 'q' ? 300 : 0);
+  }
+
+  function findResults() {
+    if (S.list == null) return loading();
+    if (!S.list.length) {
+      const filtered = activeFilters(S.filters) || S.filters.q;
+      return h('div', {},
+        empty(filtered ? 'No tournaments match these filters.' : 'No upcoming tournaments yet — create the first one.'),
+        filtered ? h('div', { class: 'actions', style: 'justify-content:center' },
+          h('button', { class: 'btn btn-ghost btn-small', onclick: () => { S.filters = {}; render(); search(); } }, 'Clear filters')) : null);
+    }
+    return h('div', { class: 'card-list' }, S.list.map((t) => tournamentCard(t)));
+  }
+
+  function findSection() {
+    const f = S.filters;
+    const places = S.places || [];
+    const uniq = (xs) => [...new Set(xs.filter(Boolean))].sort();
+    const withValue = (list, v) => (v && !list.includes(v) ? [...list, v] : list);
+    const countries = withValue(uniq(places.map((p) => p.country)), f.country);
+    const regionsHere = withValue(uniq(places.filter((p) => p.country === f.country).map((p) => p.region)), f.region);
+    const cities = withValue(uniq(places.filter((p) => p.country === f.country && (!f.region || p.region === f.region)).map((p) => p.city)), f.city);
+    const select = (key, label, options, { anyLabel = 'Any', disabled = false } = {}) => h('label', { class: 'filter' },
+      h('span', { class: 'label' }, label),
+      h('select', { value: f[key] || '', disabled, onchange: (e) => setFilter(key, e.target.value) },
+        anyLabel ? h('option', { value: '' }, anyLabel) : null,
+        options.map((o) => (Array.isArray(o) ? h('option', { value: o[0] }, o[1]) : h('option', { value: o }, o)))));
+    const n = activeFilters(f);
+    const wide = window.matchMedia && window.matchMedia('(min-width: 720px)').matches;
+    return h('section', { class: 'section', id: 'all-tournaments' },
+      h('h2', {}, 'Find a tournament'),
+      h('div', { class: 'find-bar' },
+        h('input', {
+          type: 'search', class: 'find-q', value: f.q || '', placeholder: 'Search by name or venue', 'aria-label': 'Search tournaments',
+          oninput: (e) => setFilter('q', e.target.value.trim()),
+        }),
+        h('details', { class: 'filters', open: wide || S.filtersOpen || null, ontoggle: (e) => { S.filtersOpen = e.target.open; } },
+          h('summary', { class: 'btn btn-ghost btn-small' }, n ? `Filters (${n})` : 'Filters'),
+          h('div', { class: 'filter-grid' },
+            select('when', 'When', WHEN.map(([v, l]) => [v === 'upcoming' ? '' : v, l]), { anyLabel: null }),
+            select('sport', 'Sport', liveSports().map((s) => [s.id, s.name])),
+            select('country', 'Country', countries),
+            select('region', 'State / region', regionsHere, { disabled: !f.country || !regionsHere.length }),
+            select('city', 'City', cities, { disabled: !f.country || !cities.length }),
+            h('label', { class: 'check-field filter-open' },
+              h('input', { type: 'checkbox', checked: f.open === '1', onchange: (e) => setFilter('open', e.target.checked ? '1' : '') }),
+              h('span', {}, h('strong', {}, 'Open for entries')))))),
+      h('div', { id: 'find-results' }, findResults()));
   }
 
   const liveSports = () => S.sports.filter((s) => s.status === 'live');
@@ -402,8 +519,12 @@
     return h('a', { class: 'card t-card', href: `#/t/${t.id}` },
       h('div', { class: 'card-head' },
         h('h3', {}, t.name),
-        h('span', {}, visibilityPill(t.visibility), ' ', roleName ? pill('org', roleName) : null, ' ', pill(t.status, STATUS[t.status]))),
-      h('div', { class: 'muted small' }, [sport ? sport.name : t.sport, t.formatName, `${t.entries} entries`, t.venue].filter(Boolean).join(' · ')));
+        h('span', {}, visibilityPill(t.visibility), ' ', roleName ? pill('org', roleName) : null, ' ',
+          t.entriesOpen ? pill('done', 'Entries open') : pill(t.status, STATUS[t.status]))),
+      fmtDates(t.startsOn, t.endsOn) || t.venue || t.city
+        ? h('div', { class: 't-card-when' }, [fmtDates(t.startsOn, t.endsOn), placeLine(t.venue, t.city)].filter(Boolean).join(' · '))
+        : null,
+      h('div', { class: 'muted small' }, [sport ? sport.name : t.sport, t.formatName, `${t.entries} entries`].filter(Boolean).join(' · ')));
   }
 
   // ---------- create / settings
@@ -413,8 +534,68 @@
     ['knockout', 'Knockout only', 'Single elimination, seeded in entry order. Byes go to top seeds.'],
   ];
 
+  // State: a list for countries we know, free text otherwise.
+  function regionControl(country, value) {
+    const list = country === OTHER_COUNTRY ? null : REGIONS.regionsFor(country);
+    if (!list) return h('input', { name: 'region', maxlength: 60, value: value || '', placeholder: 'Optional' });
+    return h('select', { name: 'region', value: list.includes(value) ? value : '' },
+      h('option', { value: '' }, 'Choose…'), list.map((r) => h('option', { value: r }, r)));
+  }
+
+  function syncCountry(form) {
+    const choice = form.countryChoice.value;
+    form.querySelector('.country-other').hidden = choice !== OTHER_COUNTRY;
+    form.querySelector('.region-slot').replaceChildren(regionControl(choice, ''));
+    const list = form.querySelector('#city-options');
+    list.replaceChildren(...cityOptions(choice === OTHER_COUNTRY ? '' : choice));
+  }
+
+  const cityOptions = (country) => [...new Set((S.places || []).filter((p) => p.city && (!country || p.country === country)).map((p) => p.city))]
+    .map((c) => h('option', { value: c }));
+
+  // When and where (create form, settings, and after the start).
+  function detailsFields(v) {
+    const listed = !v.country || REGIONS.isListed(v.country);
+    const choice = listed ? v.country || REGIONS.defaultCountry : OTHER_COUNTRY;
+    return [
+      h('fieldset', { class: 'details-set' }, h('legend', {}, 'When'),
+        h('div', { class: 'grid-2' },
+          field('Start date', h('input', { type: 'date', name: 'startsOn', value: v.startsOn || '' }), null, 'Helps players find your tournament.'),
+          field('End date (optional)', h('input', { type: 'date', name: 'endsOn', value: v.endsOn || '' }), null, 'For events over more than one day.'))),
+      h('fieldset', { class: 'details-set' }, h('legend', {}, 'Venue'),
+        field('Venue name', h('input', { name: 'venue', maxlength: 80, value: v.venue || '', placeholder: 'e.g. City Sports Hall' })),
+        field('Address', h('input', { name: 'address', maxlength: 120, value: v.address || '', placeholder: 'Street and area', autocomplete: 'off' })),
+        h('div', { class: 'grid-2' },
+          field('Country', h('div', { class: 'stack' },
+            h('select', { name: 'countryChoice', value: choice, onchange: (e) => syncCountry(e.target.form) },
+              REGIONS.countries.map((c) => h('option', { value: c }, c)), h('option', { value: OTHER_COUNTRY }, 'Other country…')),
+            h('input', { class: 'country-other', name: 'countryOther', maxlength: 60, value: listed ? '' : v.country, placeholder: 'Country', hidden: listed }))),
+          field('State / region', h('div', { class: 'region-slot' }, regionControl(choice, v.region)))),
+        h('div', { class: 'grid-2' },
+          field('City', h('input', { name: 'city', maxlength: 60, value: v.city || '', list: 'city-options', autocomplete: 'off', placeholder: 'e.g. Chennai' })),
+          field('Postcode / PIN', h('input', { name: 'postcode', maxlength: 20, value: v.postcode || '', inputmode: 'numeric', autocomplete: 'off' }))),
+        h('datalist', { id: 'city-options' }, cityOptions(listed ? choice : ''))),
+    ];
+  }
+
+  function readDetails(form) {
+    const fd = new FormData(form);
+    const choice = fd.get('countryChoice');
+    return {
+      venue: fd.get('venue') || '',
+      address: fd.get('address') || '',
+      city: fd.get('city') || '',
+      region: fd.get('region') || '',
+      postcode: fd.get('postcode') || '',
+      country: choice === OTHER_COUNTRY ? fd.get('countryOther') || '' : choice,
+      startsOn: fd.get('startsOn') || '',
+      endsOn: fd.get('endsOn') || '',
+    };
+  }
+
   function settingsFields(sport, v) {
     return [
+      detailsFields(v),
       h('fieldset', { class: 'formats' }, h('legend', {}, 'Format'),
         FORMATS.map(([value, label, desc]) => h('label', { class: 'format-option' },
           h('input', { type: 'radio', name: 'format', value, checked: v.format === value, onchange: (e) => syncFormat(e.target.form) }),
@@ -454,8 +635,8 @@
     const scoring = {};
     for (const f of sport.fields) scoring[f.key] = Number(fd.get(`scoring.${f.key}`));
     return {
+      ...readDetails(form),
       name: fd.get('name'),
-      venue: fd.get('venue'),
       format: fd.get('format'),
       groupSize: Number(fd.get('groupSize')),
       qualifiers: Number(fd.get('qualifiers')),
@@ -490,14 +671,13 @@
     },
     h('h1', {}, 'New tournament'),
     field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, placeholder: 'e.g. Club Championship 2026', autocomplete: 'off' })),
-    h('div', { class: 'grid-2' },
+    h('div', {},
       field('Sport', h('select', { name: 'sport' }, S.sports.map((s) => h('option', {
         value: s.id,
         disabled: s.status !== 'live',
       }, s.status === 'live' ? s.name : `${s.name} (coming soon)`))), null,
-      h('span', {}, 'More sports are on the way — ', h('a', { href: '#/' }, 'request yours on the home page'), '.')),
-      field('Venue (optional)', h('input', { name: 'venue', maxlength: 80, placeholder: 'e.g. City Sports Hall' }))),
-    settingsFields(sport, { format: 'league_knockout', groupSize: 4, qualifiers: 2, selfEntry: true, entriesCloseAt: null, maxEntries: null, lateEntry: false, scoring: sport.defaults }),
+      h('span', {}, 'More sports are on the way — ', h('a', { href: '#/' }, 'request yours on the home page'), '.'))),
+    settingsFields(sport, { country: REGIONS.defaultCountry, format: 'league_knockout', groupSize: 4, qualifiers: 2, selfEntry: true, entriesCloseAt: null, maxEntries: null, lateEntry: false, scoring: sport.defaults }),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
     syncFormat(form);
     return form;
@@ -529,7 +709,7 @@
       h('header', { class: 't-header' },
         h('div', { class: 't-title' }, h('h1', {}, t.name), pill(t.status, STATUS[t.status]), t.can.score ? visibilityPill(t.visibility) : null),
         h('p', { class: 'muted small' },
-          [t.sport.name, t.formatName, t.venue, entryStatusLine(t)].filter(Boolean).join(' · '), '  ', connDot())),
+          [fmtDates(t.startsOn, t.endsOn), placeLine(t.venue, t.location.city), t.sport.name, t.formatName, entryStatusLine(t)].filter(Boolean).join(' · '), '  ', connDot())),
       roleBar(t),
       t.visibility === 'private' ? visibilityBanner(t) : null,
       h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: `#/t/${t.id}/${x.id}`, class: x.id === active ? 'active' : '' }, x.label))),
@@ -608,6 +788,7 @@
 
     if (!t.can.manage) {
       return [
+        venueCard(t),
         setup && t.entriesOpen ? publicEntryCard(t) : null,
         setup && !t.entriesOpen
           ? h('div', { class: 'banner info' }, t.config.selfEntry ? 'Entries are closed. The draw will appear here once the tournament starts.' : 'The organiser is still adding players. The draw will appear here once the tournament starts.')
@@ -615,8 +796,8 @@
         list,
       ];
     }
-    if (!setup) return [upgradeCard(t), running ? lateEntryCard(t) : null, list];
-    return [upgradeCard(t), addEntriesForm(t, usingCheckIn), list, startCard(t), settingsCard(t)];
+    if (!setup) return [upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), list, detailsCard(t)];
+    return [upgradeCard(t), venueCard(t), addEntriesForm(t, usingCheckIn), list, startCard(t), settingsCard(t)];
   }
 
   function addEntriesForm(t, walkIn) {
@@ -812,6 +993,40 @@
       }, 'Start tournament'));
   }
 
+  // Date and venue for players: shown when any of it is set.
+  function venueCard(t) {
+    const L = t.location;
+    const lines = [L.address, [L.city, [L.region, L.postcode].filter(Boolean).join(' ')].filter(Boolean).join(', '), L.country].filter(Boolean);
+    const dates = fmtDates(t.startsOn, t.endsOn);
+    if (!dates && !t.venue && !L.address && !L.city) return null;
+    const query = [t.venue, ...lines].join(', ');
+    return h('div', { class: 'card venue-card' },
+      h('div', { class: 'venue-info' },
+        dates ? h('div', { class: 'venue-row' }, h('span', { class: 'venue-icon', 'aria-hidden': 'true' }, '📅'), h('strong', {}, dates)) : null,
+        t.venue || lines.length
+          ? h('div', { class: 'venue-row' }, h('span', { class: 'venue-icon', 'aria-hidden': 'true' }, '📍'),
+            h('div', {}, t.venue ? h('strong', {}, t.venue) : null, lines.map((l) => h('div', { class: 'muted small' }, l))))
+          : null),
+      t.venue || L.address || L.city
+        ? h('a', { class: 'btn btn-small', href: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, target: '_blank', rel: 'noopener' }, 'Open in Google Maps')
+        : null);
+  }
+
+  // After the start only the date and venue can still change.
+  function detailsCard(t) {
+    if (!t.can.manage) return null;
+    const form = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        act(async () => { S.t = await api('PATCH', tPath(t), readDetails(form), t.id); }, 'Venue and date saved');
+      },
+    },
+    detailsFields(detailValues(t)),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
+    return h('details', { class: 'card' }, h('summary', {}, 'Venue & date'), form);
+  }
+
   function settingsCard(t) {
     const sport = S.sports.find((s) => s.id === t.sport.id);
     if (!sport) return null;
@@ -822,10 +1037,8 @@
         act(async () => { S.t = await api('PATCH', tPath(t), readSettings(form, sport), t.id); }, 'Settings saved');
       },
     },
-    h('div', { class: 'grid-2' },
-      field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: t.name })),
-      field('Venue', h('input', { name: 'venue', maxlength: 80, value: t.venue || '' }))),
-    settingsFields(sport, { format: t.format, ...t.config }),
+    field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: t.name })),
+    settingsFields(sport, { format: t.format, ...t.config, ...detailValues(t) }),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save settings')));
     syncFormat(form);
     return h('details', { class: 'card' }, h('summary', {}, `Settings · ${t.formatName}`), form);
@@ -1411,8 +1624,11 @@
   }
   function setVisibility(t, v) {
     const label = VISIBILITY.find((x) => x[0] === v)[1];
+    const findable = t.startsOn && t.location.city;
     act(async () => { S.t = await api('POST', `${tPath(t)}/visibility`, { visibility: v }, t.id); },
-      v === 'public' ? 'Published — your tournament is public' : `Visibility: ${label}`);
+      v !== 'public' ? `Visibility: ${label}`
+        : findable ? 'Published — your tournament is public'
+          : 'Published — add a date and city in Settings so players can find it');
   }
   function visibilityControl(t) {
     const current = VISIBILITY.find((x) => x[0] === t.visibility) || VISIBILITY[0];

@@ -19,6 +19,8 @@ Tournament management with live scoring for **tonament.com**. Starts with badmin
   - Optional **late entries** after the start: a latecomer joins the smallest group with catch-up matches, or takes a bye in a knockout.
   - **Withdraw** turns a player's remaining matches into walkovers. These count as wins but not towards games or points, and a withdrawn player can't qualify for the knockout.
 - **Accounts and roles:** sign up with email and password. Whoever creates a tournament is its **owner** and can add **organisers** (manage everything) and **umpires** (score matches only) by email. Someone without an account yet gets access as soon as they sign up with that email. Spectators don't need an account.
+- **Venue and dates:** start date (and an optional end date), venue name, address, city, state, postcode and country. Countries and states come from a fixed list in `public/regions.js`, so filters group cleanly; there's also "Other" for any country. Players get an "Open in Google Maps" link. Venue and dates stay editable after the start.
+- **Find a tournament:** the home page searches public tournaments by name or venue, sport, country → state → city, date (upcoming & live, next 7 or 30 days, past) and "open for entries". Filters live in the URL, so a search can be shared.
 - **Visibility:** the owner chooses who can see a tournament. **Private** (the default for new tournaments): only the team. **Link only**: anyone with the link can view and enter, but it isn't listed. **Public**: also listed on the home page. Tournaments created before this setting existed are Public.
 - **Share links:** each tournament also has a *scorer link* (scoring only) and an *organiser link* (full control) for people without an account, such as a volunteer on a borrowed phone. Tournaments created before accounts existed can be added to your account from the organiser link.
 - **Site admins:** anyone whose email is listed in `ADMIN_EMAILS` can manage every tournament and see all users at `/#/admin`.
@@ -157,7 +159,8 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | GET | `/sports` | Sport catalogue: playable sports (with scoring options) and upcoming ones (`status: soon / later`) |
 | GET | `/sports/interest` | Request counts per upcoming sport, plus the sports you requested |
 | POST | `/sports/:id/interest` `{ want }` | Request (or withdraw a request for) an upcoming sport; signed-in users, one vote each |
-| GET/POST | `/tournaments` | List tournaments / create one (returns `adminKey`) |
+| GET/POST | `/tournaments` | Find public tournaments (`?q&sport&country&region&city&when=upcoming\|week\|month\|past\|any&open=1&today=YYYY-MM-DD`) / create one |
+| GET | `/tournaments/places` | Countries, states and cities that have public tournaments (for the filters) |
 | GET/PATCH/DELETE | `/tournaments/:id` | View / change settings (during setup) / delete |
 | GET/POST | `/tournaments/:id/members` | Team list / add or change a member `{ email, role }` |
 | DELETE | `/tournaments/:id/members/:memberId` | Remove a team member |

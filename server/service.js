@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const sports = require('./sports');
 const formats = require('./formats');
+const regions = require('../public/regions');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
 const { inviteEmail, receiptEmail, waitingEmail } = require('./email');
@@ -49,6 +50,63 @@ function slugify(name) {
     .replace(/-$/, '');
   return slug || 'tournament';
 }
+
+// "new  delhi" -> "New Delhi", so the same city always groups together.
+const titleCase = (s) => s.toLowerCase().replace(/(^|[\s-])(\p{L})/gu, (_, sep, ch) => sep + ch.toUpperCase());
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+function isoDate(value, label) {
+  if (value === undefined || value === null || value === '') return null;
+  const ok = typeof value === 'string' && ISO_DATE.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`))
+    && new Date(`${value}T00:00:00Z`).toISOString().startsWith(value);
+  if (!ok) fail(400, `${label}: enter a valid date`);
+  return value;
+}
+const addDays = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+
+// Venue, location and dates (all optional). Fields not sent keep their value.
+const DETAIL_KEYS = ['venue', 'address', 'city', 'region', 'postcode', 'country', 'startsOn', 'endsOn'];
+function detailsOf(input, prev = {}) {
+  const pick = (key, col, label, max) => (input[key] === undefined ? prev[col] ?? null : text(input[key], label, { max, optional: true }));
+  const d = {
+    venue: pick('venue', 'venue', 'Venue', 80),
+    address: pick('address', 'address', 'Address', 120),
+    city: pick('city', 'city', 'City', 60),
+    region: pick('region', 'region', 'State', 60),
+    postcode: pick('postcode', 'postcode', 'Postcode', 20),
+    country: pick('country', 'country', 'Country', 60),
+    starts_on: input.startsOn === undefined ? prev.starts_on ?? null : isoDate(input.startsOn, 'Start date'),
+    ends_on: input.endsOn === undefined ? prev.ends_on ?? null : isoDate(input.endsOn, 'End date'),
+  };
+  if (d.city) d.city = titleCase(d.city);
+  if (d.country) {
+    const listed = regions.countries.find((c) => c.toLowerCase() === d.country.toLowerCase());
+    d.country = listed || titleCase(d.country);
+    const states = regions.regionsFor(d.country);
+    if (states && d.region) {
+      const match = states.find((r) => r.toLowerCase() === d.region.toLowerCase());
+      if (!match) fail(400, `Choose a state in ${d.country}`);
+      d.region = match;
+    }
+  }
+  if (d.ends_on && !d.starts_on) fail(400, 'Add a start date first');
+  if (d.ends_on && d.ends_on < d.starts_on) fail(400, 'The end date must be on or after the start date');
+  if (d.ends_on === d.starts_on) d.ends_on = null; // a one-day event
+  return d;
+}
+const DETAIL_COLUMNS = ['venue', 'address', 'city', 'region', 'postcode', 'country', 'starts_on', 'ends_on'];
+const saveDetails = (q, t, d) =>
+  q(`UPDATE tournaments SET ${DETAIL_COLUMNS.map((c, i) => `${c} = $${i + 1}`).join(', ')} WHERE id = $${DETAIL_COLUMNS.length + 1}`, [
+    ...DETAIL_COLUMNS.map((c) => d[c]), t.id,
+  ]);
+
+// Tournament list cards (home page search and "My tournaments").
+const CARD_COLUMNS = `t.id, t.name, t.venue, t.sport, t.format, t.status, t.visibility, t.created_at AS "createdAt",
+  t.city, t.region, t.country, t.starts_on AS "startsOn", t.ends_on AS "endsOn",
+  (t.status = 'setup' AND COALESCE((t.config->>'selfEntry')::boolean, false)
+    AND (t.config->>'entriesCloseAt' IS NULL OR (t.config->>'entriesCloseAt')::timestamptz > now())) AS "entriesOpen",
+  (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries`;
+const WHEN = ['upcoming', 'week', 'month', 'past', 'any'];
 
 const groupName = (no) => `Group ${String.fromCharCode(65 + no)}`;
 const nextSlotColumn = (m) => (m.slot % 2 ? 'b_id' : 'a_id');
@@ -348,6 +406,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
       id: t.id,
       name: t.name,
       venue: t.venue,
+      location: { address: t.address, city: t.city, region: t.region, postcode: t.postcode, country: t.country },
+      startsOn: t.starts_on,
+      endsOn: t.ends_on,
       status: t.status,
       format: t.format,
       formatName: FORMATS[t.format],
@@ -414,12 +475,51 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // ---------- tournaments
 
-  async function listTournaments() {
-    const rows = await db.query(`
-      SELECT t.id, t.name, t.venue, t.sport, t.format, t.status, t.created_at AS "createdAt",
-             (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries
-      FROM tournaments t WHERE t.visibility = 'public' ORDER BY t.created_at DESC, t.id LIMIT 100`);
+  // Find public tournaments. Filters (all optional): country, region, city,
+  // sport, q (name or venue), open (entries open), when (upcoming | week |
+  // month | past | any) relative to `today` (the viewer's local date).
+  async function listTournaments(filters = {}) {
+    const f = (k) => (typeof filters[k] === 'string' ? filters[k].trim().slice(0, 80) : '');
+    const where = [`t.visibility = 'public'`];
+    const params = [];
+    const add = (sql, value) => {
+      params.push(value);
+      where.push(sql.replace('?', `$${params.length}`));
+    };
+    if (f('country')) add('lower(t.country) = lower(?)', f('country'));
+    if (f('region')) add('lower(t.region) = lower(?)', f('region'));
+    if (f('city')) add('lower(t.city) = lower(?)', f('city'));
+    if (f('sport')) add('t.sport = ?', f('sport'));
+    if (f('q')) add(`(t.name ILIKE ? OR COALESCE(t.venue, '') ILIKE $${params.length + 1})`, `%${f('q').replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+    if (['1', 'true'].includes(f('open'))) {
+      where.push(`t.status = 'setup' AND COALESCE((t.config->>'selfEntry')::boolean, false)
+        AND (t.config->>'entriesCloseAt' IS NULL OR (t.config->>'entriesCloseAt')::timestamptz > now())`);
+    }
+    const today = ISO_DATE.test(f('today')) ? f('today') : new Date().toISOString().slice(0, 10);
+    const when = WHEN.includes(f('when')) ? f('when') : 'upcoming';
+    const last = 'COALESCE(t.ends_on, t.starts_on)';
+    if (when === 'upcoming') add(`t.status <> 'completed' AND (${last} IS NULL OR ${last} >= ?)`, today);
+    if (when === 'week' || when === 'month') {
+      add(`${last} >= ?`, today);
+      add('t.starts_on <= ?', addDays(today, when === 'week' ? 6 : 30));
+    }
+    if (when === 'past') add(`(t.status = 'completed' OR ${last} < ?)`, today);
+    const order = when === 'past'
+      ? `${last} DESC NULLS LAST, t.created_at DESC`
+      : 't.starts_on ASC NULLS LAST, t.created_at DESC';
+    const rows = await db.query(
+      `SELECT ${CARD_COLUMNS} FROM tournaments t WHERE ${where.join(' AND ')} ORDER BY ${order}, t.id LIMIT 50`,
+      params,
+    );
     return rows.map((r) => ({ ...r, formatName: FORMATS[r.format] }));
+  }
+
+  // Places that have public tournaments, for the search filters.
+  async function tournamentPlaces() {
+    return db.query(
+      `SELECT DISTINCT country, region, city FROM tournaments
+       WHERE visibility = 'public' AND country IS NOT NULL ORDER BY country, region, city`,
+    );
   }
 
   // Private tournaments are visible to the team only. Anonymous (cacheable)
@@ -446,8 +546,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   async function myTournaments(actor) {
     if (!actor.user) fail(401, 'Sign in to see your tournaments');
     const rows = await db.query(
-      `SELECT t.id, t.name, t.venue, t.sport, t.format, t.status, t.visibility, t.created_at AS "createdAt", m.role,
-              (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries
+      `SELECT ${CARD_COLUMNS}, m.role
        FROM members m JOIN tournaments t ON t.id = m.tournament_id
        WHERE m.email = $1 ORDER BY t.created_at DESC`,
       [actor.user.email],
@@ -458,7 +557,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   async function createTournament(actor, input = {}) {
     if (!actor.user) fail(401, 'Sign in to create a tournament');
     const name = text(input.name, 'Tournament name');
-    const venue = text(input.venue, 'Venue', { optional: true });
+    const details = detailsOf(input);
     const sport = sports.get(input.sport || 'badminton');
     if (!sport) {
       const info = sports.info(input.sport);
@@ -475,10 +574,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const scorerKey = crypto.randomBytes(18).toString('base64url');
     await db.tx(async (q) => {
       await q(
-        `INSERT INTO tournaments (id, name, venue, sport, format, config, admin_key, scorer_key, visibility)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)`,
-        [id, name, venue, sport.id, format, JSON.stringify(config), adminKey, scorerKey, visibility],
+        `INSERT INTO tournaments (id, name, sport, format, config, admin_key, scorer_key, visibility)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+        [id, name, sport.id, format, JSON.stringify(config), adminKey, scorerKey, visibility],
       );
+      await saveDetails(q, { id }, details);
       await q(`INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, 'owner')`, [id, actor.user.email]);
     });
     return { id };
@@ -486,23 +586,29 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   async function updateSettings(id, actor, input = {}) {
     return mutate(id, actor, async (q, t) => {
+      const details = detailsOf(input, t);
       if (t.status !== 'setup') {
-        // Once started, only the late-entry switch can change.
+        // Once started, only the late-entry switch, venue and dates can change.
         const keys = Object.keys(input).filter((k) => input[k] !== undefined);
-        if (!keys.length || keys.some((k) => k !== 'lateEntry')) fail(409, 'Settings are locked once the tournament has started');
-        const config = { ...t.config, lateEntry: Boolean(input.lateEntry) };
-        await q('UPDATE tournaments SET config = $1::jsonb WHERE id = $2', [JSON.stringify(config), t.id]);
+        if (!keys.length || keys.some((k) => k !== 'lateEntry' && !DETAIL_KEYS.includes(k))) {
+          fail(409, 'Settings are locked once the tournament has started');
+        }
+        if (input.lateEntry !== undefined) {
+          const config = { ...t.config, lateEntry: Boolean(input.lateEntry) };
+          await q('UPDATE tournaments SET config = $1::jsonb WHERE id = $2', [JSON.stringify(config), t.id]);
+        }
+        await saveDetails(q, t, details);
         return;
       }
       const name = input.name === undefined ? t.name : text(input.name, 'Tournament name');
-      const venue = input.venue === undefined ? t.venue : text(input.venue, 'Venue', { optional: true });
       if (input.format !== undefined && !FORMATS[input.format]) fail(400, 'Unknown format');
       const format = input.format ?? t.format;
       const config = buildConfig(input, t.sportDef, t.config);
       if (input.maxEntries !== undefined) checkMaxEntries(config, t.plan);
-      await q('UPDATE tournaments SET name = $1, venue = $2, format = $3, config = $4::jsonb WHERE id = $5', [
-        name, venue, format, JSON.stringify(config), t.id,
+      await q('UPDATE tournaments SET name = $1, format = $2, config = $3::jsonb WHERE id = $4', [
+        name, format, JSON.stringify(config), t.id,
       ]);
+      await saveDetails(q, t, details);
       // A higher (or no) maximum makes room for players who were waiting.
       if (input.maxEntries !== undefined) await confirmWaiting(q, { ...t, config });
     });
@@ -1267,6 +1373,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     removeMember,
     claim,
     listTournaments,
+    tournamentPlaces,
     getTournament,
     setVisibility,
     createTournament,
