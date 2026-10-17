@@ -533,3 +533,5 @@ fieldset.details-set { display: grid; gap: 12px; }
 
 .t-card-events { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px; }
 .event-tag { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); }
+
+.fee-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }

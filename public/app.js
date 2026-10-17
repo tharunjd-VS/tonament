@@ -858,7 +858,8 @@
     const statusLine = multiEvent(tt) ? (tt.entriesOpen ? 'Entries open' : null) : entryStatusLine(t);
     return [
       h('header', { class: 't-header' },
-        h('div', { class: 't-title' }, h('h1', {}, tt.name), pill(tt.status, STATUS[tt.status]), tt.can.score ? visibilityPill(tt.visibility) : null),
+        h('div', { class: 't-title' }, h('h1', {}, tt.name), pill(tt.status, STATUS[tt.status]), tt.can.score ? visibilityPill(tt.visibility) : null,
+          tt.official ? pill('org', 'Organised by Tonament') : null),
         h('p', { class: 'muted small' },
           [fmtDates(tt.startsOn, tt.endsOn), placeLine(tt.venue, tt.location.city), tt.sport.name, multiEvent(tt) ? `${tt.events.length} events` : t.formatName, statusLine]
             .filter(Boolean).join(' · '), '  ', connDot())),
@@ -867,7 +868,7 @@
       perEvent ? eventPicker(tt, ev) : null,
       h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: tabHref(t, x.id), class: x.id === active ? 'active' : '' }, x.label))),
       perEvent && multiEvent(tt)
-        ? h('p', { class: 'event-title' }, h('strong', {}, ev.name), ' · ', ev.formatName, ev.status !== 'setup' ? ` · ${STATUS[ev.status]}` : '')
+        ? h('p', { class: 'event-title' }, h('strong', {}, ev.name), ' · ', ev.formatName, ev.fee ? ` · ${money(ev.fee)} entry` : '', ev.status !== 'setup' ? ` · ${STATUS[ev.status]}` : '')
         : null,
       h('section', {}, panels[active](t)),
     ];
@@ -893,7 +894,8 @@
     const confirmedCount = allEntries(t).filter((e) => e.confirmed).length; // the plan counts every event
     const groupLabel = (g) => (g == null || t.format === 'knockout' ? null : h('span', { class: 'pill' }, `Group ${String.fromCharCode(65 + g)}`));
     const tags = (e) => [
-      setup && !e.confirmed ? pill('waiting', t.can.manage ? 'Unconfirmed' : 'Awaiting confirmation') : null,
+      setup && !e.confirmed && e.feeStatus !== 'pending' ? pill('waiting', t.can.manage ? 'Unconfirmed' : 'Awaiting confirmation') : null,
+      t.event.fee && t.can.manage ? feePill(e) : null,
       e.source === 'self' ? pill('', 'Self-entered') : e.source === 'walk-in' ? pill('', 'Walk-in') : null,
       !setup && e.withdrawn ? pill('withdrawn', 'Withdrew') : null,
       !setup && !e.inDraw ? pill('', 'Didn\'t show') : null,
@@ -906,6 +908,9 @@
           h('button', { class: 'btn btn-small btn-ghost', disabled: S.checkAllBusy, onclick: () => checkInAll(t, !usingCheckIn) },
             S.checkAllBusy ? 'Saving…' : usingCheckIn ? 'Clear check-in' : 'Check in all'),
           t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null) : null),
+      t.can.manage && t.event.fee
+        ? h('p', { class: 'muted small', style: 'margin:0 0 8px' }, `Entry fee ${money(t.event.fee)} · ${money(t.event.feeTotal || 0)} collected`)
+        : null,
       t.can.manage && t.limits && t.limits.entries
         ? h('p', { class: 'muted small entry-meter' },
           `${Math.min(confirmedCount, t.limits.entries)} of ${t.limits.entries} ${t.plan === 'free' ? 'free entries' : `entries (${t.planName} plan)`} used${multiEvent(t) ? ', all events' : ''}`,
@@ -935,9 +940,10 @@
             h('span', { class: 'entry-name' }, e.name),
             e.contact ? h('small', { class: 'contact' }, e.contact) : null,
             h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group)),
-            editable && !e.confirmed
+            editable && !e.confirmed && e.feeStatus !== 'pending'
               ? h('button', { class: 'btn btn-small btn-primary confirm-btn', onclick: () => confirmEntry(t, e) }, 'Confirm place')
-              : null),
+              : null,
+            t.event.fee && t.can.manage ? feeActions(t, e) : null),
           editable ? h('span', { class: 'row-actions' },
             h('button', { class: 'icon-btn', title: 'Move up', 'aria-label': `Move ${e.name} up`, disabled: i === 0, onclick: () => move(t, i, -1) }, '↑'),
             h('button', { class: 'icon-btn', title: 'Move down', 'aria-label': `Move ${e.name} down`, disabled: i === t.entries.length - 1, onclick: () => move(t, i, 1) }, '↓'),
@@ -1011,6 +1017,14 @@
         h('p', { class: 'muted small', style: 'margin:0' }, `Something wrong? Contact the organiser. ${closes}`));
     }
     const full = t.placesLeft === 0;
+    const fee = t.event.fee || 0;
+    const feeLine = fee ? `Entry fee ${money(fee)}${t.event.discipline === 'doubles' ? ' per pair' : ''}, paid online when you enter. ` : '';
+    // Paid events have no waitlist: nobody pays for a place that isn't there.
+    if (fee && full) {
+      return h('div', { class: 'card entry-card' },
+        h('h2', {}, `${multiEvent(t) ? t.event.name : 'This tournament'} is full`),
+        h('p', { class: 'muted small', style: 'margin:0' }, 'All places have been taken. Questions? Contact the organiser.'));
+    }
     const form = h('form', {
       class: 'card form entry-card',
       onsubmit: async (e) => {
@@ -1020,8 +1034,17 @@
         try {
           const body = Object.fromEntries(new FormData(form));
           const res = await api('POST', `${tPath(t)}/register`, withEv(t, body));
+          if (res.payment) {
+            const outcome = await payEntry(res.payment);
+            if (outcome !== 'paid') {
+              toast(outcome === 'cancelled' ? 'Payment cancelled — you haven\'t been charged. Enter again when you\'re ready.' : 'Payment didn\'t go through — please try again', outcome !== 'cancelled');
+              btn.disabled = false;
+              return;
+            }
+          }
           try { localStorage.setItem(enteredKey(t), res.name || body.name); } catch { /* fine */ }
-          toast(res.confirmed === false ? 'Entry received — the organiser will confirm your place' : 'You\'re entered — see you there!');
+          toast(res.payment ? 'Payment received — you\'re entered ✓ Your receipt is on its way.'
+            : res.confirmed === false ? 'Entry received — the organiser will confirm your place' : 'You\'re entered — see you there!');
           refresh();
           render();
         } catch (err) {
@@ -1034,7 +1057,7 @@
       h('h2', {}, multiEvent(t) ? (full ? `${t.event.name} is full` : `Enter ${t.event.name}`) : full ? 'This tournament is full' : 'Enter this tournament'),
       h('p', { class: 'muted small', style: 'margin:0' }, full
         ? 'Join the waitlist — the organiser will confirm your place if one opens up.'
-        : t.placesLeft != null ? `${t.placesLeft} of ${t.config.maxEntries} places left. ${closes}` : closes)),
+        : `${feeLine}${t.placesLeft != null ? `${t.placesLeft} of ${t.config.maxEntries} places left. ` : ''}${closes}`)),
     h('div', { class: 'grid-2' },
       field('Your name', h('input', { name: 'name', required: true, maxlength: 40, autocomplete: 'name' })),
       // Doubles events need a partner; singles have none; catch-all events make it optional.
@@ -1042,11 +1065,15 @@
         : t.event.discipline === 'doubles'
           ? field('Partner\'s name', h('input', { name: 'partner', required: true, maxlength: 40, autocomplete: 'off' }))
           : field('Partner (doubles only)', h('input', { name: 'partner', maxlength: 40, autocomplete: 'off' }))),
-    field('Phone or email', h('input', { name: 'contact', required: true, maxlength: 120, autocomplete: 'email' }), null,
-      'Only the organisers see this, in case they need to reach you.'),
+    fee
+      ? field('Email', h('input', { name: 'contact', type: 'email', required: true, maxlength: 120, autocomplete: 'email' }), null,
+        'Your receipt is sent here. Only the organisers see it.')
+      : field('Phone or email', h('input', { name: 'contact', required: true, maxlength: 120, autocomplete: 'email' }), null,
+        'Only the organisers see this, in case they need to reach you.'),
     // honeypot: hidden from people, filled in by bots
     h('label', { class: 'hp', 'aria-hidden': 'true' }, 'Website', h('input', { name: 'website', tabindex: '-1', autocomplete: 'off' })),
-    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, full ? 'Join waitlist' : 'Enter')));
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, full ? 'Join waitlist' : fee ? `Pay ${money(fee)} and enter` : 'Enter')),
+    fee ? h('p', { class: 'hint', style: 'margin:0' }, 'Secure payment by Razorpay — UPI, cards, netbanking or wallets. ', h('a', { href: '/refunds', target: '_blank', rel: 'noopener' }, 'Refund policy')) : null);
     return form;
   }
 
@@ -1140,11 +1167,31 @@
     }
     saveOrder(t, ids, 'Order shuffled');
   }
+  // Entry fees (tournaments organised by Tonament).
+  function feePill(e) {
+    if (e.feeStatus === 'paid') return pill('done', `Paid ${money(e.feeAmount || 0)}`);
+    if (e.feeStatus === 'cash') return pill('done', 'Paid in person');
+    if (e.feeStatus === 'waived') return pill('', 'Fee waived');
+    if (e.feeStatus === 'pending') return pill('waiting', 'Paying…');
+    return pill('waiting', 'Unpaid');
+  }
+  function feeActions(t, e) {
+    const set = (status, msg) => act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/fee`, { status }, t.id); }, msg);
+    if (e.feeStatus === 'cash' || e.feeStatus === 'waived') {
+      return h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => set(null, 'Marked unpaid') }, 'Undo'));
+    }
+    if (e.feeStatus) return null;
+    return h('span', { class: 'fee-actions' },
+      h('button', { class: 'btn btn-small btn-ghost', onclick: () => set('cash', `${e.name}: paid in person`) }, 'Paid in person'),
+      h('button', { class: 'btn btn-small btn-ghost', onclick: () => set('waived', `${e.name}: fee waived`) }, 'Waive'));
+  }
+
   function confirmEntry(t, e) {
     act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/confirm`, {}, t.id); }, `${e.name} confirmed`);
   }
   async function removeEntry(t, e) {
-    const self = e.source === 'self' ? '\n\nThey entered themselves online and won\'t be told.' : '';
+    const self = (e.feeStatus === 'paid' ? `\n\nThey paid ${money(e.feeAmount || 0)} online — refund it in the Razorpay dashboard.` : '')
+      + (e.source === 'self' ? '\n\nThey entered themselves online and won\'t be told.' : '');
     if (!confirm(`Remove ${e.name} from the entries? This can't be undone.${self}`)) return;
     S.removing.add(e.id);
     render();
@@ -1165,7 +1212,7 @@
       if (n < 2) return 'Needs at least 2 entries.';
       const size = pow2(n);
       const byes = size - n;
-      return `${n} entries → ${size}-draw knockout, ${Math.log2(size)} rounds${byes ? `, ${byes} bye${byes > 1 ? 's' : ''} for top seeds` : ''}.`;
+      return `${n} entries → ${size}-draw knockout, ${Math.log2(size)} round${size > 2 ? 's' : ''}${byes ? `, ${byes} bye${byes > 1 ? 's' : ''} for top seeds` : ''}.`;
     }
     const g = t.config.groupSize ? groupCount(n, t.config.groupSize) : t.config.groups;
     if (n < 2 || n < g * 2) return `Needs at least ${Math.max(2, g * 2)} entries.`;
@@ -1285,11 +1332,18 @@
       onsubmit: (e) => {
         e.preventDefault();
         saveForm(form, async () => {
-          S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ...readCategory(form), ...readFormat(form, sport) }, t.id);
+          const fee = form.fee ? { fee: Math.round(Number(form.fee.value || 0) * 100) } : {};
+          S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ...readCategory(form), ...readFormat(form, sport), ...fee }, t.id);
         }, 'Event settings saved');
       },
     },
     categoryFields(t.event),
+    t.official
+      ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'Entry fee'),
+        field(`Entry fee (₹)${t.event.discipline === 'doubles' ? ' per pair' : ''}`, h('input', {
+          type: 'number', name: 'fee', min: 0, max: 50000, step: 1, value: t.event.fee ? t.event.fee / 100 : '', placeholder: 'Free',
+        }), null, 'Players pay online when they enter (Organised by Tonament only).'))
+      : null,
     formatFields(sport, { format: t.format, ...t.config }),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
     syncFormat(form);
@@ -1785,6 +1839,37 @@
     });
   }
 
+  // Pays a self-entry's fee in Razorpay Checkout: 'paid', 'cancelled' or 'failed'.
+  async function payEntry(order) {
+    await loadRazorpay();
+    return new Promise((resolve) => {
+      let failed = false;
+      const rzp = new window.Razorpay({
+        key: order.keyId,
+        order_id: order.orderId,
+        amount: order.amount,
+        currency: order.currency,
+        name: order.name,
+        description: order.description,
+        image: `${location.origin}/brand/icon-512.png`,
+        prefill: order.prefill,
+        theme: { color: '#0B1220' },
+        handler: async (resp) => {
+          try {
+            await api('POST', '/billing/razorpay/verify', resp);
+            resolve('paid');
+          } catch (e) {
+            toast(e.message, true);
+            resolve('failed');
+          }
+        },
+        modal: { ondismiss: () => resolve(failed ? 'failed' : 'cancelled') },
+      });
+      rzp.on('payment.failed', () => { failed = true; });
+      rzp.open();
+    });
+  }
+
   // Buys a plan (or an upgrade: only the difference is charged).
   async function payPass(t, tier) {
     if (S.paying) return;
@@ -1888,7 +1973,18 @@
           ? h('p', { class: 'muted small' }, `${used} of ${t.limits.entries} entries used, across all events.`)
           : h('p', { class: 'muted small' }, 'Unlimited entries for this tournament.'),
       S.billing.enabled && (t.upgrades || []).length ? h('div', { class: 'actions' }, upgradeButtons(t, true)) : null,
-      adminSwitch ? h('div', { class: 'actions', style: 'margin-top:10px' }, adminSwitch) : null);
+      adminSwitch ? h('div', { class: 'actions', style: 'margin-top:10px' }, adminSwitch) : null,
+      admin ? h('label', { class: 'check-field', style: 'margin:12px 0 0' },
+        h('input', {
+          type: 'checkbox',
+          checked: Boolean(t.official),
+          onchange: (e) => {
+            const on = e.target.checked;
+            if (!confirm(on ? 'Mark this tournament as organised by Tonament? Its events can then charge entry fees, paid to Tonament.' : 'Remove "Organised by Tonament"? Entry fees will stop being charged.')) { e.target.checked = !on; return; }
+            act(async () => { S.t = await api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/official`, { official: on }, t.id); }, on ? 'Marked as organised by Tonament' : 'No longer organised by Tonament');
+          },
+        }),
+        h('span', {}, h('strong', {}, 'Organised by Tonament'), h('small', {}, 'Admin only. Lets this tournament\'s events charge entry fees, paid to Tonament.'))) : null);
   }
 
   // ---------- roles & team
@@ -2257,12 +2353,12 @@
       !pay ? loading()
         : !pay.payments.length ? empty('No payments yet.')
           : h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ['Date', 'Tournament', 'Paid by', 'Plan', 'Amount', 'Status', 'Payment ID'].map((c, i) => h('th', { class: i === 4 ? 'num' : '' }, c)))),
+            h('thead', {}, h('tr', {}, ['Date', 'Tournament', 'Paid by', 'For', 'Amount', 'Status', 'Payment ID'].map((c, i) => h('th', { class: i === 4 ? 'num' : '' }, c)))),
             h('tbody', {}, pay.payments.map((p) => h('tr', {},
               h('td', {}, new Date(p.paidAt || p.createdAt).toLocaleDateString()),
               h('td', { class: 'name' }, p.tournamentId ? h('a', { href: `#/t/${p.tournamentId}/team` }, p.tournamentName) : p.tournamentName),
               h('td', {}, p.email || '—'),
-              h('td', {}, PLAN_LABELS[p.tier || 'pass'] || p.tier),
+              h('td', {}, p.kind === 'entry' ? `Entry · ${p.eventName || ''}${p.player ? ` (${p.player})` : ''}` : PLAN_LABELS[p.tier || 'pass'] || p.tier),
               h('td', { class: 'num' }, money(p.amount)),
               h('td', {}, statusPill(p.status)),
               h('td', { class: 'small' }, p.paymentId || '—'))))))),

@@ -36,6 +36,12 @@ Tournament management with live scoring for **tonament.com**. Starts with badmin
 
 The limit applies only once Razorpay keys are set.
 
+**Entry fees (tournaments organised by Tonament only).** A site admin can mark a tournament "Organised by Tonament" (Team tab, or `POST /api/admin/tournaments/:id/official`). Its events can then set an entry fee. Players pay through the same Razorpay checkout when they enter; the money goes to Tonament's account.
+- **While paying,** the entry is saved as pending and holds its place for 30 minutes. It's confirmed (with an emailed receipt) by the payment check or the webhook.
+- **Full paid events** don't take payments, so there's no waitlist for them.
+- **Organisers** can mark walk-ins as "paid in person" or "waived".
+- **Other organisers' tournaments** can't charge fees.
+
 Players are never shown the free limit. Past it, self-entries are still accepted but saved as **unconfirmed**: the player sees "Entry received — the organiser will confirm your place", and the owner is emailed once. Unconfirmed entries aren't drawn. Moving up a plan confirms them automatically, or the organiser can confirm or remove them one by one. Organisers can also set their own **maximum entries**: players then see "N of M places left", and once it's reached new entries join a waitlist (the same unconfirmed state). A maximum above the plan's limit needs a bigger plan.
 
 **Environment variables (Vercel → Settings → Environment Variables):**
@@ -166,7 +172,10 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | POST | `/tournaments/:id/claim` | Add an ownerless tournament to your account (needs the organiser link) |
 | POST | `/tournaments/:id/entries` | `{ names: [...], walkIn }` |
 | POST | `/tournaments/:id/visibility` `{ visibility }` | `private`, `link` or `public` (owner only) |
+| POST/PATCH/DELETE | `/tournaments/:id/events`, `/tournaments/:id/events/:eventId` | Add events (`{ events: [...] }`), change one (type, age, level, name, format, scoring, places, `fee`), delete one (before it starts) |
+| PUT | `/tournaments/:id/events/order` `{ ids }` | Reorder events |
 | POST | `/tournaments/:id/register` | Public self-entry `{ name, partner?, contact }` while entries are open; returns `confirmed: false` past the tournament's capacity |
+| POST | `/tournaments/:id/entries/:entryId/fee` `{ status }` | Record an entry fee as `cash` (paid in person), `waived`, or `null` (official tournaments) |
 | POST | `/tournaments/:id/entries/:entryId/confirm` | Confirm a waiting self-entry (within the plan's limit) |
 | POST | `/tournaments/:id/entries/:entryId/check-in` `{ here }`, `/tournaments/:id/check-in-all` | Event-day check-in |
 | POST | `/tournaments/:id/redraw` | Undo the draw (only before the first point) |

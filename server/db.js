@@ -180,6 +180,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS entries_event_contact ON entries(event_id, con
 
 -- Tiered plans: which plan a payment bought (null = the original Event Pass).
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS tier TEXT;
+
+-- Entry fees, only for tournaments organised by Tonament itself (official).
+-- A paid self-entry is saved as 'pending' until its payment arrives.
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS official BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS fee_status TEXT;            -- pending | paid | cash | waived
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS fee_amount INTEGER;          -- paise
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'plan';  -- plan | entry
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS entry_id INTEGER;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS event_id INTEGER;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS event_name TEXT;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS player TEXT;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of

@@ -166,3 +166,14 @@ test('search filters by event type, age group and level; cards list events', asy
   const card = (await svc.listTournaments({ when: 'any', q: 'Junior Mixed' }))[0];
   assert.deepEqual(card.events, ['XD U19', 'WS U15']);
 });
+
+test('a tournament that somehow has no event gets one on first view', async () => {
+  await db.query(
+    `INSERT INTO tournaments (id, name, sport, format, config, admin_key, scorer_key, status)
+     VALUES ('no-events', 'Orphan', 'badminton', 'knockout', '{"scoring":{"bestOf":3,"points":21,"cap":30}}'::jsonb, 'k3', 'k4', 'setup')`,
+  );
+  await db.query(`INSERT INTO entries (tournament_id, name, seed) VALUES ('no-events', 'Lone', 1)`);
+  const t = await svc.getTournament('no-events', ORG);
+  assert.equal(t.events.length, 1);
+  assert.deepEqual(t.entries.map((e) => e.name), ['Lone']);
+});

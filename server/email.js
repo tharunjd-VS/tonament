@@ -129,6 +129,35 @@ function receiptEmail({ business, tournament, plan = 'Event Pass', limit = null,
   };
 }
 
+// Receipt for an entry fee (tournaments organised by Tonament).
+function entryReceiptEmail({ business, tournament, event, player, amount, currency, paymentId, paidAt, url }) {
+  const money = currency === 'INR' ? `₹${(amount / 100).toFixed(2)}` : `${(amount / 100).toFixed(2)} ${currency}`;
+  const date = new Date(paidAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
+  const rows = [
+    ['Item', `Entry fee — ${event}`],
+    ['Tournament', tournament],
+    ['Entry', player],
+    ['Amount paid', money],
+    ['Payment ID', paymentId],
+    ['Date', `${date} IST`],
+    ['Paid to', business.name + (business.gstin ? ` (GSTIN ${business.gstin})` : '')],
+  ];
+  const table = `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse">${rows
+    .map(([k, v]) => `<tr><td style="padding:6px 0;color:#475569;font-size:14px">${esc(k)}</td><td style="padding:6px 0;text-align:right;font-weight:600;font-size:14px">${esc(v)}</td></tr>`)
+    .join('')}</table>`;
+  return {
+    subject: `You're entered — ${event}, ${tournament}`,
+    html: layout({
+      heading: 'You\'re entered',
+      body: [`Thanks for your payment. <strong>${esc(player)}</strong> is entered in <strong>${esc(event)}</strong> at ${esc(tournament)}.`, table],
+      button: 'See the tournament',
+      url,
+      footer: `This is your receipt. Questions or refunds: ${esc(business.email || 'reply to this email')}.`,
+    }),
+    text: `You're entered — ${event}, ${tournament}\n\n${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\nSee the tournament: ${url}`,
+  };
+}
+
 // To the owner, the first time a self-entry has to wait for confirmation.
 function waitingEmail({ tournament, player, url }) {
   return {
@@ -147,4 +176,4 @@ function waitingEmail({ tournament, player, url }) {
   };
 }
 
-module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, waitingEmail };
+module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, entryReceiptEmail, waitingEmail };
