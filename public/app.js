@@ -8,6 +8,9 @@
     route: { name: 'home' },
     me: null, // signed-in user
     emailEnabled: false, // can the server send email (password reset, invites)?
+    billing: { enabled: false }, // Razorpay settings from /api/billing/config
+    upgradeFor: null, // tournament id that just hit the free entry limit
+    paying: false,
     mine: null, // tournaments I'm on the team of
     members: null, // team list for the open tournament (managers only)
     interest: null, // { counts: { sportId: n }, mine: [sportId] } for "Request this sport"
@@ -97,6 +100,7 @@
       await fn();
       if (success) toast(success);
     } catch (e) {
+      if (e.code === 'upgrade' && S.t) S.upgradeFor = S.t.id; // show the Event Pass card
       toast(e.message, true);
     }
     render();
@@ -180,9 +184,10 @@
       } else if (parts[0] === 'admin') {
         S.route = { name: 'admin', users: null };
         render();
-        [S.route.users, S.interest] = await Promise.all([
+        [S.route.users, S.interest, S.route.payments] = await Promise.all([
           api('GET', '/admin/users').catch((e) => { S.error = e.message; return []; }),
           api('GET', '/sports/interest').catch(() => null),
+          api('GET', '/admin/payments').catch(() => null),
         ]);
       } else {
         S.route = { name: 'home' };
@@ -540,6 +545,11 @@
         editable && t.entries.length ? h('span', { class: 'actions' },
           h('button', { class: 'btn btn-small btn-ghost', onclick: () => checkInAll(t, !usingCheckIn) }, usingCheckIn ? 'Clear check-in' : 'Check in all'),
           t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null) : null),
+      t.can.manage && t.limits && t.limits.entries
+        ? h('p', { class: 'muted small entry-meter' },
+          `${Math.min(t.entries.length, t.limits.entries)} of ${t.limits.entries} free entries used`,
+          h('span', { class: 'progress' }, h('span', { style: `width:${Math.min(100, (t.entries.length / t.limits.entries) * 100)}%` })))
+        : null,
       t.entries.length
         ? h('ol', { class: 'entries' }, t.entries.map((e, i) => h('li', { class: `${!setup && (e.withdrawn || !e.inDraw) ? 'out' : ''}${usingCheckIn && !e.checkedIn ? ' not-here' : ''}` },
           editable
@@ -578,8 +588,8 @@
         list,
       ];
     }
-    if (!setup) return [running ? lateEntryCard(t) : null, list];
-    return [addEntriesForm(t, usingCheckIn), list, startCard(t), settingsCard(t)];
+    if (!setup) return [upgradeCard(t), running ? lateEntryCard(t) : null, list];
+    return [upgradeCard(t), addEntriesForm(t, usingCheckIn), list, startCard(t), settingsCard(t)];
   }
 
   function addEntriesForm(t, walkIn) {
@@ -1200,6 +1210,114 @@
   });
 
 
+  // ---------- Event Pass (Razorpay checkout)
+  const rupees = () => `₹${Math.round((S.billing.price || 49900) / 100)}`;
+
+  function loadRazorpay() {
+    if (window.Razorpay) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      el.onload = resolve;
+      el.onerror = () => reject(new Error('Couldn\'t load the payment window — check your connection and try again'));
+      document.head.appendChild(el);
+    });
+  }
+
+  async function payPass(t) {
+    if (S.paying) return;
+    S.paying = true;
+    render();
+    try {
+      await loadRazorpay();
+      const order = await api('POST', `${tPath(t)}/checkout`, {}, t.id);
+      await new Promise((resolve) => {
+        const rzp = new window.Razorpay({
+          key: order.keyId,
+          order_id: order.orderId,
+          amount: order.amount,
+          currency: order.currency,
+          name: order.name,
+          description: order.description,
+          image: `${location.origin}/brand/icon-512.png`,
+          prefill: order.prefill,
+          theme: { color: '#0B1220' },
+          handler: async (resp) => {
+            try {
+              await api('POST', '/billing/razorpay/verify', resp);
+              S.upgradeFor = null;
+              await load(t.id);
+              toast('Payment received — Event Pass active ✓');
+            } catch (e) {
+              toast(e.message, true);
+            }
+            resolve();
+          },
+          modal: {
+            ondismiss: () => {
+              toast('Payment cancelled — you haven\'t been charged');
+              resolve();
+            },
+          },
+        });
+        rzp.on('payment.failed', (r) => toast((r && r.error && r.error.description) || 'Payment failed — please try again', true));
+        rzp.open();
+      });
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      S.paying = false;
+      render();
+    }
+  }
+
+  // Shown to organisers when a free tournament is full (or just hit the limit).
+  function upgradeCard(t) {
+    if (!S.billing.enabled || !t.can.manage || t.plan === 'pass' || !t.limits || !t.limits.entries) return null;
+    const full = t.entries.length >= t.limits.entries;
+    if (!full && S.upgradeFor !== t.id) return null;
+    return h('div', { class: 'card upgrade-card' },
+      h('h2', {}, full ? `This tournament is full on the free plan (${t.limits.entries} entries)` : 'Need more entries?'),
+      h('p', {}, 'Get the ', h('strong', {}, 'Event Pass'), ` for unlimited entries in this tournament — ${rupees()}, one-time.`),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn btn-primary btn-lg', disabled: S.paying, onclick: () => payPass(t) },
+          S.paying ? 'Opening payment…' : `Get Event Pass — ${rupees()}`),
+        h('a', { class: 'btn btn-ghost', href: '/pricing', target: '_blank', rel: 'noopener' }, 'What\'s included')),
+      h('p', { class: 'hint', style: 'margin:10px 0 0' }, 'Secure payment by Razorpay — UPI, cards, netbanking or wallets. Activated instantly.'));
+  }
+
+  // Plan status in the Team tab (+ a manual switch for site admins).
+  function planCard(t) {
+    const admin = S.me && S.me.isAdmin;
+    if (!S.billing.enabled && !admin) return null;
+    const adminSwitch = admin
+      ? h('button', {
+        class: 'btn btn-small btn-ghost',
+        onclick: () => {
+          const plan = t.plan === 'pass' ? 'free' : 'pass';
+          if (!confirm(plan === 'pass' ? 'Switch the Event Pass ON for this tournament (no payment)?' : 'Switch the Event Pass OFF for this tournament?')) return;
+          act(async () => { S.t = await api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/plan`, { plan }, t.id); }, plan === 'pass' ? 'Event Pass switched on' : 'Event Pass switched off');
+        },
+      }, t.plan === 'pass' ? 'Admin: switch Pass off' : 'Admin: switch Pass on')
+      : null;
+    if (t.plan === 'pass') {
+      return h('div', { class: 'card' },
+        h('div', { class: 'card-head' }, h('h2', {}, 'Plan'), pill('done', 'Event Pass ✓')),
+        h('p', { class: 'muted small', style: 'margin:0' }, 'Unlimited entries for this tournament.'),
+        adminSwitch ? h('div', { class: 'actions', style: 'margin-top:10px' }, adminSwitch) : null);
+    }
+    return h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Plan'), pill('', 'Free')),
+      t.limits && t.limits.entries
+        ? h('p', { class: 'muted small' }, `Up to ${t.limits.entries} entries — ${t.entries.length} used. The Event Pass (${rupees()}, one-time) gives this tournament unlimited entries.`)
+        : h('p', { class: 'muted small' }, 'Payments aren\'t set up yet, so there\'s no entry limit.'),
+      h('div', { class: 'actions' },
+        S.billing.enabled
+          ? h('button', { class: 'btn btn-primary', disabled: S.paying, onclick: () => payPass(t) }, S.paying ? 'Opening payment…' : `Get Event Pass — ${rupees()}`)
+          : null,
+        adminSwitch));
+  }
+
   // ---------- roles & team
   function roleBar(t) {
     if (t.can.claim) {
@@ -1284,6 +1402,7 @@
         linkRow('Scorer link', 'Can score matches only.', `${location.origin}/#/t/${t.id}?key=${encodeURIComponent(t.links.scorer)}`, 'Scorer link copied'),
         linkRow('Organiser link', 'Can manage the whole tournament.', `${location.origin}/#/t/${t.id}?key=${encodeURIComponent(t.links.organiser)}`, 'Organiser link copied — keep it private'),
         linkRow('Public link', 'Anyone can follow live scores.', `${location.origin}/#/t/${t.id}`, 'Public link copied')) : null,
+      planCard(t),
       dangerZone(t),
     ];
   }
@@ -1498,7 +1617,26 @@
     const users = S.route.users;
     const counts = (S.interest && S.interest.counts) || {};
     const requested = S.sports.filter((s) => s.status !== 'live').map((s) => ({ ...s, n: counts[s.id] || 0 })).sort((a, b) => b.n - a.n);
+    const pay = S.route.payments;
+    const money = (paise) => `₹${(paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+    const statusPill = (st) => pill(st === 'paid' ? 'done' : st === 'failed' ? 'withdrawn' : '', st === 'created' ? 'Started' : st);
     return [h('div', { class: 'card' },
+      h('div', { class: 'card-head' },
+        h('h2', {}, 'Payments'),
+        pay ? h('span', { class: 'muted small' }, `${money(pay.revenue.total)} from ${pay.revenue.count} Event Pass${pay.revenue.count === 1 ? '' : 'es'}`) : null),
+      !pay ? loading()
+        : !pay.payments.length ? empty('No payments yet.')
+          : h('div', { class: 'table-wrap' }, h('table', {},
+            h('thead', {}, h('tr', {}, ['Date', 'Tournament', 'Organiser', 'Amount', 'Status', 'Payment ID'].map((c, i) => h('th', { class: i === 3 ? 'num' : '' }, c)))),
+            h('tbody', {}, pay.payments.map((p) => h('tr', {},
+              h('td', {}, new Date(p.paidAt || p.createdAt).toLocaleDateString()),
+              h('td', { class: 'name' }, p.tournamentId ? h('a', { href: `#/t/${p.tournamentId}/team` }, p.tournamentName) : p.tournamentName,
+                p.plan === 'pass' ? [' ', pill('done', 'Pass')] : null),
+              h('td', {}, p.email || '—'),
+              h('td', { class: 'num' }, money(p.amount)),
+              h('td', {}, statusPill(p.status)),
+              h('td', { class: 'small' }, p.paymentId || '—'))))))),
+    h('div', { class: 'card' },
       h('h2', {}, 'Most requested sports'),
       h('div', { class: 'table-wrap' }, h('table', {},
         h('thead', {}, h('tr', {}, h('th', {}, 'Sport'), h('th', {}, 'Status'), h('th', { class: 'num' }, 'Requests'))),
@@ -1524,7 +1662,9 @@
   Promise.all([
     api('GET', '/sports').catch(() => []),
     api('GET', '/auth/me').catch(() => ({ user: null })),
-  ]).then(([list, me]) => {
+    api('GET', '/billing/config').catch(() => ({ enabled: false })),
+  ]).then(([list, me, billingCfg]) => {
+    S.billing = billingCfg;
     S.sports = list;
     S.me = me.user;
     S.emailEnabled = Boolean(me.emailEnabled);

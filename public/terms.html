@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Terms &amp; Conditions · Tonament</title>
+  <meta name="description" content="Terms and conditions for using Tonament.">
+  <meta name="theme-color" content="#0B1220">
+  <script>
+    (function () {
+      var pref = 'auto';
+      try { pref = localStorage.getItem('tonament:theme') || 'auto'; } catch (e) {}
+      var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+      document.documentElement.setAttribute('data-theme', pref === 'auto' ? (light ? 'light' : 'dark') : pref);
+    })();
+  </script>
+  <link rel="preload" href="/fonts/Outfit-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand" aria-label="Tonament home"><img src="/brand/logo-white.svg" alt="Tonament" width="190" height="26"></a>
+      <nav class="nav"><a class="btn btn-small btn-primary" href="/#/new">Create tournament</a></nav>
+    </div>
+  </header>
+  <main class="container doc">
+    <h1>Terms &amp; Conditions</h1>
+    <p class="muted small">Last updated: 17 October 2026</p>
+    <p>These terms apply to your use of Tonament (tonament.com), operated by <span data-biz="name">Tonament</span> ("we", "us"). By using the service you agree to them.</p>
+    <h2>1. The service</h2>
+    <p>Tonament lets organisers create and run sports tournaments online: entries, draws, fixtures, live scoring and results. Spectators can follow tournaments without an account.</p>
+    <h2>2. Accounts</h2>
+    <p>You need an account to create tournaments. Keep your password safe; you're responsible for activity on your account and for anyone you give organiser or umpire access, or a share link, to.</p>
+    <h2>3. Organisers' responsibilities</h2>
+    <ul>
+      <li>Only collect and use participants' contact details to run your event.</li>
+      <li>Make sure the information you publish is accurate and lawful, and that you have permission to publish participants' names.</li>
+      <li>Entry fees, prizes and the conduct of your event are between you and your participants. Tonament is not a party to them.</li>
+    </ul>
+    <h2>4. Plans and payment</h2>
+    <p>Tournaments are free up to <span data-free-limit>16</span> entries. The Event Pass (<span data-price>₹499</span>, one-time) unlocks unlimited entries for one tournament. It is not transferable to another tournament. Payments are processed by Razorpay; we never see or store your card or bank details. Prices are inclusive of applicable taxes. Refunds are covered by our <a href="/refunds">Cancellation &amp; Refund Policy</a>.</p>
+    <h2>5. Acceptable use</h2>
+    <p>Don't misuse the service: no unlawful, abusive or misleading content, no attempts to break, overload or gain unauthorised access to it, and no automated scraping.</p>
+    <h2>6. Availability</h2>
+    <p>We work to keep Tonament reliable but provide it "as is", without guarantees of uninterrupted availability. We may change or discontinue features with reasonable notice.</p>
+    <h2>7. Liability</h2>
+    <p>To the extent permitted by law, our total liability for any claim relating to the service is limited to the amount you paid us in the 12 months before the claim. We're not liable for indirect or consequential losses.</p>
+    <h2>8. Termination</h2>
+    <p>You can stop using Tonament at any time. We may suspend accounts that breach these terms.</p>
+    <h2>9. Governing law</h2>
+    <p>These terms are governed by the laws of India. Disputes are subject to the courts at the place of our registered address.</p>
+    <h2>10. Contact</h2>
+    <p>Questions? See <a href="/contact">Contact us</a>.</p>
+  </main>
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="/brand/mark-white.svg" class="on-dark" alt="" width="31" height="22">
+        <img src="/brand/mark.svg" class="on-light" alt="" width="31" height="22">
+        <span class="eyebrow">One platform. Every sport. <b>Every tournament.</b></span>
+      </div>
+      <nav class="footer-links" aria-label="Policies">
+        <a href="/pricing">Pricing</a><a href="/contact">Contact</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/refunds">Refunds</a><a href="/delivery">Delivery</a>
+      </nav>
+    </div>
+    <p class="footer-legal">© <span data-year>2026</span> <span data-biz="name">Tonament</span>. Payments are processed securely by Razorpay.</p>
+  </footer>
+  <script src="/site.js"></script>
+</body>
+</html>

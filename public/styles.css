@@ -445,3 +445,31 @@ tr.out td { color: var(--muted); }
 .check-field small { display: block; color: var(--muted); }
 .entry-settings { display: grid; gap: 6px; }
 .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+
+/* ---------- static pages: pricing, contact, policies */
+.doc { max-width: 820px; }
+.doc h1 { font-size: clamp(1.8rem, 5vw, 2.4rem); margin: 12px 0 10px; }
+.doc h2 { margin-top: 28px; }
+.doc h3 { margin-top: 18px; }
+.doc ul { padding-left: 1.2em; }
+.doc li { margin-bottom: 6px; }
+.price-grid { display: grid; gap: 16px; margin: 20px 0 8px; }
+@media (min-width: 700px) { .price-grid { grid-template-columns: 1fr 1fr; } }
+.price-card { display: flex; flex-direction: column; gap: 6px; }
+.price-card ul { flex: 1; }
+.price-card.featured { border: 2px solid var(--accent); }
+.price { font-size: 2.2rem; font-weight: 700; margin: 0; }
+.price small { font-size: 0.9rem; font-weight: 500; color: var(--muted); }
+.biz { display: grid; grid-template-columns: max-content 1fr; gap: 10px 20px; margin: 0; }
+.biz dt { color: var(--muted); font-weight: 600; }
+.biz dd { margin: 0; overflow-wrap: anywhere; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.85rem; }
+.footer-links a { color: var(--muted); text-decoration: none; }
+.footer-links a:hover { color: var(--text); text-decoration: underline; }
+.footer-legal { max-width: 1040px; margin: 0 auto; padding: 0 16px 28px; font-size: 0.78rem; color: var(--muted); }
+
+/* ---------- Event Pass */
+.upgrade-card { border: 2px solid var(--accent); }
+.upgrade-card h2 { margin-bottom: 6px; }
+.entry-meter { display: grid; gap: 6px; margin: 0 0 10px; }
+.entry-meter .progress { height: 5px; }

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contact us · Tonament</title>
+  <meta name="description" content="How to contact Tonament.">
+  <meta name="theme-color" content="#0B1220">
+  <script>
+    (function () {
+      var pref = 'auto';
+      try { pref = localStorage.getItem('tonament:theme') || 'auto'; } catch (e) {}
+      var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+      document.documentElement.setAttribute('data-theme', pref === 'auto' ? (light ? 'light' : 'dark') : pref);
+    })();
+  </script>
+  <link rel="preload" href="/fonts/Outfit-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand" aria-label="Tonament home"><img src="/brand/logo-white.svg" alt="Tonament" width="190" height="26"></a>
+      <nav class="nav"><a class="btn btn-small btn-primary" href="/#/new">Create tournament</a></nav>
+    </div>
+  </header>
+  <main class="container doc">
+    <h1>Contact us</h1>
+    <p class="lead">We're happy to help with tournaments, payments or anything else.</p>
+    <section class="card">
+      <dl class="biz">
+        <dt>Business name</dt><dd data-biz="name">Tonament</dd>
+        <dt>Email</dt><dd><a data-biz="email" data-biz-link="mailto" href="#">—</a></dd>
+        <dt>Phone</dt><dd><a data-biz="phone" data-biz-link="tel" href="#">—</a></dd>
+        <dt>Address</dt><dd data-biz="address">—</dd>
+        <dt data-biz-row="gstin">GSTIN</dt><dd data-biz="gstin" data-biz-row="gstin">—</dd>
+      </dl>
+    </section>
+    <p>We aim to reply within 1 business day. For payment questions, please include your Razorpay payment ID (it's on your receipt).</p>
+    <noscript><p class="muted">Contact details are shown when JavaScript is enabled.</p></noscript>
+  </main>
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="/brand/mark-white.svg" class="on-dark" alt="" width="31" height="22">
+        <img src="/brand/mark.svg" class="on-light" alt="" width="31" height="22">
+        <span class="eyebrow">One platform. Every sport. <b>Every tournament.</b></span>
+      </div>
+      <nav class="footer-links" aria-label="Policies">
+        <a href="/pricing">Pricing</a><a href="/contact">Contact</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/refunds">Refunds</a><a href="/delivery">Delivery</a>
+      </nav>
+    </div>
+    <p class="footer-legal">© <span data-year>2026</span> <span data-biz="name">Tonament</span>. Payments are processed securely by Razorpay.</p>
+  </footer>
+  <script src="/site.js"></script>
+</body>
+</html>

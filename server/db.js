@@ -101,6 +101,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS entries_contact ON entries(tournament_id, cont
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS walkover BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS catch_up BOOLEAN NOT NULL DEFAULT false;  -- added for a late entry
 
+-- Plans and payments (Event Pass via Razorpay).
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free';   -- free | pass
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS plan_updated_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS payments (
+  id            SERIAL PRIMARY KEY,
+  tournament_id TEXT REFERENCES tournaments(id) ON DELETE SET NULL,
+  tournament_name TEXT,
+  user_email    TEXT,
+  provider      TEXT NOT NULL DEFAULT 'razorpay',
+  order_id      TEXT UNIQUE,
+  payment_id    TEXT,
+  amount        INTEGER NOT NULL,                    -- smallest unit (paise)
+  currency      TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'created',     -- created | paid | failed
+  raw_event     JSONB,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  paid_at       TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS payments_t ON payments(tournament_id);
+
 -- Scoring-only share link, alongside the organiser link (admin_key).
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS scorer_key TEXT;
 UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WHERE scorer_key IS NULL;
@@ -108,7 +128,7 @@ UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WH
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 async function migrate(db) {
   try {

@@ -22,6 +22,38 @@ Tournament management with live scoring for **tonament.com**. Starts with badmin
 - **Share links:** each tournament also has a *scorer link* (scoring only) and an *organiser link* (full control) for people without an account, such as a volunteer on a borrowed phone. Tournaments created before accounts existed can be added to your account from the organiser link.
 - **Site admins:** anyone whose email is listed in `ADMIN_EMAILS` can manage every tournament and see all users at `/#/admin`.
 
+## Pricing and payments (Razorpay)
+
+**Free** for tournaments up to 16 entries. The **Event Pass** (₹499, one-time, per tournament) unlocks unlimited entries. Payment uses Razorpay Standard Checkout (UPI, cards, netbanking, wallets):
+1. The server creates an order; the amount is always set by the server.
+2. Razorpay Checkout opens in the page.
+3. The server verifies the payment signature, double-checks the payment with Razorpay's API, and activates the Pass.
+4. A receipt is emailed.
+5. A webhook does the same for payments whose tab was closed early.
+
+The limit applies only once Razorpay keys are set.
+
+**Environment variables (Vercel → Settings → Environment Variables):**
+
+| Name | Example | Notes |
+|---|---|---|
+| `RAZORPAY_KEY_ID` | `rzp_test_…` | Test keys first, live keys after activation |
+| `RAZORPAY_KEY_SECRET` | | Never exposed to the browser |
+| `RAZORPAY_WEBHOOK_SECRET` | | The secret you choose when adding the webhook |
+| `PASS_PRICE_PAISE` | `49900` | ₹499 |
+| `FREE_ENTRY_LIMIT` | `16` | |
+| `BUSINESS_NAME`, `BUSINESS_ADDRESS`, `BUSINESS_EMAIL`, `BUSINESS_PHONE`, `BUSINESS_GSTIN` | | Shown on /contact, the footer and receipts |
+
+**Razorpay activation checklist:**
+1. Fill in the business details above. Check `/pricing`, `/contact`, `/terms`, `/privacy`, `/refunds` and `/delivery`, and **have the policy text reviewed** (it's a starting draft).
+2. Add test keys in Vercel and redeploy.
+3. In the Razorpay dashboard → Webhooks, add `https://tonament.com/api/billing/razorpay/webhook` with events `payment.captured`, `order.paid` and `payment.failed`, and the same secret as `RAZORPAY_WEBHOOK_SECRET`.
+4. Make a test payment. The Pass should activate, a receipt should arrive, and the webhook should show as delivered (HTTP 200) in the dashboard.
+5. Submit the website for activation; once approved, switch to live keys.
+6. Move Vercel to the Pro plan before taking real payments (the Hobby plan is non-commercial).
+
+Site admins see all payments and revenue on the admin page, and can switch a tournament's Pass on or off by hand (refunds, promotions).
+
 ## Brand
 
 The look follows the Tonament brand: Deep Navy, Electric Lime, Slate and Mist, the Outfit typeface, and the T mark with its lime dot. Dark theme is the default, with a light theme and an Auto/Dark/Light switch. The full rules are in [docs/BRAND.md](docs/BRAND.md). Logos and icons are in `public/brand/`; to rebuild them, run `python3 scripts/brand/generate_logos.py && node scripts/brand/render.js`.
@@ -82,7 +114,8 @@ server/
   app.js              routing, caching headers, static files
   service.js          tournament lifecycle and role checks: entries, draw, scoring, team
   auth.js             sign up / sign in, password hashing, sessions, password reset
-  email.js            Resend sender and email templates
+  email.js            Resend sender and email templates (invites, resets, receipts)
+  billing.js          Razorpay orders, signature checks, billing settings
   formats.js          round-robin, snake groups, bracket seeding, standings (works for any sport)
   db.js               Postgres (pg) or embedded PGlite, plus the schema
   sports/badminton.js re-exports public/sports/badminton.js (the scoring rules, shared with the browser)
@@ -113,6 +146,11 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | POST | `/auth/forgot` `{ email }`, `/auth/reset` `{ token, password }` | Password reset by email |
 | GET | `/auth/me`, `/me/tournaments` | Current user; tournaments you're on the team of |
 | GET | `/admin/users` | All users (site admins only) |
+| GET | `/billing/config` | Public payment settings (price, free limit, Razorpay key id, business details) |
+| POST | `/tournaments/:id/checkout` | Create a Razorpay order for the Event Pass (organisers) |
+| POST | `/billing/razorpay/verify` | Verify a completed checkout and activate the Pass |
+| POST | `/billing/razorpay/webhook` | Razorpay webhook (signature-checked against the raw body) |
+| GET | `/admin/payments`; POST `/admin/tournaments/:id/plan` `{ plan }` | Payments and revenue; manual Pass on/off (site admins) |
 | GET | `/sports` | Sport catalogue: playable sports (with scoring options) and upcoming ones (`status: soon / later`) |
 | GET | `/sports/interest` | Request counts per upcoming sport, plus the sports you requested |
 | POST | `/sports/:id/interest` `{ want }` | Request (or withdraw a request for) an upcoming sport; signed-in users, one vote each |

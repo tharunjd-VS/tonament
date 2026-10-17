@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pricing · Tonament</title>
+  <meta name="description" content="Tonament pricing: free for events up to 16 entries; Event Pass ₹499 per tournament for unlimited entries.">
+  <meta name="theme-color" content="#0B1220">
+  <script>
+    (function () {
+      var pref = 'auto';
+      try { pref = localStorage.getItem('tonament:theme') || 'auto'; } catch (e) {}
+      var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+      document.documentElement.setAttribute('data-theme', pref === 'auto' ? (light ? 'light' : 'dark') : pref);
+    })();
+  </script>
+  <link rel="preload" href="/fonts/Outfit-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand" aria-label="Tonament home"><img src="/brand/logo-white.svg" alt="Tonament" width="190" height="26"></a>
+      <nav class="nav"><a class="btn btn-small btn-primary" href="/#/new">Create tournament</a></nav>
+    </div>
+  </header>
+  <main class="container doc">
+    <h1>Pricing</h1>
+    <p class="lead">Simple pricing for clubs. Start free; pay only when an event gets big.</p>
+    <div class="price-grid">
+      <section class="card price-card">
+        <h2>Free</h2>
+        <p class="price">₹0</p>
+        <ul>
+          <li>Up to <strong><span data-free-limit>16</span> entries</strong> per tournament</li>
+          <li>League, knockout, or league + knockout</li>
+          <li>Live point-by-point scoring and live scoreboards</li>
+          <li>Players can enter online; check-in on the day</li>
+          <li>Organisers, umpires and share links</li>
+        </ul>
+        <a class="btn btn-lg" href="/#/new">Create a tournament</a>
+      </section>
+      <section class="card price-card featured">
+        <h2>Event Pass</h2>
+        <p class="price"><span data-price>₹499</span> <small>one-time, per tournament</small></p>
+        <ul>
+          <li><strong>Unlimited entries</strong> for that tournament</li>
+          <li>Everything in Free</li>
+          <li>Activated instantly after payment</li>
+          <li>Pay by UPI, cards, netbanking or wallets (via Razorpay)</li>
+        </ul>
+        <a class="btn btn-primary btn-lg" href="/#/new">Start free, upgrade when needed</a>
+      </section>
+    </div>
+    <h2>Questions</h2>
+    <h3>How do I buy an Event Pass?</h3>
+    <p>Create your tournament for free. When you need more than <span data-free-limit>16</span> entries, choose <strong>Get Event Pass</strong> in the tournament. Payment is handled by Razorpay, and the Pass is activated on your tournament as soon as the payment succeeds. You'll also get a receipt by email.</p>
+    <h3>Is it a subscription?</h3>
+    <p>No. The Event Pass is a one-time payment for one tournament. There are no recurring charges.</p>
+    <h3>Are taxes included?</h3>
+    <p>The price shown is the total amount you pay, inclusive of any applicable taxes.</p>
+    <h3>Refunds</h3>
+    <p>See our <a href="/refunds">Cancellation &amp; Refund Policy</a>.</p>
+  </main>
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="/brand/mark-white.svg" class="on-dark" alt="" width="31" height="22">
+        <img src="/brand/mark.svg" class="on-light" alt="" width="31" height="22">
+        <span class="eyebrow">One platform. Every sport. <b>Every tournament.</b></span>
+      </div>
+      <nav class="footer-links" aria-label="Policies">
+        <a href="/pricing">Pricing</a><a href="/contact">Contact</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/refunds">Refunds</a><a href="/delivery">Delivery</a>
+      </nav>
+    </div>
+    <p class="footer-legal">© <span data-year>2026</span> <span data-biz="name">Tonament</span>. Payments are processed securely by Razorpay.</p>
+  </footer>
+  <script src="/site.js"></script>
+</body>
+</html>

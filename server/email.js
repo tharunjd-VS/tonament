@@ -100,4 +100,30 @@ function inviteEmail({ inviter, tournament, roleName, roleHint, url, hasAccount 
   };
 }
 
-module.exports = { createMailer, passwordResetEmail, inviteEmail };
+function receiptEmail({ business, tournament, amount, currency, paymentId, paidAt, url }) {
+  const money = currency === 'INR' ? `₹${(amount / 100).toFixed(2)}` : `${(amount / 100).toFixed(2)} ${currency}`;
+  const date = new Date(paidAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
+  const rows = [
+    ['Item', `Event Pass — ${tournament}`],
+    ['Amount paid', money],
+    ['Payment ID', paymentId],
+    ['Date', `${date} IST`],
+    ['Paid to', business.name + (business.gstin ? ` (GSTIN ${business.gstin})` : '')],
+  ];
+  const table = `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse">${rows
+    .map(([k, v]) => `<tr><td style="padding:6px 0;color:#475569;font-size:14px">${esc(k)}</td><td style="padding:6px 0;text-align:right;font-weight:600;font-size:14px">${esc(v)}</td></tr>`)
+    .join('')}</table>`;
+  return {
+    subject: `Payment received — Event Pass for ${tournament}`,
+    html: layout({
+      heading: 'Your Event Pass is active',
+      body: [`Thanks for your payment. <strong>${esc(tournament)}</strong> now has unlimited entries.`, table],
+      button: 'Open your tournament',
+      url,
+      footer: `This is your receipt. Questions or refunds: ${esc(business.email || 'reply to this email')}.`,
+    }),
+    text: `Payment received — Event Pass for ${tournament}\n\n${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\nOpen your tournament: ${url}`,
+  };
+}
+
+module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail };

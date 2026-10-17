@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy Policy · Tonament</title>
+  <meta name="description" content="How Tonament collects, uses and protects personal data.">
+  <meta name="theme-color" content="#0B1220">
+  <script>
+    (function () {
+      var pref = 'auto';
+      try { pref = localStorage.getItem('tonament:theme') || 'auto'; } catch (e) {}
+      var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+      document.documentElement.setAttribute('data-theme', pref === 'auto' ? (light ? 'light' : 'dark') : pref);
+    })();
+  </script>
+  <link rel="preload" href="/fonts/Outfit-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand" aria-label="Tonament home"><img src="/brand/logo-white.svg" alt="Tonament" width="190" height="26"></a>
+      <nav class="nav"><a class="btn btn-small btn-primary" href="/#/new">Create tournament</a></nav>
+    </div>
+  </header>
+  <main class="container doc">
+    <h1>Privacy Policy</h1>
+    <p class="muted small">Last updated: 17 October 2026</p>
+    <p>This policy explains what personal data <span data-biz="name">Tonament</span> collects and how we use it.</p>
+    <h2>What we collect</h2>
+    <ul>
+      <li><strong>Account details:</strong> your name, email address and a securely hashed password.</li>
+      <li><strong>Tournament data:</strong> tournament details, participant names, fixtures and scores you or your team enter.</li>
+      <li><strong>Entry details:</strong> when a player enters a tournament online, their name, partner's name and phone number or email. These are visible only to that tournament's organisers.</li>
+      <li><strong>Payment records:</strong> amount, date and the Razorpay payment/order IDs. Card, UPI and bank details are handled by Razorpay and never reach us.</li>
+      <li><strong>Technical data:</strong> a sign-in cookie to keep you signed in, and settings stored in your browser (such as your theme).</li>
+    </ul>
+    <h2>How we use it</h2>
+    <p>To run the service: sign-in, tournaments and live scores, sending emails you need (password resets, team invitations, payment receipts), preventing abuse, and support. We don't sell personal data or use it for advertising.</p>
+    <h2>Who we share it with</h2>
+    <p>Only service providers that help us run Tonament, under their own data-protection terms: Razorpay (payments), Vercel (hosting), Neon (database) and Resend (email). Public tournament pages show participant names and results.</p>
+    <h2>Retention and your rights</h2>
+    <p>We keep data while your account or tournaments exist, and payment records as long as the law requires. You can ask us to access, correct or delete your personal data by contacting us; organisers can remove entries from their tournaments.</p>
+    <h2>Security</h2>
+    <p>Connections are encrypted (HTTPS), passwords are hashed, and access to data is restricted.</p>
+    <h2>Contact</h2>
+    <p>For privacy questions or requests, email <a data-biz="email" data-biz-link="mailto" href="#">us</a> or see <a href="/contact">Contact us</a>.</p>
+  </main>
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="/brand/mark-white.svg" class="on-dark" alt="" width="31" height="22">
+        <img src="/brand/mark.svg" class="on-light" alt="" width="31" height="22">
+        <span class="eyebrow">One platform. Every sport. <b>Every tournament.</b></span>
+      </div>
+      <nav class="footer-links" aria-label="Policies">
+        <a href="/pricing">Pricing</a><a href="/contact">Contact</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/refunds">Refunds</a><a href="/delivery">Delivery</a>
+      </nav>
+    </div>
+    <p class="footer-legal">© <span data-year>2026</span> <span data-biz="name">Tonament</span>. Payments are processed securely by Razorpay.</p>
+  </footer>
+  <script src="/site.js"></script>
+</body>
+</html>

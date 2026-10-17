@@ -7,6 +7,7 @@ const { createService } = require('./service');
 const { createAuth } = require('./auth');
 const { HttpError } = require('./errors');
 const { createMailer } = require('./email');
+const { billingConfig, publicBillingConfig } = require('./billing');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MAX_BODY = 100 * 1024;
@@ -34,6 +35,32 @@ function send(res, status, data, cdnSeconds = 0, cookies = []) {
     'X-Content-Type-Options': 'nosniff',
   });
   res.end(JSON.stringify(data));
+}
+
+// Raw request body as text: needed to check webhook signatures byte-for-byte.
+function readRaw(req) {
+  if (Buffer.isBuffer(req.rawBody)) return Promise.resolve(req.rawBody.toString('utf8'));
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    const timer = setTimeout(() => reject(new HttpError(400, 'Request body unavailable')), 10_000);
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > 1024 * 1024) {
+        clearTimeout(timer);
+        reject(new HttpError(413, 'Request body too large'));
+        req.destroy();
+      } else chunks.push(chunk);
+    });
+    req.on('end', () => {
+      clearTimeout(timer);
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
 }
 
 function readJson(req) {
@@ -107,8 +134,8 @@ function baseUrl(req) {
   return `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`;
 }
 
-function createApp(db, { mailer = createMailer() } = {}) {
-  const svc = createService(db, { mailer });
+function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
+  const svc = createService(db, { mailer, fetchImpl });
   const auth = createAuth(db, { mailer });
 
   const T = '/api/tournaments/([a-z0-9-]+)';
@@ -174,6 +201,13 @@ function createApp(db, { mailer = createMailer() } = {}) {
     }],
     ['GET', '/api/me/tournaments', (c) => svc.myTournaments(c.actor)],
     ['GET', '/api/admin/users', (c) => auth.listUsers(c.actor)],
+
+    // Payments (Razorpay). The webhook is handled separately (raw body).
+    ['GET', '/api/billing/config', () => publicBillingConfig(billingConfig())],
+    ['POST', `${T}/checkout`, (c, id) => svc.checkout(id, c.actor)],
+    ['POST', '/api/billing/razorpay/verify', (c) => svc.verifyPayment(c.body, { baseUrl: baseUrl(c.req) })],
+    ['GET', '/api/admin/payments', (c) => svc.adminPayments(c.actor)],
+    ['POST', `/api/admin/tournaments/([a-z0-9-]+)/plan`, (c, id) => svc.adminSetPlan(id, c.actor, c.body.plan)],
   ].map(([method, pattern, handler, cache = 0]) => ({ method, re: new RegExp(`^${pattern}$`), handler, cache }));
 
   async function serveStatic(req, res, pathname) {
@@ -191,8 +225,13 @@ function createApp(db, { mailer = createMailer() } = {}) {
       data = await fs.readFile(file);
     } catch {
       if (path.extname(rel)) return send(res, 404, { error: 'Not found' });
-      file = path.join(PUBLIC_DIR, 'index.html'); // SPA fallback
-      data = await fs.readFile(file);
+      try {
+        file = `${file.replace(/[\\/]+$/, '')}.html`; // clean URLs: /pricing -> pricing.html (as Vercel's cleanUrls)
+        data = await fs.readFile(file);
+      } catch {
+        file = path.join(PUBLIC_DIR, 'index.html'); // SPA fallback
+        data = await fs.readFile(file);
+      }
     }
     res.writeHead(200, {
       'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream',
@@ -214,6 +253,12 @@ function createApp(db, { mailer = createMailer() } = {}) {
     const url = new URL(req.url, 'http://localhost');
     const pathname = apiPath(url);
     try {
+      if (pathname === '/api/billing/razorpay/webhook' && req.method === 'POST') {
+        // Signature covers the exact bytes Razorpay sent, so read them raw.
+        const raw = await readRaw(req);
+        const result = await svc.razorpayWebhook(raw, req.headers['x-razorpay-signature'], { baseUrl: baseUrl(req) });
+        return send(res, 200, result);
+      }
       if (pathname === '/api' || pathname.startsWith('/api/')) {
         let pathMatched = false;
         for (const route of routes) {

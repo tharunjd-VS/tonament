@@ -5,7 +5,8 @@ const sports = require('./sports');
 const formats = require('./formats');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
-const { inviteEmail } = require('./email');
+const { inviteEmail, receiptEmail } = require('./email');
+const { billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
 
 const FORMATS = {
   league_knockout: 'League + Knockout',
@@ -54,7 +55,7 @@ const nextSlotColumn = (m) => (m.slot % 2 ? 'b_id' : 'a_id');
 // Every write runs in a transaction that first locks the tournament row, so
 // concurrent requests for one tournament (two umpires, retries, several
 // serverless instances) are applied one at a time.
-function createService(db, { mailer } = {}) {
+function createService(db, { mailer, fetchImpl } = {}) {
   // ---------- queries (q is db.query or a transaction's query)
 
   async function load(q, id, { lock = false } = {}) {
@@ -203,6 +204,23 @@ function createService(db, { mailer } = {}) {
 
   const groupsFor = (t, n) => (t.config.groupSize ? formats.groupCount(n, t.config.groupSize) : t.config.groups);
 
+  // Free plan: up to cfg.freeLimit entries per tournament (only once Razorpay
+  // is configured). Organisers get an upgrade prompt; players using self-entry
+  // just see that it's full.
+  async function checkEntryLimit(q, t, adding, { self = false } = {}) {
+    const cfg = billingConfig();
+    if (!cfg.enabled || t.plan === 'pass') return;
+    const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM entries WHERE tournament_id = $1', [t.id]);
+    if (n + adding <= cfg.freeLimit) return;
+    if (self) fail(409, 'This tournament is full — contact the organiser', 'full');
+    const left = Math.max(0, cfg.freeLimit - n);
+    fail(
+      402,
+      `The free plan allows up to ${cfg.freeLimit} entries per tournament${left ? ` (${left} left)` : ''}. Get the Event Pass for unlimited entries.`,
+      'upgrade',
+    );
+  }
+
   function entriesOpen(t) {
     if (t.status !== 'setup' || !t.config.selfEntry) return false;
     return !t.config.entriesCloseAt || Date.now() < Date.parse(t.config.entriesCloseAt);
@@ -297,6 +315,8 @@ function createService(db, { mailer } = {}) {
       sport: { id: t.sportDef.id, name: t.sportDef.name },
       config: t.config,
       entriesOpen: entriesOpen(t),
+      plan: t.plan,
+      limits: { entries: billingConfig().enabled && t.plan !== 'pass' ? billingConfig().freeLimit : null },
       ...access,
       entries: entries.map((e) => ({
         id: e.id,
@@ -445,6 +465,7 @@ function createService(db, { mailer } = {}) {
       requireSetup(t);
       const existing = await entriesOf(q, t.id);
       if (existing.length + clean.length > MAX_ENTRIES) fail(400, `A tournament can have at most ${MAX_ENTRIES} entries`);
+      await checkEntryLimit(q, t, clean.length);
       const seen = new Set(existing.map((e) => e.name.toLowerCase()));
       for (const n of clean) {
         if (n.length > 60) fail(400, `"${n.slice(0, 20)}…" is too long (max 60 characters)`);
@@ -486,6 +507,7 @@ function createService(db, { mailer } = {}) {
       if (!entriesOpen(t)) fail(409, 'Entries are closed');
       const existing = await entriesOf(q, t.id);
       if (existing.length >= MAX_ENTRIES) fail(409, 'This tournament is full');
+      await checkEntryLimit(q, t, 1, { self: true });
       if (existing.some((e) => e.contact === contact)) fail(409, 'This phone number or email has already been used to enter');
       if (existing.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(409, `"${name}" is already entered`);
       const seed = existing.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
@@ -674,6 +696,7 @@ function createService(db, { mailer } = {}) {
       const all = await entriesOf(q, t.id);
       if (all.length >= MAX_ENTRIES) fail(409, `A tournament can have at most ${MAX_ENTRIES} entries`);
       if (all.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(400, `"${name}" is already entered`);
+      await checkEntryLimit(q, t, 1);
       const seed = all.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
 
       if (t.status === 'league') {
@@ -843,6 +866,171 @@ function createService(db, { mailer } = {}) {
     });
   }
 
+  // ---------- payments (Event Pass via Razorpay)
+
+  const razorpay = (cfg) => createRazorpay({ keyId: cfg.keyId, keySecret: cfg.keySecret, fetchImpl });
+
+  // Step 1: create a Razorpay order for this tournament's Event Pass.
+  async function checkout(id, actor) {
+    const cfg = billingConfig();
+    if (!cfg.enabled) fail(503, 'Payments aren\'t set up yet');
+    const { t, paymentId } = await db.tx(async (q) => {
+      const { t } = await lockWith(q, id, actor, 'manage');
+      if (t.plan === 'pass') fail(409, 'This tournament already has the Event Pass');
+      const [row] = await q(
+        `INSERT INTO payments (tournament_id, tournament_name, user_email, amount, currency)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [t.id, t.name, actor.user?.email ?? null, cfg.price, cfg.currency],
+      );
+      return { t, paymentId: row.id };
+    });
+    let order;
+    try {
+      order = await razorpay(cfg).createOrder({
+        amount: cfg.price,
+        currency: cfg.currency,
+        receipt: `tn_${paymentId}`,
+        notes: { tournament_id: t.id, tournament: t.name.slice(0, 200), email: actor.user?.email ?? '' },
+      });
+    } catch (err) {
+      console.error('Razorpay order failed:', err.message);
+      await db.query(`UPDATE payments SET status = 'failed' WHERE id = $1`, [paymentId]);
+      fail(502, 'Couldn\'t start the payment — please try again in a moment');
+    }
+    await db.query('UPDATE payments SET order_id = $1 WHERE id = $2', [order.id, paymentId]);
+    return {
+      orderId: order.id,
+      keyId: cfg.keyId,
+      amount: cfg.price,
+      currency: cfg.currency,
+      name: cfg.business.name || 'Tonament',
+      description: `Event Pass — ${t.name}`,
+      prefill: { name: actor.user?.name ?? '', email: actor.user?.email ?? '' },
+    };
+  }
+
+  // Marks an order paid and activates the Pass, once. Returns the payment row
+  // and whether this call did the activation (so the receipt is sent once).
+  async function markPaid(orderId, paymentId, rawEvent) {
+    return db.tx(async (q) => {
+      const [p] = await q('SELECT * FROM payments WHERE order_id = $1 FOR UPDATE', [orderId]);
+      if (!p) return { payment: null, activated: false };
+      if (p.status === 'paid') return { payment: p, activated: false };
+      const [paid] = await q(
+        `UPDATE payments SET status = 'paid', payment_id = $1, paid_at = now(), raw_event = $2::jsonb WHERE id = $3 RETURNING *`,
+        [paymentId, JSON.stringify(rawEvent ?? null), p.id],
+      );
+      if (p.tournament_id) {
+        await q(`UPDATE tournaments SET plan = 'pass', plan_updated_at = now() WHERE id = $1`, [p.tournament_id]);
+      }
+      return { payment: paid, activated: true };
+    });
+  }
+
+  async function sendReceipt(payment, baseUrl) {
+    if (!payment?.user_email || !mailer?.enabled || !baseUrl) return;
+    const cfg = billingConfig();
+    try {
+      await mailer.send({
+        to: payment.user_email,
+        ...receiptEmail({
+          business: cfg.business,
+          tournament: payment.tournament_name,
+          amount: payment.amount,
+          currency: payment.currency,
+          paymentId: payment.payment_id,
+          paidAt: payment.paid_at,
+          url: `${baseUrl}/#/t/${payment.tournament_id}`,
+        }),
+      });
+    } catch (err) {
+      console.error('Receipt email failed:', err.message);
+    }
+  }
+
+  // Step 2: the browser reports success; trust it only after checking the
+  // signature and the payment itself with Razorpay.
+  async function verifyPayment(input = {}, { baseUrl } = {}) {
+    const cfg = billingConfig();
+    if (!cfg.enabled) fail(503, 'Payments aren\'t set up yet');
+    const orderId = typeof input.razorpay_order_id === 'string' ? input.razorpay_order_id : '';
+    const paymentId = typeof input.razorpay_payment_id === 'string' ? input.razorpay_payment_id : '';
+    const signature = typeof input.razorpay_signature === 'string' ? input.razorpay_signature : '';
+    const [row] = await db.query('SELECT * FROM payments WHERE order_id = $1', [orderId]);
+    if (!row) fail(404, 'Payment not found');
+    if (!verifyPaymentSignature({ orderId, paymentId, signature }, cfg.keySecret)) {
+      fail(400, 'We couldn\'t verify this payment. If money was taken, contact us with your payment ID.');
+    }
+    if (row.status !== 'paid') {
+      let p = await razorpay(cfg).fetchPayment(paymentId);
+      if (p.order_id !== orderId || p.amount !== row.amount || p.currency !== row.currency) {
+        fail(400, 'Payment details don\'t match this order. Contact us with your payment ID.');
+      }
+      if (p.status === 'authorized') p = await razorpay(cfg).capture(paymentId, row.amount, row.currency);
+      if (p.status !== 'captured') fail(402, 'The payment hasn\'t completed yet. If money was taken, it will be confirmed shortly.');
+    }
+    const { payment, activated } = await markPaid(orderId, paymentId, { source: 'checkout', paymentId });
+    if (activated) await sendReceipt(payment, baseUrl);
+    return { ok: true, tournamentId: row.tournament_id, plan: 'pass' };
+  }
+
+  // Step 3 (backstop): Razorpay webhooks, verified against the raw body.
+  async function razorpayWebhook(rawBody, signature, { baseUrl } = {}) {
+    const cfg = billingConfig();
+    if (!cfg.webhookSecret) fail(503, 'Webhook secret not configured');
+    if (!verifyWebhookSignature(rawBody, signature || '', cfg.webhookSecret)) fail(400, 'Invalid signature');
+    let event;
+    try {
+      event = JSON.parse(rawBody);
+    } catch {
+      fail(400, 'Invalid JSON');
+    }
+    const pay = event?.payload?.payment?.entity;
+    const order = event?.payload?.order?.entity;
+    const orderId = pay?.order_id || order?.id;
+    if (!orderId) return { ok: true, ignored: true };
+    const [row] = await db.query('SELECT * FROM payments WHERE order_id = $1', [orderId]);
+    if (!row) return { ok: true, ignored: true }; // not one of ours
+    if (event.event === 'payment.captured' || event.event === 'order.paid') {
+      if (pay && (pay.amount !== row.amount || pay.currency !== row.currency)) return { ok: true, ignored: true };
+      const { payment, activated } = await markPaid(orderId, pay?.id ?? row.payment_id, event);
+      if (activated) await sendReceipt(payment, baseUrl);
+    } else if (event.event === 'payment.failed') {
+      await db.query(`UPDATE payments SET status = 'failed', raw_event = $1::jsonb WHERE id = $2 AND status = 'created'`, [
+        JSON.stringify(event), row.id,
+      ]);
+    }
+    return { ok: true };
+  }
+
+  function requireSiteAdmin(actor) {
+    if (!actor.user?.isAdmin) fail(actor.user ? 403 : 401, 'Site admins only');
+  }
+
+  // Manual switch (refunds, promotions, support).
+  async function adminSetPlan(id, actor, plan) {
+    requireSiteAdmin(actor);
+    if (plan !== 'pass' && plan !== 'free') fail(400, 'plan must be "pass" or "free"');
+    return mutate(id, actor, async (q, t) => {
+      await q('UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2', [plan, t.id]);
+    });
+  }
+
+  async function adminPayments(actor) {
+    requireSiteAdmin(actor);
+    const rows = await db.query(
+      `SELECT p.id, p.tournament_id AS "tournamentId", p.tournament_name AS "tournamentName", p.user_email AS "email",
+              p.order_id AS "orderId", p.payment_id AS "paymentId", p.amount, p.currency, p.status,
+              p.created_at AS "createdAt", p.paid_at AS "paidAt", t.plan
+       FROM payments p LEFT JOIN tournaments t ON t.id = p.tournament_id
+       ORDER BY p.created_at DESC LIMIT 300`,
+    );
+    const [{ total, count }] = await db.query(
+      `SELECT COALESCE(SUM(amount), 0)::int AS total, COUNT(*)::int AS count FROM payments WHERE status = 'paid'`,
+    );
+    return { payments: rows, revenue: { total, count, currency: billingConfig().currency } };
+  }
+
   // ---------- sport requests ("Request this sport" votes)
 
   async function sportInterest(actor = {}) {
@@ -957,6 +1145,11 @@ function createService(db, { mailer } = {}) {
   }
 
   return {
+    checkout,
+    verifyPayment,
+    razorpayWebhook,
+    adminSetPlan,
+    adminPayments,
     sportInterest,
     setSportInterest,
     myTournaments,
