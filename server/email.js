@@ -126,4 +126,22 @@ function receiptEmail({ business, tournament, amount, currency, paymentId, paidA
   };
 }
 
-module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail };
+// To the owner, the first time a self-entry has to wait for confirmation.
+function waitingEmail({ tournament, player, url }) {
+  return {
+    subject: `Players are waiting to enter ${tournament}`,
+    html: layout({
+      heading: 'Players are waiting to enter',
+      body: [
+        `<strong>${esc(player)}</strong> just entered <strong>${esc(tournament)}</strong>, but the tournament has reached its entry limit, so their place isn't confirmed yet.`,
+        'Open the entry list to confirm or remove waiting players. With the Event Pass, everyone waiting is confirmed automatically.',
+        'Unconfirmed players are not included in the draw.',
+      ],
+      button: 'See the entry list',
+      url,
+    }),
+    text: `${player} just entered ${tournament}, but the tournament has reached its entry limit, so their place isn't confirmed yet.\n\nConfirm or remove waiting players (or get the Event Pass to confirm everyone): ${url}`,
+  };
+}
+
+module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, waitingEmail };

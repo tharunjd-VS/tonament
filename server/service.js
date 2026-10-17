@@ -5,7 +5,7 @@ const sports = require('./sports');
 const formats = require('./formats');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
-const { inviteEmail, receiptEmail } = require('./email');
+const { inviteEmail, receiptEmail, waitingEmail } = require('./email');
 const { billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
 
 const FORMATS = {
@@ -66,16 +66,16 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   const entriesOf = (q, tid) =>
     q(
-      `SELECT id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact
+      `SELECT id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed
        FROM entries WHERE tournament_id = $1 ORDER BY seed, id`,
       [tid],
     );
 
-  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null }) =>
+  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true }) =>
     q(
-      `INSERT INTO entries (tournament_id, name, seed, group_no, source, checked_in, contact)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-      [t.id, name, seed, group, source, checkedIn, contact],
+      `INSERT INTO entries (tournament_id, name, seed, group_no, source, checked_in, contact, confirmed)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [t.id, name, seed, group, source, checkedIn, contact, confirmed],
     );
 
   const matchesOf = (q, tid) =>
@@ -199,26 +199,62 @@ function createService(db, { mailer, fetchImpl } = {}) {
       selfEntry: input.selfEntry !== undefined ? Boolean(input.selfEntry) : prev.selfEntry ?? isNew,
       entriesCloseAt: input.entriesCloseAt !== undefined ? closeTime(input.entriesCloseAt) : prev.entriesCloseAt ?? null,
       lateEntry: input.lateEntry !== undefined ? Boolean(input.lateEntry) : prev.lateEntry ?? false,
+      // The organiser's own cap on self-entries (blank = no cap).
+      maxEntries: input.maxEntries !== undefined ? int(input.maxEntries, 2, MAX_ENTRIES, null, 'Maximum entries') : prev.maxEntries ?? null,
     };
+  }
+
+  // A maximum above the free limit needs the Event Pass.
+  function checkMaxEntries(config, plan) {
+    const cfg = billingConfig();
+    if (!cfg.enabled || plan === 'pass' || !config.maxEntries || config.maxEntries <= cfg.freeLimit) return;
+    fail(402, `A maximum of ${config.maxEntries} entries needs the Event Pass (the free plan allows up to ${cfg.freeLimit}).`, 'upgrade');
   }
 
   const groupsFor = (t, n) => (t.config.groupSize ? formats.groupCount(n, t.config.groupSize) : t.config.groups);
 
-  // Free plan: up to cfg.freeLimit entries per tournament (only once Razorpay
-  // is configured). Organisers get an upgrade prompt; players using self-entry
-  // just see that it's full.
-  async function checkEntryLimit(q, t, adding, { self = false } = {}) {
+  const confirmedCount = async (q, t) =>
+    (await q('SELECT COUNT(*)::int AS n FROM entries WHERE tournament_id = $1 AND confirmed', [t.id]))[0].n;
+
+  // Free plan: up to cfg.freeLimit confirmed entries per tournament (only once
+  // Razorpay is configured). Organisers adding players get an upgrade prompt;
+  // self-entries over the limit are saved unconfirmed instead (see register).
+  async function checkEntryLimit(q, t, adding) {
     const cfg = billingConfig();
     if (!cfg.enabled || t.plan === 'pass') return;
-    const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM entries WHERE tournament_id = $1', [t.id]);
+    const n = await confirmedCount(q, t);
     if (n + adding <= cfg.freeLimit) return;
-    if (self) fail(409, 'This tournament is full — contact the organiser', 'full');
     const left = Math.max(0, cfg.freeLimit - n);
     fail(
       402,
       `The free plan allows up to ${cfg.freeLimit} entries per tournament${left ? ` (${left} left)` : ''}. Get the Event Pass for unlimited entries.`,
       'upgrade',
     );
+  }
+
+  // How many confirmed entries self-entry can fill: the organiser's maximum,
+  // the free plan's limit and the hard cap, whichever is lowest.
+  function capacity(t) {
+    const cfg = billingConfig();
+    const caps = [MAX_ENTRIES];
+    if (t.config.maxEntries) caps.push(t.config.maxEntries);
+    if (cfg.enabled && t.plan !== 'pass') caps.push(cfg.freeLimit);
+    return Math.min(...caps);
+  }
+
+  // Confirms waiting self-entries in sign-up order while there's room (after
+  // the Event Pass is bought). Returns how many were confirmed.
+  async function confirmWaiting(q, t) {
+    if (t.status !== 'setup') return 0;
+    const room = capacity(t) - (await confirmedCount(q, t));
+    if (room <= 0) return 0;
+    const rows = await q(
+      `UPDATE entries SET confirmed = true WHERE id IN (
+         SELECT id FROM entries WHERE tournament_id = $1 AND NOT confirmed ORDER BY id LIMIT $2
+       ) RETURNING id`,
+      [t.id, room],
+    );
+    return rows.length;
   }
 
   function entriesOpen(t) {
@@ -304,6 +340,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     }
 
     const access = await accessFields(q, t, actor);
+    const confirmed = entries.filter((e) => e.confirmed).length;
     return {
       id: t.id,
       name: t.name,
@@ -315,8 +352,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
       sport: { id: t.sportDef.id, name: t.sportDef.name },
       config: t.config,
       entriesOpen: entriesOpen(t),
+      // Only the organiser's own maximum is shown publicly, never the plan limit.
+      placesLeft: t.config.maxEntries ? Math.max(0, t.config.maxEntries - confirmed) : null,
       plan: t.plan,
-      limits: { entries: billingConfig().enabled && t.plan !== 'pass' ? billingConfig().freeLimit : null },
+      ...(access.can.manage && { limits: { entries: billingConfig().enabled && t.plan !== 'pass' ? billingConfig().freeLimit : null } }),
       ...access,
       entries: entries.map((e) => ({
         id: e.id,
@@ -327,6 +366,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         inDraw: e.in_draw,
         withdrawn: e.withdrawn,
         source: e.source,
+        confirmed: e.confirmed,
         ...(access.can.manage && { contact: e.contact }), // contact details: organisers only
       })),
       groups,
@@ -405,6 +445,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     }
     const format = FORMATS[input.format] ? input.format : 'league_knockout';
     const config = buildConfig(input, sport);
+    checkMaxEntries(config, 'free');
     const id = `${slugify(name)}-${crypto.randomBytes(3).toString('hex')}`;
     const adminKey = crypto.randomBytes(18).toString('base64url');
     const scorerKey = crypto.randomBytes(18).toString('base64url');
@@ -434,9 +475,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (input.format !== undefined && !FORMATS[input.format]) fail(400, 'Unknown format');
       const format = input.format ?? t.format;
       const config = buildConfig(input, t.sportDef, t.config);
+      if (input.maxEntries !== undefined) checkMaxEntries(config, t.plan);
       await q('UPDATE tournaments SET name = $1, venue = $2, format = $3, config = $4::jsonb WHERE id = $5', [
         name, venue, format, JSON.stringify(config), t.id,
       ]);
+      // A higher (or no) maximum makes room for players who were waiting.
+      if (input.maxEntries !== undefined) await confirmWaiting(q, { ...t, config });
     });
   }
 
@@ -493,26 +537,56 @@ function createService(db, { mailer, fetchImpl } = {}) {
   }
 
   // Public self-entry ("Enter this tournament"). No account needed; one entry
-  // per phone/email; closes at the deadline or when the draw is made.
-  async function register(id, input = {}) {
+  // per phone/email; closes at the deadline or when the draw is made. Past the
+  // tournament's capacity the entry is saved unconfirmed, and the owner is
+  // emailed (once) that players are waiting.
+  async function register(id, input = {}, { baseUrl } = {}) {
     if (given(input.website)) return { ok: true }; // honeypot: bots fill every field
     const player = text(input.name, 'Your name', { max: 40 });
     const partner = text(input.partner, 'Partner name', { max: 40, optional: true });
     const name = partner ? `${player} / ${partner}` : player;
     const contact = contactOf(input.contact);
-    return db.tx(async (q) => {
+    const result = await db.tx(async (q) => {
       const t = await load(q, id, { lock: true });
       if (t.status !== 'setup') fail(409, 'Entries are closed — the draw has been made');
       if (!t.config.selfEntry) fail(409, 'This tournament doesn\'t take entries online — contact the organiser');
       if (!entriesOpen(t)) fail(409, 'Entries are closed');
       const existing = await entriesOf(q, t.id);
       if (existing.length >= MAX_ENTRIES) fail(409, 'This tournament is full');
-      await checkEntryLimit(q, t, 1, { self: true });
       if (existing.some((e) => e.contact === contact)) fail(409, 'This phone number or email has already been used to enter');
       if (existing.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(409, `"${name}" is already entered`);
       const seed = existing.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
-      await insertEntry(q, t, { name, seed, source: 'self', contact });
-      return { ok: true, name };
+      const confirmed = existing.filter((e) => e.confirmed).length < capacity(t);
+      await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed });
+      let owners = [];
+      if (!confirmed && !t.waiting_notified) {
+        await q('UPDATE tournaments SET waiting_notified = true WHERE id = $1', [t.id]);
+        owners = (await q(`SELECT email FROM members WHERE tournament_id = $1 AND role = 'owner'`, [t.id])).map((r) => r.email);
+      }
+      return { t, name, confirmed, owners };
+    });
+    const { t, name: entered, confirmed, owners } = result;
+    if (owners.length && mailer?.enabled && baseUrl) {
+      try {
+        for (const to of owners) {
+          await mailer.send({ to, ...waitingEmail({ tournament: t.name, player: entered, url: `${baseUrl}/#/t/${t.id}/entries` }) });
+        }
+      } catch (err) {
+        console.error('Waiting-entries email failed:', err.message);
+      }
+    }
+    return { ok: true, name: entered, confirmed };
+  }
+
+  // The organiser lets a waiting self-entry in (within their plan's limit).
+  async function confirmEntry(id, actor, entryId) {
+    return mutate(id, actor, async (q, t) => {
+      requireSetup(t);
+      const [e] = await q('SELECT confirmed FROM entries WHERE id = $1 AND tournament_id = $2', [Number(entryId) || 0, t.id]);
+      if (!e) fail(404, 'Entry not found');
+      if (e.confirmed) return;
+      await checkEntryLimit(q, t, 1);
+      await q('UPDATE entries SET confirmed = true WHERE id = $1', [Number(entryId)]);
     });
   }
 
@@ -607,14 +681,21 @@ function createService(db, { mailer, fetchImpl } = {}) {
     await finishWalkover(q, t, m, gone.has(m.a_id) ? m.b_id : m.a_id);
   }
 
-  async function start(id, actor) {
+  async function start(id, actor, { skipUnconfirmed = false } = {}) {
     return mutate(id, actor, async (q, t) => {
       if (t.status !== 'setup') fail(409, 'The tournament has already started');
+      // Unconfirmed self-entries are never drawn; the organiser has to decide
+      // about them first so nobody is left out by accident.
+      const everyone = await entriesOf(q, t.id);
+      const waiting = everyone.filter((e) => !e.confirmed).length;
+      if (waiting && !skipUnconfirmed) {
+        fail(409, `${waiting} ${waiting === 1 ? 'entry is' : 'entries are'} still unconfirmed — confirm or remove them first`, 'unconfirmed');
+      }
       // If anyone has been checked in, only checked-in entries are drawn.
-      const all = await entriesOf(q, t.id);
+      const all = everyone.filter((e) => e.confirmed);
       const usingCheckIn = all.some((e) => e.checked_in);
       const entries = usingCheckIn ? all.filter((e) => e.checked_in) : all;
-      await q('UPDATE entries SET in_draw = (checked_in OR NOT $2), withdrawn = false WHERE tournament_id = $1', [t.id, usingCheckIn]);
+      await q('UPDATE entries SET in_draw = confirmed AND (checked_in OR NOT $2), withdrawn = false WHERE tournament_id = $1', [t.id, usingCheckIn]);
       if (t.format === 'knockout') {
         if (entries.length < 2) fail(400, 'Add at least 2 entries to start');
         await createBracket(q, t, entries.map((e) => ({ id: e.id, group: null, tier: 0 })));
@@ -922,6 +1003,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       );
       if (p.tournament_id) {
         await q(`UPDATE tournaments SET plan = 'pass', plan_updated_at = now() WHERE id = $1`, [p.tournament_id]);
+        const [t] = await q('SELECT * FROM tournaments WHERE id = $1 FOR UPDATE', [p.tournament_id]);
+        if (t) await confirmWaiting(q, t);
       }
       return { payment: paid, activated: true };
     });
@@ -1013,6 +1096,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (plan !== 'pass' && plan !== 'free') fail(400, 'plan must be "pass" or "free"');
     return mutate(id, actor, async (q, t) => {
       await q('UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2', [plan, t.id]);
+      if (plan === 'pass') await confirmWaiting(q, { ...t, plan });
     });
   }
 
@@ -1164,6 +1248,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     deleteTournament,
     addEntries,
     register,
+    confirmEntry,
     checkIn,
     checkInAll,
     redraw,

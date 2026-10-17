@@ -413,6 +413,8 @@
           h('span', {}, h('strong', {}, 'Players can enter themselves'), h('small', {}, 'Adds an "Enter this tournament" form to the public page. You can still add people yourself.'))),
         field('Entries close (optional)', h('input', { type: 'datetime-local', name: 'entriesCloseAt', value: toLocalInput(v.entriesCloseAt) }), null,
           'Leave empty to keep entries open until you start the tournament.'),
+        field('Maximum entries (optional)', h('input', { type: 'number', name: 'maxEntries', min: 2, max: 128, value: v.maxEntries ?? '', placeholder: 'No limit' }), null,
+          'Players see how many places are left. Once it\'s reached, new entries join a waitlist for you to confirm.'),
         h('label', { class: 'check-field' },
           h('input', { type: 'checkbox', name: 'lateEntry', checked: Boolean(v.lateEntry) }),
           h('span', {}, h('strong', {}, 'Allow late entries after the start'), h('small', {}, 'Latecomers join the smallest group with catch-up matches, or take a bye in a knockout. You can change this during the event.')))),
@@ -443,6 +445,7 @@
       qualifiers: Number(fd.get('qualifiers')),
       selfEntry: fd.get('selfEntry') === 'on',
       entriesCloseAt: fd.get('entriesCloseAt') ? new Date(fd.get('entriesCloseAt')).toISOString() : '',
+      maxEntries: fd.get('maxEntries') ? Number(fd.get('maxEntries')) : '',
       lateEntry: fd.get('lateEntry') === 'on',
       scoring,
     };
@@ -478,7 +481,7 @@
       }, s.status === 'live' ? s.name : `${s.name} (coming soon)`))), null,
       h('span', {}, 'More sports are on the way — ', h('a', { href: '#/' }, 'request yours on the home page'), '.')),
       field('Venue (optional)', h('input', { name: 'venue', maxlength: 80, placeholder: 'e.g. City Sports Hall' }))),
-    settingsFields(sport, { format: 'league_knockout', groupSize: 4, qualifiers: 2, selfEntry: true, entriesCloseAt: null, lateEntry: false, scoring: sport.defaults }),
+    settingsFields(sport, { format: 'league_knockout', groupSize: 4, qualifiers: 2, selfEntry: true, entriesCloseAt: null, maxEntries: null, lateEntry: false, scoring: sport.defaults }),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
     syncFormat(form);
     return form;
@@ -521,7 +524,9 @@
   function entryStatusLine(t) {
     if (t.status !== 'setup') return null;
     if (t.entriesOpen) {
-      return t.config.entriesCloseAt ? `Entries open · close ${fmtWhen(t.config.entriesCloseAt)}` : 'Entries open';
+      if (t.placesLeft === 0) return 'Full · waitlist open';
+      const places = t.placesLeft != null ? ` · ${t.placesLeft} of ${t.config.maxEntries} places left` : '';
+      return t.config.entriesCloseAt ? `Entries open${places} · close ${fmtWhen(t.config.entriesCloseAt)}` : `Entries open${places}`;
     }
     return t.config.selfEntry ? 'Entries closed' : null;
   }
@@ -532,8 +537,10 @@
     const running = t.status === 'league' || t.status === 'knockout';
     const usingCheckIn = setup && t.entries.some((e) => e.checkedIn);
     const hereCount = t.entries.filter((e) => e.checkedIn).length;
+    const confirmedCount = t.entries.filter((e) => e.confirmed).length;
     const groupLabel = (g) => (g == null || t.format === 'knockout' ? null : h('span', { class: 'pill' }, `Group ${String.fromCharCode(65 + g)}`));
     const tags = (e) => [
+      setup && !e.confirmed ? pill('waiting', t.can.manage ? 'Unconfirmed' : 'Awaiting confirmation') : null,
       e.source === 'self' ? pill('', 'Self-entered') : e.source === 'walk-in' ? pill('', 'Walk-in') : null,
       !setup && e.withdrawn ? pill('withdrawn', 'Withdrew') : null,
       !setup && !e.inDraw ? pill('', 'Didn\'t show') : null,
@@ -547,8 +554,8 @@
           t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null) : null),
       t.can.manage && t.limits && t.limits.entries
         ? h('p', { class: 'muted small entry-meter' },
-          `${Math.min(t.entries.length, t.limits.entries)} of ${t.limits.entries} free entries used`,
-          h('span', { class: 'progress' }, h('span', { style: `width:${Math.min(100, (t.entries.length / t.limits.entries) * 100)}%` })))
+          `${Math.min(confirmedCount, t.limits.entries)} of ${t.limits.entries} free entries used`,
+          h('span', { class: 'progress' }, h('span', { style: `width:${Math.min(100, (confirmedCount / t.limits.entries) * 100)}%` })))
         : null,
       t.entries.length
         ? h('ol', { class: 'entries' }, t.entries.map((e, i) => h('li', { class: `${!setup && (e.withdrawn || !e.inDraw) ? 'out' : ''}${usingCheckIn && !e.checkedIn ? ' not-here' : ''}` },
@@ -565,7 +572,10 @@
           h('span', { class: 'name' },
             h('span', { class: 'entry-name' }, e.name),
             e.contact ? h('small', { class: 'contact' }, e.contact) : null,
-            h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group))),
+            h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group)),
+            editable && !e.confirmed
+              ? h('button', { class: 'btn btn-small btn-primary confirm-btn', onclick: () => confirmEntry(t, e) }, 'Confirm place')
+              : null),
           editable ? h('span', { class: 'row-actions' },
             h('button', { class: 'icon-btn', title: 'Move up', 'aria-label': `Move ${e.name} up`, disabled: i === 0, onclick: () => move(t, i, -1) }, '↑'),
             h('button', { class: 'icon-btn', title: 'Move down', 'aria-label': `Move ${e.name} down`, disabled: i === t.entries.length - 1, onclick: () => move(t, i, 1) }, '↓'),
@@ -622,12 +632,20 @@
     let entered = null;
     try { entered = localStorage.getItem(enteredKey(t.id)); } catch { /* storage unavailable */ }
     const closes = t.config.entriesCloseAt ? `Entries close ${fmtWhen(t.config.entriesCloseAt)}.` : 'Entries close when the draw is made.';
+    const mine = entered && t.entries.find((e) => e.name === entered);
+    if (mine && !mine.confirmed) {
+      return h('div', { class: 'card entry-card' },
+        h('h2', {}, 'Entry received'),
+        h('p', {}, h('strong', {}, entered), ' — the organiser will confirm your place. This page updates once they do.'),
+        h('p', { class: 'muted small', style: 'margin:0' }, `Questions? Contact the organiser. ${closes}`));
+    }
     if (entered) {
       return h('div', { class: 'card entry-card' },
         h('h2', {}, 'You\'re entered ✓'),
         h('p', {}, h('strong', {}, entered), ' is on the entry list. See you on the day!'),
         h('p', { class: 'muted small', style: 'margin:0' }, `Something wrong? Contact the organiser. ${closes}`));
     }
+    const full = t.placesLeft === 0;
     const form = h('form', {
       class: 'card form entry-card',
       onsubmit: async (e) => {
@@ -638,7 +656,7 @@
           const body = Object.fromEntries(new FormData(form));
           const res = await api('POST', `${tPath(t)}/register`, body);
           try { localStorage.setItem(enteredKey(t.id), res.name || body.name); } catch { /* fine */ }
-          toast('You\'re entered — see you there!');
+          toast(res.confirmed === false ? 'Entry received — the organiser will confirm your place' : 'You\'re entered — see you there!');
           refresh();
           render();
         } catch (err) {
@@ -648,8 +666,10 @@
       },
     },
     h('div', {},
-      h('h2', {}, 'Enter this tournament'),
-      h('p', { class: 'muted small', style: 'margin:0' }, closes)),
+      h('h2', {}, full ? 'This tournament is full' : 'Enter this tournament'),
+      h('p', { class: 'muted small', style: 'margin:0' }, full
+        ? 'Join the waitlist — the organiser will confirm your place if one opens up.'
+        : t.placesLeft != null ? `${t.placesLeft} of ${t.config.maxEntries} places left. ${closes}` : closes)),
     h('div', { class: 'grid-2' },
       field('Your name', h('input', { name: 'name', required: true, maxlength: 40, autocomplete: 'name' })),
       field('Partner (doubles only)', h('input', { name: 'partner', maxlength: 40, autocomplete: 'off' }))),
@@ -657,7 +677,7 @@
       'Only the organisers see this, in case they need to reach you.'),
     // honeypot: hidden from people, filled in by bots
     h('label', { class: 'hp', 'aria-hidden': 'true' }, 'Website', h('input', { name: 'website', tabindex: '-1', autocomplete: 'off' })),
-    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Enter')));
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, full ? 'Join waitlist' : 'Enter')));
     return form;
   }
 
@@ -721,6 +741,9 @@
     }
     saveOrder(t, ids, 'Order shuffled');
   }
+  function confirmEntry(t, e) {
+    act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/confirm`, {}, t.id); }, `${e.name} confirmed`);
+  }
   function removeEntry(t, e) {
     act(async () => { S.t = await api('DELETE', `${tPath(t)}/entries/${e.id}`, undefined, t.id); }, `Removed ${e.name}`);
   }
@@ -746,23 +769,28 @@
   }
 
   function startCard(t) {
-    const here = t.entries.filter((e) => e.checkedIn).length;
+    const pool = t.entries.filter((e) => e.confirmed);
+    const waiting = t.entries.length - pool.length;
+    const here = pool.filter((e) => e.checkedIn).length;
     const usingCheckIn = here > 0;
-    const n = usingCheckIn ? here : t.entries.length;
-    const absent = t.entries.length - here;
+    const n = usingCheckIn ? here : pool.length;
+    const absent = pool.length - here;
+    const waitingText = `${waiting} unconfirmed ${waiting === 1 ? 'entry' : 'entries'}`;
     return h('div', { class: 'card' },
       h('h2', {}, 'Ready to start?'),
       usingCheckIn ? h('p', { class: 'muted small' }, `${here} checked in${absent ? ` · ${absent} not here (left out of the draw)` : ''}`) : null,
+      waiting ? h('p', { class: 'muted small' }, `${waitingText} — confirm or remove them, or they'll be left out of the draw.`) : null,
       h('p', { class: 'plan' }, planText(t, n)),
       h('p', { class: 'muted small' }, 'Starting makes the draw and fixtures. You can redo the draw until the first point is played.'),
       h('button', {
         class: 'btn btn-primary btn-lg',
         onclick: () => {
-          const msg = usingCheckIn && absent
+          let msg = usingCheckIn && absent
             ? `Start with the ${here} checked-in entries? ${absent} not checked in will be left out.`
             : 'Start the tournament now?';
+          if (waiting) msg += `\n\n${waitingText} will be left out of the draw.`;
           if (!confirm(msg)) return;
-          act(async () => { S.t = await api('POST', `${tPath(t)}/start`, {}, t.id); location.hash = `#/t/${t.id}/live`; }, 'Tournament started — good luck!');
+          act(async () => { S.t = await api('POST', `${tPath(t)}/start`, { skipUnconfirmed: waiting > 0 }, t.id); location.hash = `#/t/${t.id}/live`; }, 'Tournament started — good luck!');
         },
       }, 'Start tournament'));
   }
@@ -1247,7 +1275,10 @@
               await api('POST', '/billing/razorpay/verify', resp);
               S.upgradeFor = null;
               await load(t.id);
-              toast('Payment received — Event Pass active ✓');
+              const waiting = t.entries.filter((e) => !e.confirmed).length;
+              toast(waiting
+                ? `Payment received — Event Pass active ✓ ${waiting} waiting ${waiting === 1 ? 'entry' : 'entries'} confirmed`
+                : 'Payment received — Event Pass active ✓');
             } catch (e) {
               toast(e.message, true);
             }
@@ -1274,11 +1305,17 @@
   // Shown to organisers when a free tournament is full (or just hit the limit).
   function upgradeCard(t) {
     if (!S.billing.enabled || !t.can.manage || t.plan === 'pass' || !t.limits || !t.limits.entries) return null;
-    const full = t.entries.length >= t.limits.entries;
+    const full = t.entries.filter((e) => e.confirmed).length >= t.limits.entries;
+    // Waiting because of the plan limit (not the organiser's own maximum).
+    const waiting = full && t.status === 'setup' ? t.entries.filter((e) => !e.confirmed).length : 0;
     if (!full && S.upgradeFor !== t.id) return null;
     return h('div', { class: 'card upgrade-card' },
-      h('h2', {}, full ? `This tournament is full on the free plan (${t.limits.entries} entries)` : 'Need more entries?'),
-      h('p', {}, 'Get the ', h('strong', {}, 'Event Pass'), ` for unlimited entries in this tournament — ${rupees()}, one-time.`),
+      h('h2', {}, waiting
+        ? `${waiting} ${waiting === 1 ? 'player is' : 'players are'} waiting to be confirmed`
+        : full ? `This tournament is full on the free plan (${t.limits.entries} entries)` : 'Need more entries?'),
+      waiting
+        ? h('p', {}, 'Get the ', h('strong', {}, 'Event Pass'), ` to include them — ${rupees()}, one-time. Everyone waiting is confirmed automatically, and entries are unlimited from then on.`)
+        : h('p', {}, 'Get the ', h('strong', {}, 'Event Pass'), ` for unlimited entries in this tournament — ${rupees()}, one-time.`),
       h('div', { class: 'actions' },
         h('button', { class: 'btn btn-primary btn-lg', disabled: S.paying, onclick: () => payPass(t) },
           S.paying ? 'Opening payment…' : `Get Event Pass — ${rupees()}`),
@@ -1309,7 +1346,7 @@
     return h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Plan'), pill('', 'Free')),
       t.limits && t.limits.entries
-        ? h('p', { class: 'muted small' }, `Up to ${t.limits.entries} entries — ${t.entries.length} used. The Event Pass (${rupees()}, one-time) gives this tournament unlimited entries.`)
+        ? h('p', { class: 'muted small' }, `Up to ${t.limits.entries} entries — ${t.entries.filter((e) => e.confirmed).length} used. The Event Pass (${rupees()}, one-time) gives this tournament unlimited entries.`)
         : h('p', { class: 'muted small' }, 'Payments aren\'t set up yet, so there\'s no entry limit.'),
       h('div', { class: 'actions' },
         S.billing.enabled

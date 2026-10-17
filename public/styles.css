@@ -438,6 +438,8 @@ button.sport-chip:hover { border-color: var(--muted); }
 .entries .entry-name { overflow-wrap: anywhere; }
 .entries .row-actions .icon-btn { width: 30px; }
 .pill.withdrawn { background: var(--live-soft); color: var(--live); }
+.entries .confirm-btn { display: block; width: max-content; margin-top: 6px; }
+.pill.waiting { background: transparent; box-shadow: inset 0 0 0 1px var(--muted); color: var(--muted); }
 tr.out td { color: var(--muted); }
 .entry-card { border-left: 4px solid var(--accent); }
 .check-field { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; margin-bottom: 10px; }

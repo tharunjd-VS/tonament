@@ -33,6 +33,8 @@ Tournament management with live scoring for **tonament.com**. Starts with badmin
 
 The limit applies only once Razorpay keys are set.
 
+Players are never shown the free limit. Past it, self-entries are still accepted but saved as **unconfirmed**: the player sees "Entry received — the organiser will confirm your place", and the owner is emailed once. Unconfirmed entries aren't drawn. Buying the Pass confirms them automatically, or the organiser can confirm or remove them one by one. Organisers can also set their own **maximum entries**: players then see "N of M places left", and once it's reached new entries join a waitlist (the same unconfirmed state). A maximum above the free limit needs the Pass.
+
 **Environment variables (Vercel → Settings → Environment Variables):**
 
 | Name | Example | Notes |
@@ -160,14 +162,15 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | DELETE | `/tournaments/:id/members/:memberId` | Remove a team member |
 | POST | `/tournaments/:id/claim` | Add an ownerless tournament to your account (needs the organiser link) |
 | POST | `/tournaments/:id/entries` | `{ names: [...], walkIn }` |
-| POST | `/tournaments/:id/register` | Public self-entry `{ name, partner?, contact }` while entries are open |
+| POST | `/tournaments/:id/register` | Public self-entry `{ name, partner?, contact }` while entries are open; returns `confirmed: false` past the tournament's capacity |
+| POST | `/tournaments/:id/entries/:entryId/confirm` | Confirm a waiting self-entry (within the plan's limit) |
 | POST | `/tournaments/:id/entries/:entryId/check-in` `{ here }`, `/tournaments/:id/check-in-all` | Event-day check-in |
 | POST | `/tournaments/:id/redraw` | Undo the draw (only before the first point) |
 | POST | `/tournaments/:id/late-entry` `{ name }` | Add a player after the start (when late entries are allowed) |
 | POST | `/tournaments/:id/entries/:entryId/withdraw` | Withdraw a player; remaining matches become walkovers |
 | PUT | `/tournaments/:id/entries/order` | `{ ids: [...] }` sets the seeding |
 | DELETE | `/tournaments/:id/entries/:entryId` | Remove an entry |
-| POST | `/tournaments/:id/start` | Make the draw and fixtures |
+| POST | `/tournaments/:id/start` `{ skipUnconfirmed }` | Make the draw and fixtures (unconfirmed entries must be confirmed, removed, or skipped explicitly) |
 | POST | `/tournaments/:id/knockout` | Draw the bracket from the group standings |
 | POST | `/tournaments/:id/matches/:mid/rally` | `{ side: "a" \| "b" }` |
 | POST | `/tournaments/:id/matches/:mid/undo` | Remove the last rally |

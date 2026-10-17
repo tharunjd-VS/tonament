@@ -52,7 +52,7 @@ test('self-entry: open until the deadline or the draw; contact details stay priv
   assert.equal(t.config.selfEntry, true);
   assert.equal(t.entriesOpen, true);
 
-  assert.deepEqual(await svc.register(id, { name: 'Asha', contact: '+91 98765 43210' }), { ok: true, name: 'Asha' });
+  assert.deepEqual(await svc.register(id, { name: 'Asha', contact: '+91 98765 43210' }), { ok: true, name: 'Asha', confirmed: true });
   await svc.register(id, { name: 'Ben', partner: 'Cy', contact: 'Ben@Example.com' });
   await assert.rejects(svc.register(id, { name: 'Asha Again', contact: '+919876543210' }), /already been used/);
   await assert.rejects(svc.register(id, { name: 'Dee', contact: '123' }), /valid phone number or email/);

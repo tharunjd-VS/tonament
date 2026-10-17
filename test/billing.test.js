@@ -114,7 +114,7 @@ test('billing off: no entry limit', async () => {
   await assert.rejects(svc.checkout(id, ORG), /aren't set up/);
 });
 
-test('billing on: 16 free entries, then organisers are asked to upgrade and players see "full"', async () => {
+test('billing on: 16 free entries, then organisers are asked to upgrade', async () => {
   withBilling(true);
   try {
     const { id } = await svc.createTournament(ORG, { name: 'Limited Open', format: 'knockout' });
@@ -125,10 +125,110 @@ test('billing on: 16 free entries, then organisers are asked to upgrade and play
     t = await svc.addEntries(id, ORG, ['Sixteenth']);
     assert.equal(t.entries.length, 16);
     await assert.rejects(svc.addEntries(id, ORG, ['Seventeenth'], { walkIn: true }), (e) => e.code === 'upgrade');
-    await assert.rejects(svc.register(id, { name: 'Self', contact: 'self@x.dev' }), (e) => e.code === 'full' && /contact the organiser/.test(e.message));
   } finally {
     withBilling(false);
   }
+});
+
+test('over the free limit, players can still enter: unconfirmed until the organiser pays', async () => {
+  withBilling(true);
+  try {
+    const { id } = await svc.createTournament(ORG, { name: 'Waiting Cup', format: 'knockout' });
+    await svc.addEntries(id, ORG, names(16));
+    const sentBefore = mailer.sent.length;
+    const base = { baseUrl: 'https://tonament.example' };
+
+    assert.deepEqual(await svc.register(id, { name: 'Late Lee', contact: 'lee@x.dev' }, base), { ok: true, name: 'Late Lee', confirmed: false });
+    await svc.register(id, { name: 'Late Mo', contact: 'mo@x.dev' }, base);
+    // The owner is told once, not for every waiting player.
+    const notes = mailer.sent.slice(sentBefore).filter((m) => m.subject === 'Players are waiting to enter Waiting Cup');
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0].to, 'org@club.test');
+    assert.match(notes[0].text, /Late Lee/);
+    assert.match(notes[0].text, /#\/t\/waiting-cup-[0-9a-f]+\/entries/);
+
+    // Players never see the plan limit; they see who is awaiting confirmation.
+    let pub = await svc.getTournament(id);
+    assert.equal(pub.limits, undefined);
+    assert.equal(pub.placesLeft, null);
+    assert.equal(pub.entries.some((e) => 'contact' in e), false);
+    assert.deepEqual(pub.entries.filter((e) => !e.confirmed).map((e) => e.name), ['Late Lee', 'Late Mo']);
+
+    // Confirming one by hand needs room on the plan.
+    const lee = pub.entries.find((e) => e.name === 'Late Lee');
+    await assert.rejects(svc.confirmEntry(id, ORG, lee.id), (e) => e.status === 402 && e.code === 'upgrade');
+
+    // Starting with unconfirmed entries needs an explicit choice.
+    await assert.rejects(svc.start(id, ORG), (e) => e.code === 'unconfirmed' && /2 entries are still unconfirmed/.test(e.message));
+
+    // Making room (someone drops out) lets the organiser confirm one.
+    let t = await svc.removeEntry(id, ORG, pub.entries[0].id);
+    t = await svc.confirmEntry(id, ORG, lee.id);
+    assert.equal(t.entries.find((e) => e.id === lee.id).confirmed, true);
+
+    // Paying confirms everyone still waiting.
+    const order = await svc.checkout(id, ORG);
+    await svc.verifyPayment(rp.pay(order.orderId), base);
+    t = await svc.getTournament(id, ORG);
+    assert.equal(t.entries.every((e) => e.confirmed), true);
+    assert.equal(t.entries.length, 17);
+  } finally {
+    withBilling(false);
+  }
+});
+
+test('start without unconfirmed entries leaves them out of the draw', async () => {
+  withBilling(true);
+  try {
+    const { id } = await svc.createTournament(ORG, { name: 'Skip Cup', format: 'knockout' });
+    await svc.addEntries(id, ORG, names(16));
+    await svc.register(id, { name: 'Waiter', contact: 'w@x.dev' });
+    const t = await svc.start(id, ORG, { skipUnconfirmed: true });
+    const waiter = t.entries.find((e) => e.name === 'Waiter');
+    assert.equal(waiter.inDraw, false);
+    assert.equal(t.matches.some((m) => m.a?.id === waiter.id || m.b?.id === waiter.id), false);
+    assert.equal(t.matches.filter((m) => m.round === 1).length, 8);
+  } finally {
+    withBilling(false);
+  }
+});
+
+test('organiser maximum: places left, waitlist, and over 16 needs the Pass', async () => {
+  withBilling(true);
+  try {
+    await assert.rejects(svc.createTournament(ORG, { name: 'Too Big', maxEntries: 24 }), (e) => e.code === 'upgrade' && /maximum of 24/.test(e.message));
+    const { id } = await svc.createTournament(ORG, { name: 'Small Cup', format: 'knockout', maxEntries: 8 });
+    let pub = await svc.getTournament(id);
+    assert.equal(pub.placesLeft, 8);
+    await svc.addEntries(id, ORG, names(7));
+    assert.equal((await svc.getTournament(id)).placesLeft, 1);
+    assert.equal((await svc.register(id, { name: 'Eighth', contact: 'e8@x.dev' })).confirmed, true);
+    assert.equal((await svc.getTournament(id)).placesLeft, 0);
+    assert.equal((await svc.register(id, { name: 'Ninth', contact: 'e9@x.dev' })).confirmed, false); // waitlist
+    // Organisers may go past their own maximum (within the plan).
+    let t = await svc.addEntries(id, ORG, ['Organiser Pick']);
+    assert.equal(t.entries.find((e) => e.name === 'Organiser Pick').confirmed, true);
+
+    await assert.rejects(svc.updateSettings(id, ORG, { maxEntries: 24 }), (e) => e.status === 402 && e.code === 'upgrade');
+    await svc.adminSetPlan(id, ADMIN, 'pass');
+    t = await svc.updateSettings(id, ORG, { maxEntries: 24 });
+    assert.equal(t.config.maxEntries, 24);
+    assert.equal(t.entries.find((e) => e.name === 'Ninth').confirmed, true); // raising the maximum lets waiting players in
+    t = await svc.updateSettings(id, ORG, { maxEntries: '' });
+    assert.equal(t.config.maxEntries, null);
+    assert.equal((await svc.getTournament(id)).placesLeft, null);
+  } finally {
+    withBilling(false);
+  }
+});
+
+test('billing off: self-entries are only unconfirmed past the organiser maximum', async () => {
+  withBilling(false);
+  const { id } = await svc.createTournament(ORG, { name: 'Free For All', format: 'knockout' });
+  await svc.addEntries(id, ORG, names(20));
+  assert.equal((await svc.register(id, { name: 'Twenty-one', contact: 't21@x.dev' })).confirmed, true);
+  await svc.updateSettings(id, ORG, { maxEntries: 21 });
+  assert.equal((await svc.register(id, { name: 'Twenty-two', contact: 't22@x.dev' })).confirmed, false);
 });
 
 test('checkout -> verify activates the Pass, sends a receipt, and is idempotent', async () => {

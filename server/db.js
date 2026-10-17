@@ -124,11 +124,16 @@ CREATE INDEX IF NOT EXISTS payments_t ON payments(tournament_id);
 -- Scoring-only share link, alongside the organiser link (admin_key).
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS scorer_key TEXT;
 UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WHERE scorer_key IS NULL;
+
+-- Self-entries beyond the free limit (or the organiser's maximum) wait for the
+-- organiser to confirm them; they don't go into the draw until then.
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS confirmed BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS waiting_notified BOOLEAN NOT NULL DEFAULT false;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 async function migrate(db) {
   try {
