@@ -176,7 +176,9 @@
       config: ev.config,
       entriesOpen: ev.entriesOpen,
       placesLeft: ev.placesLeft,
-      entries: ev.entries,
+      // Doubles players without a partner are listed apart from the draw.
+      entries: ev.entries.filter((e) => !e.solo),
+      solos: ev.entries.filter((e) => e.solo),
       groups: ev.groups,
       matches: ev.matches,
       champion: ev.champion,
@@ -895,8 +897,8 @@
     const groupLabel = (g) => (g == null || t.format === 'knockout' ? null : h('span', { class: 'pill' }, `Group ${String.fromCharCode(65 + g)}`));
     const tags = (e) => [
       setup && !e.confirmed && e.feeStatus !== 'pending' ? pill('waiting', t.can.manage ? 'Unconfirmed' : 'Awaiting confirmation') : null,
-      t.event.fee && t.can.manage ? feePill(e) : null,
-      e.source === 'self' ? pill('', 'Self-entered') : e.source === 'walk-in' ? pill('', 'Walk-in') : null,
+      t.event.fee && t.can.manage ? (e.members ? e.members.map((m) => feePill(m)) : feePill(e)) : null,
+      e.source === 'self' ? pill('', 'Self-entered') : e.source === 'walk-in' ? pill('', 'Walk-in') : e.source === 'drawn' ? pill('', 'Drawn pair') : null,
       !setup && e.withdrawn ? pill('withdrawn', 'Withdrew') : null,
       !setup && !e.inDraw ? pill('', 'Didn\'t show') : null,
     ];
@@ -939,11 +941,17 @@
           h('span', { class: 'name' },
             h('span', { class: 'entry-name' }, e.name),
             e.contact ? h('small', { class: 'contact' }, e.contact) : null,
+            e.members && t.can.manage && e.members.some((m) => m.contact)
+              ? h('small', { class: 'contact' }, e.members.map((m) => `${m.name}: ${m.contact}`).join(' · '))
+              : null,
             h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group)),
             editable && !e.confirmed && e.feeStatus !== 'pending'
               ? h('button', { class: 'btn btn-small btn-primary confirm-btn', onclick: () => confirmEntry(t, e) }, 'Confirm place')
               : null,
-            t.event.fee && t.can.manage ? feeActions(t, e) : null),
+            t.event.fee && t.can.manage && !e.members ? feeActions(t, e) : null,
+            editable && e.source === 'drawn'
+              ? h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => splitPair(t, e) }, 'Split pair'))
+              : null),
           editable ? h('span', { class: 'row-actions' },
             h('button', { class: 'icon-btn', title: 'Move up', 'aria-label': `Move ${e.name} up`, disabled: i === 0, onclick: () => move(t, i, -1) }, '↑'),
             h('button', { class: 'icon-btn', title: 'Move down', 'aria-label': `Move ${e.name} down`, disabled: i === t.entries.length - 1, onclick: () => move(t, i, 1) }, '↓'),
@@ -961,6 +969,10 @@
       return [
         venueCard(t),
         setup && t.entriesOpen ? publicEntryCard(t) : null,
+        setup && t.solos.length
+          ? h('div', { class: 'card' }, h('h2', {}, `Looking for a partner (${t.solos.length})`),
+            h('p', { class: 'muted small', style: 'margin:0' }, t.solos.map((e) => e.name + (e.side ? ` (${e.side})` : '')).join(' · ')))
+          : null,
         setup && !t.entriesOpen
           ? h('div', { class: 'banner info' }, t.config.selfEntry ? 'Entries are closed. The draw will appear here once the tournament starts.' : 'The organiser is still adding players. The draw will appear here once the tournament starts.')
           : null,
@@ -968,7 +980,7 @@
       ];
     }
     if (!setup) return [upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), list, tournamentSettingsCard(t)];
-    return [upgradeCard(t), venueCard(t), addEntriesForm(t, usingCheckIn), list, startCard(t), eventSettingsCard(t), tournamentSettingsCard(t)];
+    return [upgradeCard(t), venueCard(t), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), tournamentSettingsCard(t)];
   }
 
   function addEntriesForm(t, walkIn) {
@@ -1003,7 +1015,24 @@
     let entered = null;
     try { entered = localStorage.getItem(enteredKey(t)); } catch { /* storage unavailable */ }
     const closes = t.config.entriesCloseAt ? `Entries close ${fmtWhen(t.config.entriesCloseAt)}.` : 'Entries close when the draw is made.';
-    const mine = entered && t.entries.find((e) => e.name === entered);
+    const mine = entered && [...t.entries, ...t.solos].find((e) => e.name === entered);
+    // Entered alone and since paired up: their pair lists them as a member.
+    const myPair = entered && !mine && t.entries.find((e) => e.members && e.members.some((m) => m.name === entered));
+    if (myPair) {
+      const partner = myPair.members.find((m) => m.name !== entered);
+      return h('div', { class: 'card entry-card' },
+        h('h2', {}, `You're playing with ${partner ? partner.name : 'your partner'} ✓`),
+        h('p', {}, h('strong', {}, myPair.name), ' is on the entry list. See you on the day!'),
+        h('p', { class: 'muted small', style: 'margin:0' }, `Something wrong? Contact the organiser. ${closes}`));
+    }
+    if (mine && mine.solo && mine.confirmed) {
+      return h('div', { class: 'card entry-card' },
+        h('h2', {}, 'You\'re entered — looking for a partner'),
+        h('p', {}, h('strong', {}, entered), t.config.partners === 'drawn'
+          ? ' — partners are drawn when the event starts. Your partner will show here.'
+          : ' — the organiser will pair you with another player. Your partner will show here.'),
+        h('p', { class: 'muted small', style: 'margin:0' }, `Questions? Contact the organiser. ${closes}`));
+    }
     if (mine && !mine.confirmed) {
       return h('div', { class: 'card entry-card' },
         h('h2', {}, 'Entry received'),
@@ -1018,6 +1047,7 @@
     }
     const full = t.placesLeft === 0;
     const fee = t.event.fee || 0;
+    const drawn = t.event.discipline === 'doubles' && t.config.partners === 'drawn';
     const feeLine = fee ? `Entry fee ${money(fee)}${t.event.discipline === 'doubles' ? ' per pair' : ''}, paid online when you enter. ` : '';
     // Paid events have no waitlist: nobody pays for a place that isn't there.
     if (fee && full) {
@@ -1060,11 +1090,22 @@
         : `${feeLine}${t.placesLeft != null ? `${t.placesLeft} of ${t.config.maxEntries} places left. ` : ''}${closes}`)),
     h('div', { class: 'grid-2' },
       field('Your name', h('input', { name: 'name', required: true, maxlength: 40, autocomplete: 'name' })),
-      // Doubles events need a partner; singles have none; catch-all events make it optional.
-      t.event.discipline === 'singles' ? null
+      // Doubles events need a partner (or "find me one"); singles have none;
+      // catch-all events make it optional; drawn-partner events never ask.
+      t.event.discipline === 'singles' || drawn ? null
         : t.event.discipline === 'doubles'
-          ? field('Partner\'s name', h('input', { name: 'partner', required: true, maxlength: 40, autocomplete: 'off' }))
+          ? field('Partner\'s name', h('input', { name: 'partner', required: true, maxlength: 40, autocomplete: 'off' }), 'partner-field')
           : field('Partner (doubles only)', h('input', { name: 'partner', maxlength: 40, autocomplete: 'off' }))),
+    t.event.discipline === 'doubles' && !drawn
+      ? h('label', { class: 'check-field' },
+        h('input', { type: 'checkbox', name: 'solo', onchange: (e) => syncSolo(e.target.form, e.target.checked) }),
+        h('span', {}, h('strong', {}, 'I don\'t have a partner — find me one'),
+          h('small', {}, `The organiser pairs you with another player looking for a partner.${fee ? ` You pay half the pair fee (${money(Math.ceil(fee / 2))}).` : ''}`)))
+      : null,
+    drawn ? h('p', { class: 'hint', style: 'margin:0' }, `Partners are drawn when the event starts — enter on your own.${fee ? ` You pay half the pair fee (${money(Math.ceil(fee / 2))}).` : ''}`) : null,
+    t.event.gender === 'mixed' && t.event.discipline === 'doubles'
+      ? Object.assign(field('I\'m playing as', h('select', { name: 'side' }, h('option', { value: 'man' }, 'Man'), h('option', { value: 'woman' }, 'Woman')), 'side-field'), { hidden: !drawn })
+      : null,
     fee
       ? field('Email', h('input', { name: 'contact', type: 'email', required: true, maxlength: 120, autocomplete: 'email' }), null,
         'Your receipt is sent here. Only the organisers see it.')
@@ -1152,7 +1193,8 @@
   }
 
   function saveOrder(t, ids, msg) {
-    act(async () => { S.t = await api('PUT', `${tPath(t)}/entries/order`, withEv(t, { ids }), t.id); }, msg);
+    const all = [...ids, ...(t.solos || []).map((e) => e.id)]; // solo players keep their places after the pairs
+    act(async () => { S.t = await api('PUT', `${tPath(t)}/entries/order`, withEv(t, { ids: all }), t.id); }, msg);
   }
   function move(t, i, dir) {
     const ids = t.entries.map((e) => e.id);
@@ -1167,6 +1209,48 @@
     }
     saveOrder(t, ids, 'Order shuffled');
   }
+  // ----- doubles players without a partner
+  function soloCard(t) {
+    if (t.event.discipline !== 'doubles' || !t.solos.length) return null;
+    const mixed = t.event.gender === 'mixed';
+    const ready = t.solos.filter((e) => e.confirmed && e.feeStatus !== 'pending');
+    const draw = (balance) => act(async () => { S.t = await api('POST', `${tPath(t)}/pairs/draw`, withEv(t, { balance }), t.id); },
+      balance ? 'Pairs drawn — top seeds with the lowest' : 'Pairs drawn at random');
+    const pairWith = (a, bId) => act(async () => { S.t = await api('POST', `${tPath(t)}/pairs`, { a: a.id, b: Number(bId) }, t.id); }, 'Paired');
+    return h('div', { class: 'card solo-card' },
+      h('h2', {}, `Looking for a partner (${t.solos.length})`),
+      h('p', { class: 'muted small' }, t.config.partners === 'drawn'
+        ? 'Partners are drawn for this event when you start it — or draw them now to see the pairs first.'
+        : 'These players entered without a partner. Pair them yourself, or draw the pairs.'),
+      h('ol', { class: 'entries' }, t.solos.map((e) => {
+        const others = ready.filter((o) => o.id !== e.id && (!mixed || o.side !== e.side));
+        return h('li', {},
+          h('span', { class: 'name' },
+            h('span', { class: 'entry-name' }, e.name),
+            e.contact ? h('small', { class: 'contact' }, e.contact) : null,
+            h('span', { class: 'entry-tags' },
+              e.side ? pill('', e.side === 'man' ? 'Man' : 'Woman') : null,
+              !e.confirmed && e.feeStatus !== 'pending' ? pill('waiting', 'Unconfirmed') : null,
+              t.event.fee ? feePill(e) : null),
+            t.event.fee ? feeActions(t, e) : null),
+          e.confirmed && e.feeStatus !== 'pending' && others.length
+            ? h('select', { class: 'pair-with', 'aria-label': `Pair ${e.name} with`, onchange: (ev) => ev.target.value && pairWith(e, ev.target.value) },
+              h('option', { value: '' }, 'Pair with…'), others.map((o) => h('option', { value: o.id }, o.name)))
+            : null,
+          h('span', { class: 'row-actions' },
+            h('button', { class: 'icon-btn', title: 'Remove', 'aria-label': `Remove ${e.name}`, onclick: () => removeEntry(t, e) }, '✕')));
+      })),
+      ready.length > 1
+        ? h('div', { class: 'actions', style: 'margin-top:10px' },
+          h('button', { class: 'btn btn-small btn-primary', onclick: () => draw(false) }, 'Pair randomly'),
+          h('button', { class: 'btn btn-small btn-ghost', onclick: () => draw(true) }, 'Pair balanced'))
+        : null,
+      ready.length > 1 ? h('p', { class: 'hint', style: 'margin:8px 0 0' }, `Balanced pairs the top seed with the lowest, by the order of the entry list${mixed ? ' — always a man with a woman' : ''}.`) : null);
+  }
+  function splitPair(t, e) {
+    act(async () => { S.t = await api('DELETE', `${tPath(t)}/pairs/${e.id}`, undefined, t.id); }, `${e.name} split — both are looking for a partner again`);
+  }
+
   // Entry fees (tournaments organised by Tonament).
   function feePill(e) {
     if (e.feeStatus === 'paid') return pill('done', `Paid ${money(e.feeAmount || 0)}`);
@@ -1229,15 +1313,20 @@
   function startCard(t) {
     const pool = t.entries.filter((e) => e.confirmed);
     const waiting = t.entries.length - pool.length;
+    const drawnEvent = t.config.partners === 'drawn';
+    const alone = drawnEvent ? 0 : t.solos.filter((e) => e.confirmed).length;
     const here = pool.filter((e) => e.checkedIn).length;
     const usingCheckIn = here > 0;
-    const n = usingCheckIn ? here : pool.length;
+    // Drawn-partner events will add a pair for every two players entered alone.
+    const n = (usingCheckIn ? here : pool.length) + (drawnEvent ? Math.floor(t.solos.filter((e) => e.confirmed).length / 2) : 0);
     const absent = pool.length - here;
     const waitingText = `${waiting} unconfirmed ${waiting === 1 ? 'entry' : 'entries'}`;
     return h('div', { class: 'card' },
       h('h2', {}, 'Ready to start?'),
       usingCheckIn ? h('p', { class: 'muted small' }, `${here} checked in${absent ? ` · ${absent} not here (left out of the draw)` : ''}`) : null,
       waiting ? h('p', { class: 'muted small' }, `${waitingText} — confirm or remove them, or they'll be left out of the draw.`) : null,
+      alone ? h('p', { class: 'muted small' }, `${alone} ${alone === 1 ? 'player still needs' : 'players still need'} a partner — pair them above, or they'll be left out.`) : null,
+      drawnEvent && t.solos.length ? h('p', { class: 'muted small' }, `Partners for the ${t.solos.length} players entered alone will be drawn when you start${t.config.balancePairs ? ' (balanced)' : ''}. If anyone is left over, they sit out.`) : null,
       h('p', { class: 'plan' }, planText(t, n)),
       h('p', { class: 'muted small' }, 'Starting makes the draw and fixtures. You can redo the draw until the first point is played.'),
       h('button', {
@@ -1247,8 +1336,9 @@
             ? `Start with the ${here} checked-in entries? ${absent} not checked in will be left out.`
             : 'Start the tournament now?';
           if (waiting) msg += `\n\n${waitingText} will be left out of the draw.`;
+          if (alone) msg += `\n\n${alone} without a partner will be left out.`;
           if (!confirm(msg)) return;
-          act(async () => { S.t = await api('POST', `${tPath(t)}/start`, withEv(t, { skipUnconfirmed: waiting > 0 }), t.id); location.hash = tabHref(t, 'live'); }, multiEvent(t) ? `${t.event.name} started — good luck!` : 'Tournament started — good luck!');
+          act(async () => { S.t = await api('POST', `${tPath(t)}/start`, withEv(t, { skipUnconfirmed: waiting > 0 || alone > 0 || drawnEvent }), t.id); location.hash = tabHref(t, 'live'); }, multiEvent(t) ? `${t.event.name} started — good luck!` : 'Tournament started — good luck!');
         },
       }, 'Start tournament'));
   }
@@ -1333,11 +1423,26 @@
         e.preventDefault();
         saveForm(form, async () => {
           const fee = form.fee ? { fee: Math.round(Number(form.fee.value || 0) * 100) } : {};
-          S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ...readCategory(form), ...readFormat(form, sport), ...fee }, t.id);
+          const partners = form.querySelector('input[name=partners]')
+            ? { partners: form.querySelector('input[name=partners]:checked').value, balancePairs: form.balancePairs.checked }
+            : {};
+          S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ...readCategory(form), ...readFormat(form, sport), ...fee, ...partners }, t.id);
         }, 'Event settings saved');
       },
     },
     categoryFields(t.event),
+    t.event.discipline === 'doubles'
+      ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'Partners'),
+        h('label', { class: 'check-field' },
+          h('input', { type: 'radio', name: 'partners', value: 'own', checked: t.config.partners !== 'drawn' }),
+          h('span', {}, h('strong', {}, 'Players bring their own partner'), h('small', {}, 'Anyone without one can ask to be paired; you pair them before the draw.'))),
+        h('label', { class: 'check-field' },
+          h('input', { type: 'radio', name: 'partners', value: 'drawn', checked: t.config.partners === 'drawn' }),
+          h('span', {}, h('strong', {}, 'Partners are drawn for everyone'), h('small', {}, 'Everyone enters alone; pairs are drawn when the event starts (a social "draw doubles").'))),
+        h('label', { class: 'check-field' },
+          h('input', { type: 'checkbox', name: 'balancePairs', checked: Boolean(t.config.balancePairs) }),
+          h('span', {}, h('strong', {}, 'Balance drawn pairs'), h('small', {}, 'Pair the top seeds with the lowest, by the order of the entry list.'))))
+      : null,
     t.official
       ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'Entry fee'),
         field(`Entry fee (₹)${t.event.discipline === 'doubles' ? ' per pair' : ''}`, h('input', {
@@ -1837,6 +1942,17 @@
       el.onerror = () => reject(new Error('Couldn\'t load the payment window — check your connection and try again'));
       document.head.appendChild(el);
     });
+  }
+
+  // "Find me a partner": no partner name; mixed doubles asks man or woman.
+  function syncSolo(form, solo) {
+    const partner = form.querySelector('.partner-field');
+    if (partner) {
+      partner.hidden = solo;
+      partner.querySelector('input').required = !solo;
+    }
+    const side = form.querySelector('.side-field');
+    if (side) side.hidden = !solo;
   }
 
   // Pays a self-entry's fee in Razorpay Checkout: 'paid', 'cancelled' or 'failed'.

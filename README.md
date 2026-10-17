@@ -21,6 +21,7 @@ Tournament management with live scoring for **tonament.com**. Starts with badmin
 - **Accounts and roles:** sign up with email and password. Whoever creates a tournament is its **owner** and can add **organisers** (manage everything) and **umpires** (score matches only) by email. Someone without an account yet gets access as soon as they sign up with that email. Spectators don't need an account.
 - **Venue and dates:** start date (and an optional end date), venue name, address, city, state, postcode and country. Countries and states come from a fixed list in `public/regions.js`, so filters group cleanly; there's also "Other" for any country. Players get an "Open in Google Maps" link. Venue and dates stay editable after the start.
 - **Find a tournament:** the home page searches public tournaments by name or venue, sport, country → state → city, date (upcoming & live, next 7 or 30 days, past) and "open for entries". Filters live in the URL, so a search can be shared.
+- **Doubles without a partner:** players can enter a doubles event alone ("find me a partner"; mixed doubles asks man or woman), and organisers pair them by hand, at random, or balanced (top seed with the lowest). An event can instead be set to **partners drawn**: everyone enters alone and pairs are drawn when it starts. In paid events a solo player pays half the pair fee.
 - **Visibility:** the owner chooses who can see a tournament. **Private** (the default for new tournaments): only the team. **Link only**: anyone with the link can view and enter, but it isn't listed. **Public**: also listed on the home page. Tournaments created before this setting existed are Public.
 - **Share links:** each tournament also has a *scorer link* (scoring only) and an *organiser link* (full control) for people without an account, such as a volunteer on a borrowed phone. Tournaments created before accounts existed can be added to your account from the organiser link.
 - **Site admins:** anyone whose email is listed in `ADMIN_EMAILS` can manage every tournament and see all users at `/#/admin`.
@@ -176,6 +177,7 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | PUT | `/tournaments/:id/events/order` `{ ids }` | Reorder events |
 | POST | `/tournaments/:id/register` | Public self-entry `{ name, partner?, contact }` while entries are open; returns `confirmed: false` past the tournament's capacity |
 | POST | `/tournaments/:id/entries/:entryId/fee` `{ status }` | Record an entry fee as `cash` (paid in person), `waived`, or `null` (official tournaments) |
+| POST/DELETE | `/tournaments/:id/pairs` `{ a, b }`, `/tournaments/:id/pairs/draw` `{ event, balance }`, `/tournaments/:id/pairs/:entryId` | Pair two solo players, draw pairs for everyone waiting, or split a drawn pair |
 | POST | `/tournaments/:id/entries/:entryId/confirm` | Confirm a waiting self-entry (within the plan's limit) |
 | POST | `/tournaments/:id/entries/:entryId/check-in` `{ here }`, `/tournaments/:id/check-in-all` | Event-day check-in |
 | POST | `/tournaments/:id/redraw` | Undo the draw (only before the first point) |

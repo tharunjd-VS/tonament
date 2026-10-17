@@ -192,11 +192,17 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS entry_id INTEGER;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS event_id INTEGER;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS event_name TEXT;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS player TEXT;
+
+-- Doubles players without a partner enter alone ("solo"); pairing two solos
+-- creates a pair entry, and the solos point at it (they keep contacts/fees).
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS solo BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS solo_side TEXT;      -- mixed doubles: man | woman
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS paired_into INTEGER;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 async function migrate(db) {
   try {

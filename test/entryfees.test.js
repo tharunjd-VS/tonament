@@ -160,3 +160,20 @@ test('organisers record fees paid in person or waive them; online payments are p
   const online = (await svc.getTournament(id, ADMIN)).events[0].entries.find((e) => e.name === 'Online');
   await assert.rejects(svc.setEntryFee(id, ADMIN, online.id, 'waived'), /Razorpay dashboard/);
 });
+
+test('a solo doubles player pays half the pair fee and keeps it after pairing', async () => {
+  const { id, xd } = await officialCup('Solo Open');
+  await svc.updateEvent(id, ADMIN, xd, { maxEntries: '' });
+  const res = await svc.register(id, { name: 'Ravi', contact: 'ravi@x.dev', event: xd, solo: true, side: 'man' }, base);
+  assert.equal(res.payment.amount, 25000); // half of ₹500
+  assert.match(res.payment.description, /half of the pair fee/);
+  await svc.verifyPayment(rp.pay(res.payment.orderId), base);
+  await svc.addEntries(id, ADMIN, ['Meena'], { event: xd }); // organiser adds a partner by hand…
+  let t = await svc.getTournament(id, ADMIN);
+  const meena = t.events[1].entries.find((e) => e.name === 'Meena');
+  await db.query(`UPDATE entries SET solo = true, solo_side = 'woman' WHERE id = $1`, [meena.id]); // …as a solo woman
+  t = await svc.drawPairs(id, ADMIN, { event: xd });
+  const pair = t.events[1].entries.find((e) => e.source === 'drawn');
+  assert.deepEqual(pair.members.map((m) => [m.name, m.feeStatus]), [['Ravi', 'paid'], ['Meena', null]]);
+  assert.equal(t.events[1].feeTotal, 25000);
+});

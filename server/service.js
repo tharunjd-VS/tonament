@@ -20,7 +20,7 @@ const VISIBILITY = ['private', 'link', 'public'];
 // Settings that belong to the tournament as a whole; everything else in a
 // config (format details, scoring, caps) belongs to each event.
 const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
-const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'discipline', 'gender', 'age', 'level'];
+const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'discipline', 'gender', 'age', 'level'];
 const eventConfigOf = (config) => Object.fromEntries(Object.entries(config).filter(([k]) => !TOURNAMENT_KEYS.includes(k)));
 
 const ROLES = { owner: 'Owner', organiser: 'Organiser', umpire: 'Umpire' };
@@ -137,17 +137,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return { ...row, sportDef: sports.get(row.sport) };
   }
 
-  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at';
+  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into';
 
   // Entries and matches of one event (`ev` is an event context, see eventFor).
+  // Solo players already paired up play as their pair entry, so they're left out.
   const entriesOf = (q, ev) =>
-    q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE event_id = $1 ORDER BY seed, id`, [ev.eventId]);
+    q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE event_id = $1 AND paired_into IS NULL ORDER BY seed, id`, [ev.eventId]);
 
-  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null }) =>
+  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null, solo = false, side = null }) =>
     q(
-      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
-      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount],
+      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount, solo, solo_side)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount, solo, side],
     );
 
   // ---------- entry fees (tournaments organised by Tonament only)
@@ -157,6 +158,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const MAX_FEE = 5000000; // paise (₹50,000)
   const feeOf = (ev) => (ev.official && ev.config.fee > 0 ? ev.config.fee : 0);
   const HOLDS_PLACE = `(confirmed OR (fee_status = 'pending' AND created_at > now() - interval '${PENDING_MINUTES} minutes'))`;
+  const TAKES_PLACE = `paired_into IS NULL AND ${HOLDS_PLACE}`; // a pair counts once, not its two solos
   const clearExpiredPending = (q, ev) =>
     q(`DELETE FROM entries WHERE event_id = $1 AND fee_status = 'pending' AND NOT ${HOLDS_PLACE}`, [ev.eventId]);
 
@@ -381,7 +383,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const groupsFor = (t, n) => (t.config.groupSize ? formats.groupCount(n, t.config.groupSize) : t.config.groups);
 
   const confirmedCount = async (q, t) =>
-    (await q('SELECT COUNT(*)::int AS n FROM entries WHERE tournament_id = $1 AND confirmed', [t.id]))[0].n;
+    (await q('SELECT COUNT(*)::int AS n FROM entries WHERE tournament_id = $1 AND confirmed AND paired_into IS NULL', [t.id]))[0].n;
 
   // Free plan: up to cfg.freeLimit confirmed entries per tournament (only once
   // Razorpay is configured). Organisers adding players get an upgrade prompt;
@@ -421,9 +423,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // Can one more self-entry be confirmed in this event right now?
   // Places held by entries still paying count as taken.
   async function hasRoom(q, ev) {
-    const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM entries WHERE event_id = $1 AND ${HOLDS_PLACE}`, [ev.eventId]);
+    const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM entries WHERE event_id = $1 AND ${TAKES_PLACE}`, [ev.eventId]);
     if (n >= eventCap(ev)) return false;
-    const [{ total }] = await q(`SELECT COUNT(*)::int AS total FROM entries WHERE tournament_id = $1 AND ${HOLDS_PLACE}`, [ev.id]);
+    const [{ total }] = await q(`SELECT COUNT(*)::int AS total FROM entries WHERE tournament_id = $1 AND ${TAKES_PLACE}`, [ev.id]);
     return total < planLimit(ev.plan);
   }
 
@@ -432,7 +434,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   async function confirmWaiting(q, t) {
     const events = new Map((await eventsOf(q, t.id)).filter((e) => e.status === 'setup').map((e) => [e.id, eventContext(t, e)]));
     const counts = new Map(
-      (await q('SELECT event_id, COUNT(*)::int AS n FROM entries WHERE tournament_id = $1 AND confirmed GROUP BY event_id', [t.id]))
+      (await q('SELECT event_id, COUNT(*)::int AS n FROM entries WHERE tournament_id = $1 AND confirmed AND paired_into IS NULL GROUP BY event_id', [t.id]))
         .map((r) => [r.event_id, r.n]),
     );
     let total = await confirmedCount(q, t);
@@ -524,8 +526,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // One event's draw, results and entries.
   function eventView(t, allRows, rows, access) {
-    // Entries still paying are only shown to organisers.
-    const entries = access.can.manage ? allRows : allRows.filter((e) => e.fee_status !== 'pending');
+    // Entries still paying are only shown to organisers; paired solo players
+    // appear as members of their pair.
+    const visible = access.can.manage ? allRows : allRows.filter((e) => e.fee_status !== 'pending');
+    const entries = visible.filter((e) => e.paired_into == null);
+    const membersOf = (pairId) => visible.filter((e) => e.paired_into === pairId);
     const names = new Map(entries.map((e) => [e.id, e.name]));
     const scored = rows.map((row) => ({ row, score: scoreOf(t, row) }));
     const groups = groupStandings(t, entries, scored, names);
@@ -558,7 +563,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       placesLeft: t.config.maxEntries ? Math.max(0, t.config.maxEntries - confirmed) : null,
       fee: feeOf(t),
       ...(access.can.manage && feeOf(t) && {
-        feeTotal: entries.filter((e) => e.fee_status === 'paid' || e.fee_status === 'cash').reduce((sum, e) => sum + (e.fee_amount || 0), 0),
+        feeTotal: visible.filter((e) => e.fee_status === 'paid' || e.fee_status === 'cash').reduce((sum, e) => sum + (e.fee_amount || 0), 0),
       }),
       entries: entries.map((e) => ({
         id: e.id,
@@ -570,6 +575,16 @@ function createService(db, { mailer, fetchImpl } = {}) {
         withdrawn: e.withdrawn,
         source: e.source,
         confirmed: e.confirmed,
+        solo: e.solo,
+        side: e.solo_side,
+        ...(e.source === 'drawn' && {
+          members: membersOf(e.id).sort((x, y) => e.name.indexOf(x.name) - e.name.indexOf(y.name)).map((m) => ({
+            id: m.id,
+            name: m.name,
+            side: m.solo_side,
+            ...(access.can.manage && { contact: m.contact, feeStatus: m.fee_status, feeAmount: m.fee_amount }),
+          })),
+        }),
         ...(access.can.manage && { contact: e.contact, feeStatus: e.fee_status, feeAmount: e.fee_amount }), // organisers only
       })),
       groups,
@@ -825,6 +840,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const format = input.format ?? ev.format;
     const config = buildConfig(input, ev.sportDef, ev.config);
     if (input.maxEntries !== undefined) checkMaxEntries(config, ev.plan);
+    if (input.partners !== undefined) {
+      if (!['own', 'drawn'].includes(input.partners)) fail(400, 'partners must be "own" or "drawn"');
+      config.partners = input.partners;
+    }
+    if (input.balancePairs !== undefined) config.balancePairs = Boolean(input.balancePairs);
     if (input.fee !== undefined) {
       const fee = int(input.fee === '' || input.fee === null ? 0 : input.fee, 0, MAX_FEE, 0, 'Entry fee (in paise)');
       if (fee && !ev.official) fail(403, 'Entry fees are only available for tournaments organised by Tonament');
@@ -969,7 +989,15 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const row = await load(q, id, { lock: true });
       await requireVisible(q, row, null);
       const t = await eventFor(q, row, input.event);
-      const fee = feeOf(t);
+      const doubles = t.event.discipline === 'doubles';
+      const drawn = doubles && t.config.partners === 'drawn';
+      const solo = doubles && (drawn || Boolean(input.solo));
+      if (input.solo && !doubles) fail(400, `${eventLabel(t)} isn't a doubles event`);
+      if (drawn && partner) fail(400, `Partners are drawn for ${eventLabel(t)} — enter on your own`);
+      const side = solo && t.event.gender === 'mixed' ? input.side : null;
+      if (solo && t.event.gender === 'mixed' && !['man', 'woman'].includes(side)) fail(400, 'Mixed doubles: say whether you\'re playing as a man or a woman');
+      // A solo player pays half the pair fee.
+      const fee = solo ? Math.ceil(feeOf(t) / 2) : feeOf(t);
       if (fee) {
         if (!billingConfig().enabled) fail(503, 'Online payment isn\'t available right now — contact the organiser');
         if (!contact.includes('@')) fail(400, 'Enter your email address — your receipt is sent there');
@@ -978,36 +1006,38 @@ function createService(db, { mailer, fetchImpl } = {}) {
         await q(`DELETE FROM entries WHERE event_id = $1 AND contact = $2 AND fee_status = 'pending'`, [t.eventId, contact]);
       }
       // Doubles need a partner; singles ignore one.
-      if (t.event.discipline === 'doubles' && !partner) fail(400, `${eventLabel(t)} is a doubles event — add your partner's name`);
-      const name = partner && t.event.discipline !== 'singles' ? `${player} / ${partner}` : player;
+      if (doubles && !solo && !partner) fail(400, `${eventLabel(t)} is a doubles event — add your partner's name, or ask us to find you one`);
+      const name = partner && !solo && t.event.discipline !== 'singles' ? `${player} / ${partner}` : player;
       if (t.status !== 'setup') fail(409, 'Entries are closed — the draw has been made');
       if (!t.config.selfEntry) fail(409, 'This tournament doesn\'t take entries online — contact the organiser');
       if (!entriesOpen(t)) fail(409, 'Entries are closed');
       const existing = await entriesOf(q, t);
       if (existing.length >= MAX_ENTRIES) fail(409, 'This event is full');
-      if (existing.some((e) => e.contact === contact)) fail(409, 'This phone number or email has already been used to enter this event');
+      // Paired solo players aren't in entriesOf but still hold their contact.
+      const [used] = await q('SELECT 1 FROM entries WHERE event_id = $1 AND contact = $2', [t.eventId, contact]);
+      if (used) fail(409, 'This phone number or email has already been used to enter this event');
       if (existing.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(409, `"${name}" is already entered`);
       const seed = existing.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
       const room = await hasRoom(q, t);
       if (fee) {
         // Paid events never take a payment for a place that isn't there.
         if (!room) fail(409, `${eventLabel(t)} is full`);
-        const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee });
+        const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee, solo, side });
         const [pay] = await q(
           `INSERT INTO payments (tournament_id, tournament_name, user_email, amount, currency, kind, entry_id, event_id, event_name, player)
            VALUES ($1, $2, $3, $4, $5, 'entry', $6, $7, $8, $9) RETURNING id`,
           [t.id, t.name, contact, fee, billingConfig().currency, entryId, t.eventId, eventLabel(t), name],
         );
-        return { t, name, entryId, paymentId: pay.id, fee, player, contact };
+        return { t, name, entryId, paymentId: pay.id, fee, player, contact, solo };
       }
       const confirmed = room;
-      await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed });
+      await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side });
       let owners = [];
       if (!confirmed && !t.waiting_notified) {
         await q('UPDATE tournaments SET waiting_notified = true WHERE id = $1', [t.id]);
         owners = (await q(`SELECT email FROM members WHERE tournament_id = $1 AND role = 'owner'`, [t.id])).map((r) => r.email);
       }
-      return { t, name, confirmed, owners, eventId: t.eventId };
+      return { t, name, confirmed, owners, eventId: t.eventId, solo };
     });
     if (result.paymentId) return startEntryPayment(result);
     const { t, name: entered, confirmed, owners, eventId } = result;
@@ -1020,12 +1050,94 @@ function createService(db, { mailer, fetchImpl } = {}) {
         console.error('Waiting-entries email failed:', err.message);
       }
     }
-    return { ok: true, name: entered, confirmed, event: eventId };
+    return { ok: true, name: entered, confirmed, event: eventId, ...(result.solo && { solo: true }) };
+  }
+
+  // ---------- pairing solo doubles players
+
+  const shuffle = (list) => {
+    const a = [...list];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(i + 1);
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  };
+
+  // Turns two solo players into one pair entry (the solos stay, linked to it).
+  async function makePair(q, t, a, b) {
+    if (t.event.gender === 'mixed' && a.solo_side === b.solo_side) fail(409, 'Mixed doubles pairs need a man and a woman');
+    const [{ id }] = await insertEntry(q, t, {
+      name: `${a.name} / ${b.name}`,
+      seed: Math.min(a.seed, b.seed),
+      source: 'drawn',
+      checkedIn: a.checked_in && b.checked_in,
+    });
+    await q('UPDATE entries SET paired_into = $1 WHERE id = ANY($2::int[])', [id, [a.id, b.id]]);
+    return id;
+  }
+
+  // Solo players ready to pair: confirmed, not paying, not paired yet.
+  const pairable = async (q, t) => (await entriesOf(q, t)).filter((e) => e.solo && e.confirmed && e.fee_status !== 'pending');
+
+  // Pairs every waiting solo player: at random, or balanced (best seed with
+  // worst). Mixed doubles pairs men with women. Returns how many are left over.
+  async function drawPairsIn(q, t, balance) {
+    const pool = await pairable(q, t);
+    const bySeed = (list) => [...list].sort((x, y) => x.seed - y.seed || x.id - y.id);
+    const pairs = [];
+    if (t.event.gender === 'mixed') {
+      let men = pool.filter((e) => e.solo_side === 'man');
+      let women = pool.filter((e) => e.solo_side === 'woman');
+      if (balance) {
+        men = bySeed(men);
+        women = bySeed(women).reverse();
+      } else {
+        men = shuffle(men);
+        women = shuffle(women);
+      }
+      for (let i = 0; i < Math.min(men.length, women.length); i++) pairs.push([men[i], women[i]]);
+    } else {
+      const list = balance ? bySeed(pool) : shuffle(pool);
+      if (balance) for (let i = 0; i < Math.floor(list.length / 2); i++) pairs.push([list[i], list[list.length - 1 - i]]);
+      else for (let i = 0; i + 1 < list.length; i += 2) pairs.push([list[i], list[i + 1]]);
+    }
+    for (const [a, b] of pairs) await makePair(q, t, a, b);
+    return pool.length - pairs.length * 2;
+  }
+
+  async function pairSolos(id, actor, aId, bId) {
+    return mutateEntry(id, actor, aId, async (q, t) => {
+      requireSetup(t);
+      const pool = await pairable(q, t);
+      const a = pool.find((e) => e.id === Number(aId));
+      const b = pool.find((e) => e.id === Number(bId));
+      if (!a || !b || a.id === b.id) fail(409, 'Choose two different players who are looking for a partner');
+      await makePair(q, t, a, b);
+    });
+  }
+
+  async function drawPairs(id, actor, { event, balance = false } = {}) {
+    return mutateEvent(id, actor, event, async (q, t) => {
+      requireSetup(t);
+      if (t.event.discipline !== 'doubles') fail(409, 'Only doubles events have partners to draw');
+      await drawPairsIn(q, t, Boolean(balance));
+    });
+  }
+
+  async function unpair(id, actor, pairId) {
+    return mutateEntry(id, actor, pairId, async (q, t) => {
+      requireSetup(t);
+      const [e] = await q('SELECT source FROM entries WHERE id = $1', [Number(pairId)]);
+      if (e.source !== 'drawn') fail(409, 'Only drawn pairs can be split');
+      await q('UPDATE entries SET paired_into = NULL WHERE paired_into = $1', [Number(pairId)]);
+      await q('DELETE FROM entries WHERE id = $1', [Number(pairId)]);
+    });
   }
 
   // Creates the Razorpay order for a paid self-entry. The entry stays
   // pending until verifyPayment (or the webhook) confirms the payment.
-  async function startEntryPayment({ t, name, entryId, paymentId, fee, player, contact }) {
+  async function startEntryPayment({ t, name, entryId, paymentId, fee, player, contact, solo }) {
     const cfg = billingConfig();
     let order;
     try {
@@ -1054,7 +1166,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         amount: fee,
         currency: cfg.currency,
         name: cfg.business.name || 'Tonament',
-        description: `Entry fee — ${eventLabel(t)}, ${t.name}`.slice(0, 250),
+        description: `Entry fee${solo ? ' (half of the pair fee)' : ''} — ${eventLabel(t)}, ${t.name}`.slice(0, 250),
         prefill: { name: player, email: contact },
       },
     };
@@ -1115,6 +1227,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
   async function removeEntry(id, actor, entryId) {
     return mutateEntry(id, actor, entryId, async (q, t) => {
       requireSetup(t);
+      const [e] = await q('SELECT source, paired_into FROM entries WHERE id = $1', [Number(entryId) || 0]);
+      if (e?.paired_into) fail(409, 'This player is in a drawn pair — split the pair first');
+      if (e?.source === 'drawn') {
+        // Removing a drawn pair splits it; both players go back to looking.
+        await q('UPDATE entries SET paired_into = NULL WHERE paired_into = $1', [Number(entryId)]);
+      }
       const deleted = await q('DELETE FROM entries WHERE id = $1 AND tournament_id = $2 RETURNING id', [Number(entryId) || 0, t.id]);
       if (!deleted.length) fail(404, 'Entry not found');
     });
@@ -1191,16 +1309,22 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (t.status !== 'setup') fail(409, 'The tournament has already started');
       // Unconfirmed self-entries are never drawn; the organiser has to decide
       // about them first so nobody is left out by accident.
+      // Drawn-partner events pair everyone up now.
+      if (t.config.partners === 'drawn') await drawPairsIn(q, t, Boolean(t.config.balancePairs));
       const everyone = await entriesOf(q, t);
       const waiting = everyone.filter((e) => !e.confirmed && e.fee_status !== 'pending').length;
       if (waiting && !skipUnconfirmed) {
         fail(409, `${waiting} ${waiting === 1 ? 'entry is' : 'entries are'} still unconfirmed — confirm or remove them first`, 'unconfirmed');
       }
+      const alone = everyone.filter((e) => e.solo && e.confirmed).length;
+      if (alone && !skipUnconfirmed) {
+        fail(409, `${alone} ${alone === 1 ? 'player still needs' : 'players still need'} a partner — pair or remove them first`, 'solo');
+      }
       // If anyone has been checked in, only checked-in entries are drawn.
-      const all = everyone.filter((e) => e.confirmed);
+      const all = everyone.filter((e) => e.confirmed && !e.solo);
       const usingCheckIn = all.some((e) => e.checked_in);
       const entries = usingCheckIn ? all.filter((e) => e.checked_in) : all;
-      await q('UPDATE entries SET in_draw = confirmed AND (checked_in OR NOT $2), withdrawn = false WHERE event_id = $1', [t.eventId, usingCheckIn]);
+      await q('UPDATE entries SET in_draw = confirmed AND NOT solo AND (checked_in OR NOT $2), withdrawn = false WHERE event_id = $1', [t.eventId, usingCheckIn]);
       if (t.format === 'knockout') {
         if (entries.length < 2) fail(400, 'Add at least 2 entries to start');
         await createBracket(q, t, entries.map((e) => ({ id: e.id, group: null, tier: 0 })));
@@ -1824,6 +1948,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
     getTournament,
     setVisibility,
     addEvents,
+    pairSolos,
+    drawPairs,
+    unpair,
     updateEvent,
     deleteEvent,
     reorderEvents,
