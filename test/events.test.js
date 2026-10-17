@@ -151,3 +151,18 @@ test('tournaments made before events get one event holding their draw', async ()
   const started = await svc.start('legacy-ev', { user: { email: 'x@x', isAdmin: true } });
   assert.equal(started.status, 'knockout');
 });
+
+test('search filters by event type, age group and level; cards list events', async () => {
+  const mk = (name, events) => svc.createTournament(ORG, { name, visibility: 'public', events }).then((r) => r.id);
+  await mk('Junior Mixed', [{ discipline: 'doubles', gender: 'mixed', age: 'U19' }, { discipline: 'singles', gender: 'women', age: 'U15' }]);
+  await mk('Vets Doubles', [{ discipline: 'doubles', gender: 'men', age: '45+', level: 'Advanced' }]);
+  const find = (f) => svc.listTournaments({ when: 'any', ...f }).then((list) => list.map((t) => t.name).filter((n) => ['Junior Mixed', 'Vets Doubles'].includes(n)).sort());
+  assert.deepEqual(await find({ event: 'XD' }), ['Junior Mixed']);
+  assert.deepEqual(await find({ event: 'XD', age: 'u19' }), ['Junior Mixed']);
+  assert.deepEqual(await find({ event: 'XD', age: 'U15' }), []); // U15 is a different event
+  assert.deepEqual(await find({ age: 'U15' }), ['Junior Mixed']);
+  assert.deepEqual(await find({ level: 'advanced' }), ['Vets Doubles']);
+  assert.deepEqual(await find({ event: 'MD', age: '45+' }), ['Vets Doubles']);
+  const card = (await svc.listTournaments({ when: 'any', q: 'Junior Mixed' }))[0];
+  assert.deepEqual(card.events, ['XD U19', 'WS U15']);
+});

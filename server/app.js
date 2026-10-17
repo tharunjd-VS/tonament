@@ -27,11 +27,12 @@ const TYPES = {
 // spectators from each hitting the database.
 function send(res, status, data, cdnSeconds = 0, cookies = []) {
   if (cookies.length) res.setHeader('Set-Cookie', cookies);
+  // Browsers always revalidate (so a reload shows a new tournament straight
+  // away); only the CDN may serve a slightly stale copy while it refreshes.
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': cdnSeconds
-      ? `public, max-age=0, s-maxage=${cdnSeconds}, stale-while-revalidate=${cdnSeconds * 2}`
-      : 'no-store',
+    'Cache-Control': cdnSeconds ? `public, max-age=0, s-maxage=${cdnSeconds}` : 'no-store',
+    ...(cdnSeconds && { 'Vercel-CDN-Cache-Control': `max-age=${cdnSeconds}, stale-while-revalidate=${cdnSeconds * 2}` }),
     'X-Content-Type-Options': 'nosniff',
   });
   res.end(JSON.stringify(data));

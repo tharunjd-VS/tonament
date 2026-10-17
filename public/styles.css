@@ -507,7 +507,7 @@ fieldset.details-set { display: grid; gap: 12px; }
 @media (min-width: 720px) {
   .filters > summary { display: none; }
   .filters[open] > summary { margin: 0; }
-  .filter-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .filter-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 
 /* Events */
@@ -530,3 +530,6 @@ fieldset.details-set { display: grid; gap: 12px; }
 @media (min-width: 640px) { .quick-grid { grid-template-columns: repeat(3, 1fr); } }
 .events-list .entry-name { color: var(--text); text-decoration: none; font-weight: 600; }
 .events-list .entry-name:hover { text-decoration: underline; }
+
+.t-card-events { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px; }
+.event-tag { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); }

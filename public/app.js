@@ -429,7 +429,7 @@
   }
 
   // ----- find a tournament (home page)
-  const FILTER_KEYS = ['q', 'sport', 'country', 'region', 'city', 'when', 'open'];
+  const FILTER_KEYS = ['q', 'sport', 'event', 'age', 'level', 'country', 'region', 'city', 'when', 'open'];
   const WHEN = [['upcoming', 'Upcoming & live'], ['week', 'Next 7 days'], ['month', 'Next 30 days'], ['past', 'Past'], ['any', 'Any time']];
   const FILTERS_KEY = 'tonament:filters';
 
@@ -512,6 +512,9 @@
           h('div', { class: 'filter-grid' },
             select('when', 'When', WHEN.map(([v, l]) => [v === 'upcoming' ? '' : v, l]), { anyLabel: null }),
             select('sport', 'Sport', liveSports().map((s) => [s.id, s.name])),
+            select('event', 'Event', CAT.PRESETS.map((p) => [p.key, p.label])),
+            select('age', 'Age group', CAT.AGES),
+            select('level', 'Level', CAT.LEVELS),
             select('country', 'Country', countries),
             select('region', 'State / region', regionsHere, { disabled: !f.country || !regionsHere.length }),
             select('city', 'City', cities, { disabled: !f.country || !cities.length }),
@@ -580,7 +583,11 @@
       fmtDates(t.startsOn, t.endsOn) || t.venue || t.city
         ? h('div', { class: 't-card-when' }, [fmtDates(t.startsOn, t.endsOn), placeLine(t.venue, t.city)].filter(Boolean).join(' · '))
         : null,
-      h('div', { class: 'muted small' }, [sport ? sport.name : t.sport, t.formatName, `${t.entries} entries`].filter(Boolean).join(' · ')));
+      // Events by short name ("MS U19 · XD") once a tournament has real categories.
+      (t.events || []).length > 1 || ((t.events || [])[0] && t.events[0] !== 'Open')
+        ? h('div', { class: 't-card-events' }, t.events.map((e) => h('span', { class: 'event-tag' }, e)))
+        : null,
+      h('div', { class: 'muted small' }, [sport ? sport.name : t.sport, (t.events || []).length > 1 ? null : t.formatName, `${t.entries} entries`].filter(Boolean).join(' · ')));
   }
 
   // ---------- create / settings

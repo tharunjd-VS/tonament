@@ -115,7 +115,11 @@ const ENTRIES_OPEN_SQL = `COALESCE((t.config->>'selfEntry')::boolean, true)
 const CARD_COLUMNS = `t.id, t.name, t.venue, t.sport, t.format, t.status, t.visibility, t.created_at AS "createdAt",
   t.city, t.region, t.country, t.starts_on AS "startsOn", t.ends_on AS "endsOn",
   (${ENTRIES_OPEN_SQL}) AS "entriesOpen",
-  (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries`;
+  (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries,
+  (SELECT COALESCE(json_agg(json_build_object('discipline', ev.discipline, 'gender', ev.gender, 'age', ev.age, 'level', ev.level, 'name', ev.name)
+     ORDER BY ev.position, ev.id), '[]') FROM events ev WHERE ev.tournament_id = t.id) AS events`;
+// Cards list their events by short name ("MS U19", "XD").
+const cardOf = (r) => ({ ...r, formatName: FORMATS[r.format], events: (r.events || []).map((e) => catalog.shortName(e)) });
 const WHEN = ['upcoming', 'week', 'month', 'past', 'any'];
 
 const groupName = (no) => `Group ${String.fromCharCode(65 + no)}`;
@@ -636,6 +640,20 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (f('sport')) add('t.sport = ?', f('sport'));
     if (f('q')) add(`(t.name ILIKE ? OR COALESCE(t.venue, '') ILIKE $${params.length + 1})`, `%${f('q').replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
     if (['1', 'true'].includes(f('open'))) where.push(ENTRIES_OPEN_SQL);
+    // Event filters (type, age group, level) must all match the same event.
+    const preset = catalog.PRESETS.find((p) => p.key === f('event'));
+    const evWhere = [];
+    const evAdd = (sql, value) => {
+      params.push(value);
+      evWhere.push(sql.replace('?', `$${params.length}`));
+    };
+    if (preset) {
+      evAdd('ev.discipline = ?', preset.discipline);
+      evAdd('ev.gender = ?', preset.gender);
+    }
+    if (f('age')) evAdd('lower(ev.age) = lower(?)', f('age'));
+    if (f('level')) evAdd('lower(ev.level) = lower(?)', f('level'));
+    if (evWhere.length) where.push(`EXISTS (SELECT 1 FROM events ev WHERE ev.tournament_id = t.id AND ${evWhere.join(' AND ')})`);
     const today = ISO_DATE.test(f('today')) ? f('today') : new Date().toISOString().slice(0, 10);
     const when = WHEN.includes(f('when')) ? f('when') : 'upcoming';
     const last = 'COALESCE(t.ends_on, t.starts_on)';
@@ -652,7 +670,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       `SELECT ${CARD_COLUMNS} FROM tournaments t WHERE ${where.join(' AND ')} ORDER BY ${order}, t.id LIMIT 50`,
       params,
     );
-    return rows.map((r) => ({ ...r, formatName: FORMATS[r.format] }));
+    return rows.map(cardOf);
   }
 
   // Places that have public tournaments, for the search filters.
@@ -692,7 +710,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
        WHERE m.email = $1 ORDER BY t.created_at DESC`,
       [actor.user.email],
     );
-    return rows.map((r) => ({ ...r, formatName: FORMATS[r.format] }));
+    return rows.map(cardOf);
   }
 
   async function createTournament(actor, input = {}) {
