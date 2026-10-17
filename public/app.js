@@ -107,7 +107,7 @@
       await fn();
       if (success) toast(success);
     } catch (e) {
-      if (e.code === 'upgrade' && S.t) S.upgradeFor = S.t.id; // show the Event Pass card
+      if (e.code === 'upgrade' && S.t) S.upgradeFor = S.t.id; // show the upgrade card
       toast(e.message, true);
     }
     render();
@@ -901,7 +901,7 @@
           t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null) : null),
       t.can.manage && t.limits && t.limits.entries
         ? h('p', { class: 'muted small entry-meter' },
-          `${Math.min(confirmedCount, t.limits.entries)} of ${t.limits.entries} free entries used`,
+          `${Math.min(confirmedCount, t.limits.entries)} of ${t.limits.entries} ${t.plan === 'free' ? 'free entries' : `entries (${t.planName} plan)`} used${multiEvent(t) ? ', all events' : ''}`,
           h('span', { class: 'progress' }, h('span', { style: `width:${Math.min(100, (confirmedCount / t.limits.entries) * 100)}%` })))
         : null,
       t.entries.length
@@ -1764,8 +1764,8 @@
   });
 
 
-  // ---------- Event Pass (Razorpay checkout)
-  const rupees = () => `₹${Math.round((S.billing.price || 49900) / 100)}`;
+  // ---------- paid plans (Razorpay checkout)
+  const money = (paise) => `₹${(paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
   function loadRazorpay() {
     if (window.Razorpay) return Promise.resolve();
@@ -1778,13 +1778,14 @@
     });
   }
 
-  async function payPass(t) {
+  // Buys a plan (or an upgrade: only the difference is charged).
+  async function payPass(t, tier) {
     if (S.paying) return;
     S.paying = true;
     render();
     try {
       await loadRazorpay();
-      const order = await api('POST', `${tPath(t)}/checkout`, {}, t.id);
+      const order = await api('POST', `${tPath(t)}/checkout`, { tier }, t.id);
       await new Promise((resolve) => {
         const rzp = new window.Razorpay({
           key: order.keyId,
@@ -1802,9 +1803,8 @@
               S.upgradeFor = null;
               await load(t.id);
               const waiting = allEntries(t).filter((e) => !e.confirmed).length;
-              toast(waiting
-                ? `Payment received — Event Pass active ✓ ${waiting} waiting ${waiting === 1 ? 'entry' : 'entries'} confirmed`
-                : 'Payment received — Event Pass active ✓');
+              const active = `Payment received — ${S.t ? S.t.planName : 'new'} plan active ✓`;
+              toast(waiting ? `${active} ${waiting} waiting ${waiting === 1 ? 'entry' : 'entries'} confirmed` : active);
             } catch (e) {
               toast(e.message, true);
             }
@@ -1828,24 +1828,31 @@
     }
   }
 
-  // Shown to organisers when a free tournament is full (or just hit the limit).
+  // One button per bigger plan, cheapest first ("Club · up to 64 — ₹499").
+  function upgradeButtons(t, small) {
+    return (t.upgrades || []).map((u, i) => h('button', {
+      class: `btn ${i === 0 ? 'btn-primary' : 'btn-ghost'}${small ? '' : ' btn-lg'}`,
+      disabled: S.paying,
+      onclick: () => payPass(t, u.id),
+    }, S.paying && i === 0 ? 'Opening payment…' : `${u.name} · up to ${u.limit} — ${money(u.amount)}`));
+  }
+
+  // Shown to organisers when the tournament is full on its plan (or just hit the limit).
   function upgradeCard(t) {
-    if (!S.billing.enabled || !t.can.manage || t.plan === 'pass' || !t.limits || !t.limits.entries) return null;
+    if (!S.billing.enabled || !t.can.manage || !t.limits || !t.limits.entries || !(t.upgrades || []).length) return null;
     const full = allEntries(t).filter((e) => e.confirmed).length >= t.limits.entries;
     // Waiting because of the plan limit (not the organiser's own maximum).
     const waiting = full ? allEntries(t).filter((e) => !e.confirmed).length : 0;
     if (!full && S.upgradeFor !== t.id) return null;
+    const paidBefore = t.plan !== 'free';
     return h('div', { class: 'card upgrade-card' },
       h('h2', {}, waiting
         ? `${waiting} ${waiting === 1 ? 'player is' : 'players are'} waiting to be confirmed`
-        : full ? `This tournament is full on the free plan (${t.limits.entries} entries)` : 'Need more entries?'),
-      waiting
-        ? h('p', {}, 'Get the ', h('strong', {}, 'Event Pass'), ` to include them — ${rupees()}, one-time. Everyone waiting is confirmed automatically, and entries are unlimited from then on.`)
-        : h('p', {}, 'Get the ', h('strong', {}, 'Event Pass'), ` for unlimited entries in this tournament — ${rupees()}, one-time.`),
-      h('div', { class: 'actions' },
-        h('button', { class: 'btn btn-primary btn-lg', disabled: S.paying, onclick: () => payPass(t) },
-          S.paying ? 'Opening payment…' : `Get Event Pass — ${rupees()}`),
-        h('a', { class: 'btn btn-ghost', href: '/pricing', target: '_blank', rel: 'noopener' }, 'What\'s included')),
+        : full ? `This tournament is full on the ${t.planName} plan (${t.limits.entries} entries)` : 'Need more entries?'),
+      h('p', {}, waiting
+        ? 'Move up a plan to include them — everyone waiting is confirmed automatically.'
+        : `Move up a plan for more entries across all events — one-time, for this tournament${paidBefore ? '; you only pay the difference' : ''}.`),
+      h('div', { class: 'actions' }, upgradeButtons(t), h('a', { class: 'btn btn-ghost', href: '/pricing', target: '_blank', rel: 'noopener' }, 'Compare plans')),
       h('p', { class: 'hint', style: 'margin:10px 0 0' }, 'Secure payment by Razorpay — UPI, cards, netbanking or wallets. Activated instantly.'));
   }
 
@@ -1853,32 +1860,28 @@
   function planCard(t) {
     const admin = S.me && S.me.isAdmin;
     if (!S.billing.enabled && !admin) return null;
+    const plans = [['free', 'Free'], ...(S.billing.tiers || []).map((x) => [x.id, x.name]), ['pass', 'Event Pass (unlimited)']];
     const adminSwitch = admin
-      ? h('button', {
-        class: 'btn btn-small btn-ghost',
-        onclick: () => {
-          const plan = t.plan === 'pass' ? 'free' : 'pass';
-          if (!confirm(plan === 'pass' ? 'Switch the Event Pass ON for this tournament (no payment)?' : 'Switch the Event Pass OFF for this tournament?')) return;
-          act(async () => { S.t = await api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/plan`, { plan }, t.id); }, plan === 'pass' ? 'Event Pass switched on' : 'Event Pass switched off');
-        },
-      }, t.plan === 'pass' ? 'Admin: switch Pass off' : 'Admin: switch Pass on')
+      ? h('label', { class: 'admin-plan' }, h('span', { class: 'muted small' }, 'Admin: set plan'),
+        h('select', {
+          value: t.plan,
+          onchange: (e) => {
+            const plan = e.target.value;
+            const label = plans.find((p) => p[0] === plan)[1];
+            if (!confirm(`Set this tournament to the ${label} plan (no payment)?`)) { e.target.value = t.plan; return; }
+            act(async () => { S.t = await api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/plan`, { plan }, t.id); }, `Plan set to ${label}`);
+          },
+        }, plans.map(([value, label]) => h('option', { value }, label))))
       : null;
-    if (t.plan === 'pass') {
-      return h('div', { class: 'card' },
-        h('div', { class: 'card-head' }, h('h2', {}, 'Plan'), pill('done', 'Event Pass ✓')),
-        h('p', { class: 'muted small', style: 'margin:0' }, 'Unlimited entries for this tournament.'),
-        adminSwitch ? h('div', { class: 'actions', style: 'margin-top:10px' }, adminSwitch) : null);
-    }
+    const used = allEntries(t).filter((e) => e.confirmed).length;
     return h('div', { class: 'card' },
-      h('div', { class: 'card-head' }, h('h2', {}, 'Plan'), pill('', 'Free')),
-      t.limits && t.limits.entries
-        ? h('p', { class: 'muted small' }, `Up to ${t.limits.entries} entries — ${allEntries(t).filter((e) => e.confirmed).length} used. The Event Pass (${rupees()}, one-time) gives this tournament unlimited entries.`)
-        : h('p', { class: 'muted small' }, 'Payments aren\'t set up yet, so there\'s no entry limit.'),
-      h('div', { class: 'actions' },
-        S.billing.enabled
-          ? h('button', { class: 'btn btn-primary', disabled: S.paying, onclick: () => payPass(t) }, S.paying ? 'Opening payment…' : `Get Event Pass — ${rupees()}`)
-          : null,
-        adminSwitch));
+      h('div', { class: 'card-head' }, h('h2', {}, 'Plan'), pill(t.plan === 'free' ? '' : 'done', t.plan === 'free' ? 'Free' : `${t.planName} ✓`)),
+      !S.billing.enabled ? h('p', { class: 'muted small' }, 'Payments aren\'t set up yet, so there\'s no entry limit.')
+        : t.limits && t.limits.entries
+          ? h('p', { class: 'muted small' }, `${used} of ${t.limits.entries} entries used, across all events.`)
+          : h('p', { class: 'muted small' }, 'Unlimited entries for this tournament.'),
+      S.billing.enabled && (t.upgrades || []).length ? h('div', { class: 'actions' }, upgradeButtons(t, true)) : null,
+      adminSwitch ? h('div', { class: 'actions', style: 'margin-top:10px' }, adminSwitch) : null);
   }
 
   // ---------- roles & team
@@ -2230,6 +2233,8 @@
     btn);
   }
 
+  const PLAN_LABELS = { pass: 'Event Pass', club: 'Club', open: 'Open', championship: 'Championship' };
+
   function viewAdmin() {
     document.title = 'Admin · Tonament';
     if (!S.me || !S.me.isAdmin) return errorView('Site admins only.');
@@ -2237,21 +2242,20 @@
     const counts = (S.interest && S.interest.counts) || {};
     const requested = S.sports.filter((s) => s.status !== 'live').map((s) => ({ ...s, n: counts[s.id] || 0 })).sort((a, b) => b.n - a.n);
     const pay = S.route.payments;
-    const money = (paise) => `₹${(paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
     const statusPill = (st) => pill(st === 'paid' ? 'done' : st === 'failed' ? 'withdrawn' : '', st === 'created' ? 'Started' : st);
     return [h('div', { class: 'card' },
       h('div', { class: 'card-head' },
         h('h2', {}, 'Payments'),
-        pay ? h('span', { class: 'muted small' }, `${money(pay.revenue.total)} from ${pay.revenue.count} Event Pass${pay.revenue.count === 1 ? '' : 'es'}`) : null),
+        pay ? h('span', { class: 'muted small' }, `${money(pay.revenue.total)} from ${pay.revenue.count} payment${pay.revenue.count === 1 ? '' : 's'}`) : null),
       !pay ? loading()
         : !pay.payments.length ? empty('No payments yet.')
           : h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ['Date', 'Tournament', 'Organiser', 'Amount', 'Status', 'Payment ID'].map((c, i) => h('th', { class: i === 3 ? 'num' : '' }, c)))),
+            h('thead', {}, h('tr', {}, ['Date', 'Tournament', 'Paid by', 'Plan', 'Amount', 'Status', 'Payment ID'].map((c, i) => h('th', { class: i === 4 ? 'num' : '' }, c)))),
             h('tbody', {}, pay.payments.map((p) => h('tr', {},
               h('td', {}, new Date(p.paidAt || p.createdAt).toLocaleDateString()),
-              h('td', { class: 'name' }, p.tournamentId ? h('a', { href: `#/t/${p.tournamentId}/team` }, p.tournamentName) : p.tournamentName,
-                p.plan === 'pass' ? [' ', pill('done', 'Pass')] : null),
+              h('td', { class: 'name' }, p.tournamentId ? h('a', { href: `#/t/${p.tournamentId}/team` }, p.tournamentName) : p.tournamentName),
               h('td', {}, p.email || '—'),
+              h('td', {}, PLAN_LABELS[p.tier || 'pass'] || p.tier),
               h('td', { class: 'num' }, money(p.amount)),
               h('td', {}, statusPill(p.status)),
               h('td', { class: 'small' }, p.paymentId || '—'))))))),

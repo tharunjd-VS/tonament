@@ -465,6 +465,8 @@ tr.out td { color: var(--muted); }
 .doc li { margin-bottom: 6px; }
 .price-grid { display: grid; gap: 16px; margin: 20px 0 8px; }
 @media (min-width: 700px) { .price-grid { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1000px) { .price-grid-4 { grid-template-columns: repeat(4, 1fr); } }
+.price-limit { margin: 0 0 4px; }
 .price-card { display: flex; flex-direction: column; gap: 6px; }
 .price-card ul { flex: 1; }
 .price-card.featured { border: 2px solid var(--accent); }

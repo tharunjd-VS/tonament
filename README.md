@@ -27,16 +27,16 @@ Tournament management with live scoring for **tonament.com**. Starts with badmin
 
 ## Pricing and payments (Razorpay)
 
-**Free** for tournaments up to 16 entries. The **Event Pass** (₹499, one-time, per tournament) unlocks unlimited entries. Payment uses Razorpay Standard Checkout (UPI, cards, netbanking, wallets):
+**Free** for tournaments up to 16 entries, counted across all events. Bigger tournaments buy a one-time plan for that tournament: **Club** (up to 64 entries, ₹499), **Open** (150, ₹999) or **Championship** (400, ₹1,999). Upgrading pays only the difference; tournaments that bought the original unlimited **Event Pass** keep it. Tiers live in `server/billing.js`. Payment uses Razorpay Standard Checkout (UPI, cards, netbanking, wallets):
 1. The server creates an order; the amount is always set by the server.
 2. Razorpay Checkout opens in the page.
-3. The server verifies the payment signature, double-checks the payment with Razorpay's API, and activates the Pass.
+3. The server verifies the payment signature, double-checks the payment with Razorpay's API, and activates the plan.
 4. A receipt is emailed.
 5. A webhook does the same for payments whose tab was closed early.
 
 The limit applies only once Razorpay keys are set.
 
-Players are never shown the free limit. Past it, self-entries are still accepted but saved as **unconfirmed**: the player sees "Entry received — the organiser will confirm your place", and the owner is emailed once. Unconfirmed entries aren't drawn. Buying the Pass confirms them automatically, or the organiser can confirm or remove them one by one. Organisers can also set their own **maximum entries**: players then see "N of M places left", and once it's reached new entries join a waitlist (the same unconfirmed state). A maximum above the free limit needs the Pass.
+Players are never shown the free limit. Past it, self-entries are still accepted but saved as **unconfirmed**: the player sees "Entry received — the organiser will confirm your place", and the owner is emailed once. Unconfirmed entries aren't drawn. Moving up a plan confirms them automatically, or the organiser can confirm or remove them one by one. Organisers can also set their own **maximum entries**: players then see "N of M places left", and once it's reached new entries join a waitlist (the same unconfirmed state). A maximum above the plan's limit needs a bigger plan.
 
 **Environment variables (Vercel → Settings → Environment Variables):**
 
@@ -45,7 +45,6 @@ Players are never shown the free limit. Past it, self-entries are still accepted
 | `RAZORPAY_KEY_ID` | `rzp_test_…` | Test keys first, live keys after activation |
 | `RAZORPAY_KEY_SECRET` | | Never exposed to the browser |
 | `RAZORPAY_WEBHOOK_SECRET` | | The secret you choose when adding the webhook |
-| `PASS_PRICE_PAISE` | `49900` | ₹499 |
 | `FREE_ENTRY_LIMIT` | `16` | |
 | `BUSINESS_NAME`, `BUSINESS_ADDRESS`, `BUSINESS_EMAIL`, `BUSINESS_PHONE`, `BUSINESS_GSTIN` | | Shown on /contact, the footer and receipts |
 
@@ -152,7 +151,7 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | GET | `/auth/me`, `/me/tournaments` | Current user; tournaments you're on the team of |
 | GET | `/admin/users` | All users (site admins only) |
 | GET | `/billing/config` | Public payment settings (price, free limit, Razorpay key id, business details) |
-| POST | `/tournaments/:id/checkout` | Create a Razorpay order for the Event Pass (organisers) |
+| POST | `/tournaments/:id/checkout` `{ tier }` | Create a Razorpay order for a plan or upgrade (organisers; defaults to the next plan up) |
 | POST | `/billing/razorpay/verify` | Verify a completed checkout and activate the Pass |
 | POST | `/billing/razorpay/webhook` | Razorpay webhook (signature-checked against the raw body) |
 | GET | `/admin/payments`; POST `/admin/tournaments/:id/plan` `{ plan }` | Payments and revenue; manual Pass on/off (site admins) |

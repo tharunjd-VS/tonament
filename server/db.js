@@ -177,6 +177,9 @@ CREATE INDEX IF NOT EXISTS matches_event ON matches(event_id, stage, round, slot
 -- One self-entry per phone/email per event (players may enter several events).
 DROP INDEX IF EXISTS entries_contact;
 CREATE UNIQUE INDEX IF NOT EXISTS entries_event_contact ON entries(event_id, contact) WHERE contact IS NOT NULL;
+
+-- Tiered plans: which plan a payment bought (null = the original Event Pass).
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS tier TEXT;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of

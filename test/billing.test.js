@@ -231,7 +231,7 @@ test('billing off: self-entries are only unconfirmed past the organiser maximum'
   assert.equal((await svc.register(id, { name: 'Twenty-two', contact: 't22@x.dev' })).confirmed, false);
 });
 
-test('checkout -> verify activates the Pass, sends a receipt, and is idempotent', async () => {
+test('checkout -> verify activates the Club plan, sends a receipt, and is idempotent', async () => {
   withBilling(true);
   try {
     const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Paid Cup', format: 'knockout' });
@@ -242,7 +242,8 @@ test('checkout -> verify activates the Pass, sends a receipt, and is idempotent'
     assert.equal(order.keyId, KEY_ID);
     assert.equal(order.amount, 49900);
     assert.equal(order.currency, 'INR');
-    assert.equal(order.description, 'Event Pass — Paid Cup');
+    assert.equal(order.tier, 'club');
+    assert.equal(order.description, 'Club plan — Paid Cup');
     assert.deepEqual(order.prefill, { name: 'Club Organiser', email: 'org@club.test' });
     const sent = JSON.parse(rp.calls.at(-1).init.body);
     assert.equal(sent.amount, 49900); // amount is set by the server
@@ -254,14 +255,15 @@ test('checkout -> verify activates the Pass, sends a receipt, and is idempotent'
     await assert.rejects(svc.verifyPayment({ ...good, razorpay_order_id: 'order_nope' }), /not found/);
 
     const res = await svc.verifyPayment(good, { baseUrl: 'https://tonament.example' });
-    assert.deepEqual(res, { ok: true, tournamentId: id, plan: 'pass' });
+    assert.deepEqual(res, { ok: true, tournamentId: id, plan: 'club' });
     let t = await svc.getTournament(id, ORG);
-    assert.equal(t.plan, 'pass');
-    assert.equal(t.limits.entries, null);
+    assert.equal(t.plan, 'club');
+    assert.equal(t.planName, 'Club');
+    assert.equal(t.limits.entries, 64);
     t = await svc.addEntries(id, ORG, names(10, 'More'));
     assert.equal(t.entries.length, 26);
 
-    const receipt = mailer.sent.find((m) => m.subject === 'Payment received — Event Pass for Paid Cup');
+    const receipt = mailer.sent.find((m) => m.subject === 'Payment received — Club plan — Paid Cup');
     assert.ok(receipt);
     assert.equal(receipt.to, 'org@club.test');
     assert.match(receipt.text, /₹499\.00/);
@@ -272,7 +274,19 @@ test('checkout -> verify activates the Pass, sends a receipt, and is idempotent'
     const before = mailer.sent.length;
     await svc.verifyPayment(good, { baseUrl: 'https://tonament.example' });
     assert.equal(mailer.sent.length, before);
-    await assert.rejects(svc.checkout(id, ORG), /already has the Event Pass/);
+
+    // Upgrading pays only the difference; downgrades and unknown plans are refused.
+    t = await svc.getTournament(id, ORG);
+    assert.deepEqual(t.upgrades.map((u) => [u.id, u.amount]), [['open', 50000], ['championship', 150000]]);
+    await assert.rejects(svc.checkout(id, ORG, { tier: 'club' }), /move up/);
+    await assert.rejects(svc.checkout(id, ORG, { tier: 'mega' }), /Unknown plan/);
+    const up = await svc.checkout(id, ORG);
+    assert.deepEqual([up.tier, up.amount, up.description], ['open', 50000, 'Open plan — Paid Cup']);
+    await svc.verifyPayment(rp.pay(up.orderId), { baseUrl: 'https://tonament.example' });
+    t = await svc.getTournament(id, ORG);
+    assert.deepEqual([t.plan, t.limits.entries], ['open', 150]);
+    assert.deepEqual(t.upgrades.map((u) => [u.id, u.amount]), [['championship', 100000]]);
+    assert.ok(mailer.sent.some((m) => m.subject === 'Payment received — Open plan — Paid Cup'));
   } finally {
     withBilling(false);
   }
@@ -292,7 +306,7 @@ test('verify refuses a payment whose amount does not match, and captures authori
     const authorized = rp.pay(order2.orderId, { status: 'authorized' });
     await svc.verifyPayment(authorized);
     assert.equal(rp.payments.get(authorized.razorpay_payment_id).status, 'captured');
-    assert.equal((await svc.getTournament(id2)).plan, 'pass');
+    assert.equal((await svc.getTournament(id2)).plan, 'club');
   } finally {
     withBilling(false);
   }
@@ -321,6 +335,7 @@ test('HTTP: webhook (raw-body signature), config endpoint and admin controls', a
     assert.equal(cfg.enabled, true);
     assert.equal(cfg.keyId, KEY_ID);
     assert.equal(cfg.price, 49900);
+    assert.deepEqual(cfg.tiers.map((x) => [x.id, x.limit, x.price]), [['club', 64, 49900], ['open', 150, 99900], ['championship', 400, 199900]]);
     assert.equal(cfg.freeLimit, 16);
     assert.equal(cfg.business.name, 'Tonament Sports');
     assert.equal(JSON.stringify(cfg).includes(KEY_SECRET), false);
@@ -340,7 +355,7 @@ test('HTTP: webhook (raw-body signature), config endpoint and admin controls', a
     assert.equal((await anon('POST', '/api/billing/razorpay/webhook', event, { 'X-Razorpay-Signature': sign(WEBHOOK_SECRET, `${event} `) })).status, 400);
     const ok = await anon('POST', '/api/billing/razorpay/webhook', event, { 'X-Razorpay-Signature': sign(WEBHOOK_SECRET, event) });
     assert.equal(ok.status, 200);
-    assert.equal((await org('GET', `/api/tournaments/${id}?me=1`)).data.plan, 'pass');
+    assert.equal((await org('GET', `/api/tournaments/${id}?me=1`)).data.plan, 'club');
     // Replays are harmless; unknown orders are ignored.
     assert.equal((await anon('POST', '/api/billing/razorpay/webhook', event, { 'X-Razorpay-Signature': sign(WEBHOOK_SECRET, event) })).status, 200);
     const other = JSON.stringify({ event: 'payment.captured', payload: { payment: { entity: { id: 'pay_x', order_id: 'order_elsewhere', amount: 1, currency: 'INR' } } } });
@@ -366,6 +381,30 @@ test('HTTP: webhook (raw-body signature), config endpoint and admin controls', a
   } finally {
     await new Promise((r) => server.close(r));
     delete process.env.ADMIN_EMAILS;
+    withBilling(false);
+  }
+});
+
+test('plan limits count entries across all events; the legacy Event Pass stays unlimited', async () => {
+  withBilling(true);
+  try {
+    const { id } = await svc.createTournament(ORG, {
+      name: 'Two Events', visibility: 'public', format: 'knockout', events: [{ discipline: 'singles', gender: 'men' }, { discipline: 'singles', gender: 'women' }],
+    });
+    const { events: [ms, ws] } = await svc.getTournament(id, ORG);
+    await svc.addEntries(id, ORG, names(10), { event: ms.id });
+    await assert.rejects(svc.addEntries(id, ORG, names(7, 'W'), { event: ws.id }),
+      (e) => e.status === 402 && e.code === 'upgrade' && /free plan allows up to 16 entries per tournament \(6 left\)\. Upgrade to Club \(up to 64 entries\)/.test(e.message));
+    await svc.addEntries(id, ORG, names(6, 'W'), { event: ws.id });
+    // A self-entry in either event now waits for confirmation.
+    assert.equal((await svc.register(id, { name: 'Late', contact: 'late@x.dev', event: ws.id })).confirmed, false);
+
+    await svc.adminSetPlan(id, ADMIN, 'pass');
+    const t = await svc.getTournament(id, ORG);
+    assert.deepEqual([t.plan, t.planName, t.limits.entries, t.upgrades], ['pass', 'Event Pass', null, []]);
+    assert.ok(t.events[1].entries.every((e) => e.confirmed)); // the waiting player got in
+    await assert.rejects(svc.checkout(id, ORG), /already has the Event Pass/);
+  } finally {
     withBilling(false);
   }
 });

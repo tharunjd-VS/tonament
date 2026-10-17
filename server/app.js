@@ -214,7 +214,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
 
     // Payments (Razorpay). The webhook is handled separately (raw body).
     ['GET', '/api/billing/config', () => publicBillingConfig(billingConfig())],
-    ['POST', `${T}/checkout`, (c, id) => svc.checkout(id, c.actor)],
+    ['POST', `${T}/checkout`, (c, id) => svc.checkout(id, c.actor, c.body)],
     ['POST', '/api/billing/razorpay/verify', (c) => svc.verifyPayment(c.body, { baseUrl: baseUrl(c.req) })],
     ['GET', '/api/admin/payments', (c) => svc.adminPayments(c.actor)],
     ['POST', `/api/admin/tournaments/([a-z0-9-]+)/plan`, (c, id) => svc.adminSetPlan(id, c.actor, c.body.plan)],

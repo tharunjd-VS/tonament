@@ -1,12 +1,12 @@
 'use strict';
 
-// Razorpay payments (Standard Checkout) for the Event Pass.
+// Razorpay payments (Standard Checkout) for paid plans.
 //
 // Flow: the server creates an Order (amount is always set here, never by the
 // browser) -> the browser opens Razorpay Checkout -> on success the browser
 // sends back the payment id + signature, which the server verifies with the
 // key secret and double-checks against Razorpay's API before activating the
-// Pass. A webhook does the same for payments whose tab was closed early.
+// plan. A webhook does the same for payments whose tab was closed early.
 //
 // Configured with environment variables (see README). Without keys, billing
 // is off and nothing is limited.
@@ -14,6 +14,17 @@
 const crypto = require('node:crypto');
 
 const API = 'https://api.razorpay.com/v1';
+
+// Paid plans, by total entries across all of a tournament's events. Each is
+// a one-time payment for one tournament; upgrading pays only the difference.
+// "pass" is the original unlimited Event Pass, kept for tournaments that
+// bought it.
+const TIERS = [
+  { id: 'club', name: 'Club', limit: 64, price: 49900 },
+  { id: 'open', name: 'Open', limit: 150, price: 99900 },
+  { id: 'championship', name: 'Championship', limit: 400, price: 199900 },
+];
+const PLAN_NAMES = { free: 'Free', pass: 'Event Pass', ...Object.fromEntries(TIERS.map((t) => [t.id, t.name])) };
 
 function intEnv(value, fallback) {
   const n = Number.parseInt(value, 10);
@@ -29,7 +40,8 @@ function billingConfig(env = process.env) {
     keyId,
     keySecret,
     webhookSecret: (env.RAZORPAY_WEBHOOK_SECRET || '').trim(),
-    price: intEnv(env.PASS_PRICE_PAISE, 49900), // paise: 49900 = ₹499
+    tiers: TIERS,
+    price: TIERS[0].price, // the lowest paid plan, in paise (49900 = ₹499)
     currency: 'INR',
     freeLimit: intEnv(env.FREE_ENTRY_LIMIT, 16),
     business: {
@@ -48,6 +60,7 @@ function publicBillingConfig(cfg = billingConfig()) {
     enabled: cfg.enabled,
     keyId: cfg.enabled ? cfg.keyId : null,
     price: cfg.price,
+    tiers: cfg.tiers,
     currency: cfg.currency,
     freeLimit: cfg.freeLimit,
     business: cfg.business,
@@ -94,6 +107,8 @@ function verifyWebhookSignature(rawBody, signature, webhookSecret) {
 }
 
 module.exports = {
+  TIERS,
+  PLAN_NAMES,
   billingConfig,
   publicBillingConfig,
   createRazorpay,

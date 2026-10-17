@@ -100,11 +100,14 @@ function inviteEmail({ inviter, tournament, roleName, roleHint, url, hasAccount 
   };
 }
 
-function receiptEmail({ business, tournament, amount, currency, paymentId, paidAt, url }) {
+// Receipt for a plan payment. `plan` is the plan's name ("Club"), or
+// "Event Pass" for the original unlimited pass; `limit` is its entry limit.
+function receiptEmail({ business, tournament, plan = 'Event Pass', limit = null, amount, currency, paymentId, paidAt, url }) {
+  const item = plan === 'Event Pass' ? `Event Pass — ${tournament}` : `${plan} plan — ${tournament}`;
   const money = currency === 'INR' ? `₹${(amount / 100).toFixed(2)}` : `${(amount / 100).toFixed(2)} ${currency}`;
   const date = new Date(paidAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
   const rows = [
-    ['Item', `Event Pass — ${tournament}`],
+    ['Item', item],
     ['Amount paid', money],
     ['Payment ID', paymentId],
     ['Date', `${date} IST`],
@@ -114,15 +117,15 @@ function receiptEmail({ business, tournament, amount, currency, paymentId, paidA
     .map(([k, v]) => `<tr><td style="padding:6px 0;color:#475569;font-size:14px">${esc(k)}</td><td style="padding:6px 0;text-align:right;font-weight:600;font-size:14px">${esc(v)}</td></tr>`)
     .join('')}</table>`;
   return {
-    subject: `Payment received — Event Pass for ${tournament}`,
+    subject: `Payment received — ${item}`,
     html: layout({
-      heading: 'Your Event Pass is active',
-      body: [`Thanks for your payment. <strong>${esc(tournament)}</strong> now has unlimited entries.`, table],
+      heading: plan === 'Event Pass' ? 'Your Event Pass is active' : `Your ${plan} plan is active`,
+      body: [`Thanks for your payment. <strong>${esc(tournament)}</strong> can now have ${limit ? `up to ${limit} entries` : 'unlimited entries'}.`, table],
       button: 'Open your tournament',
       url,
       footer: `This is your receipt. Questions or refunds: ${esc(business.email || 'reply to this email')}.`,
     }),
-    text: `Payment received — Event Pass for ${tournament}\n\n${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\nOpen your tournament: ${url}`,
+    text: `Payment received — ${item}\n\n${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\nOpen your tournament: ${url}`,
   };
 }
 
@@ -134,13 +137,13 @@ function waitingEmail({ tournament, player, url }) {
       heading: 'Players are waiting to enter',
       body: [
         `<strong>${esc(player)}</strong> just entered <strong>${esc(tournament)}</strong>, but the tournament has reached its entry limit, so their place isn't confirmed yet.`,
-        'Open the entry list to confirm or remove waiting players. With the Event Pass, everyone waiting is confirmed automatically.',
+        'Open the entry list to confirm or remove waiting players. If you move up to a bigger plan, everyone waiting is confirmed automatically.',
         'Unconfirmed players are not included in the draw.',
       ],
       button: 'See the entry list',
       url,
     }),
-    text: `${player} just entered ${tournament}, but the tournament has reached its entry limit, so their place isn't confirmed yet.\n\nConfirm or remove waiting players (or get the Event Pass to confirm everyone): ${url}`,
+    text: `${player} just entered ${tournament}, but the tournament has reached its entry limit, so their place isn't confirmed yet.\n\nConfirm or remove waiting players (or move up a plan to confirm everyone): ${url}`,
   };
 }
 

@@ -8,7 +8,7 @@ const catalog = require('../public/sports/events');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
 const { inviteEmail, receiptEmail, waitingEmail } = require('./email');
-const { billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
+const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
 
 const FORMATS = {
   league_knockout: 'League + Knockout',
@@ -343,9 +343,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // A maximum above the free limit needs the Event Pass.
   function checkMaxEntries(config, plan) {
-    const limit = planLimit(plan);
-    if (!config.maxEntries || config.maxEntries <= limit) return;
-    fail(402, `A maximum of ${config.maxEntries} entries needs the Event Pass (the free plan allows up to ${limit}).`, 'upgrade');
+    if (!config.maxEntries || config.maxEntries <= planLimit(plan)) return;
+    upgradeError(plan, config.maxEntries, ` in total, so a maximum of ${config.maxEntries} isn't possible yet`);
   }
 
   const groupsFor = (t, n) => (t.config.groupSize ? formats.groupCount(n, t.config.groupSize) : t.config.groups);
@@ -357,22 +356,32 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // Razorpay is configured). Organisers adding players get an upgrade prompt;
   // self-entries over the limit are saved unconfirmed instead (see register).
   async function checkEntryLimit(q, t, adding) {
-    const cfg = billingConfig();
-    if (!cfg.enabled || t.plan === 'pass') return;
+    const limit = planLimit(t.plan);
+    if (!Number.isFinite(limit)) return;
     const n = await confirmedCount(q, t);
-    if (n + adding <= cfg.freeLimit) return;
-    const left = Math.max(0, cfg.freeLimit - n);
-    fail(
-      402,
-      `The free plan allows up to ${cfg.freeLimit} entries per tournament${left ? ` (${left} left)` : ''}. Get the Event Pass for unlimited entries.`,
-      'upgrade',
-    );
+    if (n + adding <= limit) return;
+    const left = Math.max(0, limit - n);
+    upgradeError(t.plan, n + adding, ` per tournament${left ? ` (${left} left)` : ''}`);
   }
 
   // Confirmed entries the tournament's plan allows, across all its events.
   function planLimit(plan) {
     const cfg = billingConfig();
-    return cfg.enabled && plan !== 'pass' ? cfg.freeLimit : Infinity;
+    if (!cfg.enabled || plan === 'pass') return Infinity;
+    return TIERS.find((x) => x.id === plan)?.limit ?? cfg.freeLimit;
+  }
+  // The smallest paid plan that allows n entries (null if none does).
+  const tierFor = (n) => TIERS.find((x) => x.limit >= n) || null;
+  const planName = (plan) => PLAN_NAMES[plan] || 'Free';
+
+  // Why more entries need an upgrade, naming the plan that fits.
+  function upgradeError(plan, needed, what) {
+    const limit = planLimit(plan);
+    const tier = tierFor(needed);
+    const now = plan === 'free' || !plan ? `The free plan allows up to ${limit} entries` : `The ${planName(plan)} plan allows up to ${limit} entries`;
+    fail(402, tier
+      ? `${now}${what}. Upgrade to ${tier.name} (up to ${tier.limit} entries) to add more.`
+      : `${now}${what}. For more than ${TIERS[TIERS.length - 1].limit} entries, contact us.`, 'upgrade');
   }
 
   // An event's own cap: the organiser's maximum, or the hard cap.
@@ -553,7 +562,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
       sport: { id: t.sportDef.id, name: t.sportDef.name },
       visibility: t.visibility,
       plan: t.plan,
-      ...(access.can.manage && { limits: { entries: Number.isFinite(planLimit(t.plan)) ? planLimit(t.plan) : null } }),
+      ...(access.can.manage && {
+        planName: planName(t.plan),
+        limits: { entries: Number.isFinite(planLimit(t.plan)) ? planLimit(t.plan) : null },
+        upgrades: await upgradesFor(q, t),
+      }),
       ...access,
       events: evs,
       // The first event's draw at the top level too: single-event pages and
@@ -1304,27 +1317,44 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   const razorpay = (cfg) => createRazorpay({ keyId: cfg.keyId, keySecret: cfg.keySecret, fetchImpl });
 
-  // Step 1: create a Razorpay order for this tournament's Event Pass.
-  async function checkout(id, actor) {
+  const paidSoFar = async (q, tid) =>
+    (await q(`SELECT COALESCE(SUM(amount), 0)::int AS n FROM payments WHERE tournament_id = $1 AND status = 'paid'`, [tid]))[0].n;
+
+  // Plans this tournament can move up to, and what each would cost now.
+  async function upgradesFor(q, t) {
+    if (!billingConfig().enabled || t.plan === 'pass') return [];
+    const paid = await paidSoFar(q, t.id);
+    const current = planLimit(t.plan);
+    return TIERS.filter((x) => x.limit > current).map((x) => ({ ...x, amount: Math.max(0, x.price - paid) }));
+  }
+
+  // Step 1: create a Razorpay order for a plan (the next one up by default).
+  // Upgrading from a paid plan charges only the difference.
+  async function checkout(id, actor, input = {}) {
     const cfg = billingConfig();
     if (!cfg.enabled) fail(503, 'Payments aren\'t set up yet');
-    const { t, paymentId } = await db.tx(async (q) => {
+    const { t, paymentId, tier, amount } = await db.tx(async (q) => {
       const { t } = await lockWith(q, id, actor, 'manage');
-      if (t.plan === 'pass') fail(409, 'This tournament already has the Event Pass');
+      if (t.plan === 'pass') fail(409, 'This tournament already has the Event Pass (unlimited entries)');
+      const options = await upgradesFor(q, t);
+      if (!options.length) fail(409, `This tournament is already on the ${planName(t.plan)} plan, the largest one`);
+      const tier = input.tier ? options.find((x) => x.id === input.tier) : options[0];
+      if (!tier) fail(400, TIERS.some((x) => x.id === input.tier) ? 'You can only move up to a bigger plan' : 'Unknown plan');
+      if (tier.amount < 100) fail(409, 'Contact us to change this tournament\'s plan');
       const [row] = await q(
-        `INSERT INTO payments (tournament_id, tournament_name, user_email, amount, currency)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-        [t.id, t.name, actor.user?.email ?? null, cfg.price, cfg.currency],
+        `INSERT INTO payments (tournament_id, tournament_name, user_email, amount, currency, tier)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [t.id, t.name, actor.user?.email ?? null, tier.amount, cfg.currency, tier.id],
       );
-      return { t, paymentId: row.id };
+      return { t, paymentId: row.id, tier, amount: tier.amount };
     });
     let order;
     try {
       order = await razorpay(cfg).createOrder({
-        amount: cfg.price,
+        amount,
         currency: cfg.currency,
         receipt: `tn_${paymentId}`,
-        notes: { tournament_id: t.id, tournament: t.name.slice(0, 200), email: actor.user?.email ?? '' },
+        notes: { tournament_id: t.id, tournament: t.name.slice(0, 200), plan: tier.id, email: actor.user?.email ?? '' },
       });
     } catch (err) {
       console.error('Razorpay order failed:', err.message);
@@ -1335,10 +1365,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return {
       orderId: order.id,
       keyId: cfg.keyId,
-      amount: cfg.price,
+      amount,
       currency: cfg.currency,
+      tier: tier.id,
       name: cfg.business.name || 'Tonament',
-      description: `Event Pass — ${t.name}`,
+      description: `${tier.name} plan — ${t.name}`,
       prefill: { name: actor.user?.name ?? '', email: actor.user?.email ?? '' },
     };
   }
@@ -1355,7 +1386,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
         [paymentId, JSON.stringify(rawEvent ?? null), p.id],
       );
       if (p.tournament_id) {
-        await q(`UPDATE tournaments SET plan = 'pass', plan_updated_at = now() WHERE id = $1`, [p.tournament_id]);
+        // Payments made before tiers existed bought the unlimited Event Pass.
+        await q(`UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2`, [p.tier || 'pass', p.tournament_id]);
         const [t] = await q('SELECT * FROM tournaments WHERE id = $1 FOR UPDATE', [p.tournament_id]);
         if (t) await confirmWaiting(q, t);
       }
@@ -1372,6 +1404,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
         ...receiptEmail({
           business: cfg.business,
           tournament: payment.tournament_name,
+          plan: planName(payment.tier || 'pass'),
+          limit: TIERS.find((x) => x.id === payment.tier)?.limit ?? null,
           amount: payment.amount,
           currency: payment.currency,
           paymentId: payment.payment_id,
@@ -1407,7 +1441,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     }
     const { payment, activated } = await markPaid(orderId, paymentId, { source: 'checkout', paymentId });
     if (activated) await sendReceipt(payment, baseUrl);
-    return { ok: true, tournamentId: row.tournament_id, plan: 'pass' };
+    return { ok: true, tournamentId: row.tournament_id, plan: row.tier || 'pass' };
   }
 
   // Step 3 (backstop): Razorpay webhooks, verified against the raw body.
@@ -1446,10 +1480,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // Manual switch (refunds, promotions, support).
   async function adminSetPlan(id, actor, plan) {
     requireSiteAdmin(actor);
-    if (plan !== 'pass' && plan !== 'free') fail(400, 'plan must be "pass" or "free"');
+    if (!PLAN_NAMES[plan]) fail(400, `plan must be one of: ${Object.keys(PLAN_NAMES).join(', ')}`);
     return mutate(id, actor, async (q, t) => {
       await q('UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2', [plan, t.id]);
-      if (plan === 'pass') await confirmWaiting(q, { ...t, plan });
+      await confirmWaiting(q, { ...t, plan });
     });
   }
 
@@ -1458,7 +1492,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const rows = await db.query(
       `SELECT p.id, p.tournament_id AS "tournamentId", p.tournament_name AS "tournamentName", p.user_email AS "email",
               p.order_id AS "orderId", p.payment_id AS "paymentId", p.amount, p.currency, p.status,
-              p.created_at AS "createdAt", p.paid_at AS "paidAt", t.plan
+              p.created_at AS "createdAt", p.paid_at AS "paidAt", p.tier, t.plan
        FROM payments p LEFT JOIN tournaments t ON t.id = p.tournament_id
        ORDER BY p.created_at DESC LIMIT 300`,
     );

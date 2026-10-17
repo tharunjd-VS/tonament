@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pricing · Tonament</title>
-  <meta name="description" content="Tonament pricing: free for events up to 16 entries; Event Pass ₹499 per tournament for unlimited entries.">
+  <meta name="description" content="Tonament pricing: free up to 16 entries; one-time plans per tournament from ₹499 (Club, up to 64 entries), ₹999 (Open, 150) and ₹1,999 (Championship, 400).">
   <meta name="theme-color" content="#0B1220">
   <script>
     (function () {
@@ -29,36 +29,58 @@
   <main class="container doc">
     <h1>Pricing</h1>
     <p class="lead">Simple pricing for clubs. Start free; pay only when an event gets big.</p>
-    <div class="price-grid">
+    <div class="price-grid price-grid-4">
       <section class="card price-card">
         <h2>Free</h2>
         <p class="price">₹0</p>
+        <p class="price-limit">Up to <strong><span data-free-limit>16</span> entries</strong></p>
         <ul>
-          <li>Up to <strong><span data-free-limit>16</span> entries</strong> per tournament</li>
+          <li>Any number of events (singles, doubles, age groups, levels)</li>
           <li>League, knockout, or league + knockout</li>
-          <li>Live point-by-point scoring and live scoreboards</li>
-          <li>Players can enter online; check-in on the day</li>
+          <li>Live point-by-point scoring and scoreboards</li>
+          <li>Online entries and check-in on the day</li>
           <li>Organisers, umpires and share links</li>
         </ul>
         <a class="btn btn-lg" href="/#/new">Create a tournament</a>
       </section>
       <section class="card price-card featured">
-        <h2>Event Pass</h2>
-        <p class="price"><span data-price>₹499</span> <small>one-time, per tournament</small></p>
+        <h2>Club</h2>
+        <p class="price"><span data-tier-price="club">₹499</span> <small>one-time, per tournament</small></p>
+        <p class="price-limit">Up to <strong><span data-tier-limit="club">64</span> entries</strong></p>
         <ul>
-          <li><strong>Unlimited entries</strong> for that tournament</li>
           <li>Everything in Free</li>
-          <li>Activated instantly after payment</li>
-          <li>Pay by UPI, cards, netbanking or wallets (via Razorpay)</li>
+          <li>For club championships and weekend events</li>
         </ul>
-        <a class="btn btn-primary btn-lg" href="/#/new">Start free, upgrade when needed</a>
+      </section>
+      <section class="card price-card">
+        <h2>Open</h2>
+        <p class="price"><span data-tier-price="open">₹999</span> <small>one-time, per tournament</small></p>
+        <p class="price-limit">Up to <strong><span data-tier-limit="open">150</span> entries</strong></p>
+        <ul>
+          <li>Everything in Free</li>
+          <li>For open tournaments with many events</li>
+        </ul>
+      </section>
+      <section class="card price-card">
+        <h2>Championship</h2>
+        <p class="price"><span data-tier-price="championship">₹1,999</span> <small>one-time, per tournament</small></p>
+        <p class="price-limit">Up to <strong><span data-tier-limit="championship">400</span> entries</strong></p>
+        <ul>
+          <li>Everything in Free</li>
+          <li>For large multi-day championships</li>
+        </ul>
       </section>
     </div>
+    <p class="muted small">Entries are counted across all events in a tournament (a doubles pair is one entry). Paid plans are activated instantly after payment by UPI, cards, netbanking or wallets (via Razorpay).</p>
     <h2>Questions</h2>
-    <h3>How do I buy an Event Pass?</h3>
-    <p>Create your tournament for free. When you need more than <span data-free-limit>16</span> entries, choose <strong>Get Event Pass</strong> in the tournament. Payment is handled by Razorpay, and the Pass is activated on your tournament as soon as the payment succeeds. You'll also get a receipt by email.</p>
+    <h3>How do I buy a plan?</h3>
+    <p>Create your tournament for free. When you need more than <span data-free-limit>16</span> entries, choose a plan in the tournament. Payment is handled by Razorpay, and the plan is activated on your tournament as soon as the payment succeeds. You'll also get a receipt by email.</p>
+    <h3>Can I upgrade later?</h3>
+    <p>Yes. If your tournament outgrows its plan, move up to a bigger one and pay only the difference — for example, Club to Open costs <span data-tier-diff="club:open">₹500</span>.</p>
     <h3>Is it a subscription?</h3>
-    <p>No. The Event Pass is a one-time payment for one tournament. There are no recurring charges.</p>
+    <p>No. Each plan is a one-time payment for one tournament. There are no recurring charges.</p>
+    <h3>I bought the Event Pass before</h3>
+    <p>Tournaments that bought the original Event Pass keep unlimited entries.</p>
     <h3>Are taxes included?</h3>
     <p>The price shown is the total amount you pay, inclusive of any applicable taxes.</p>
     <h3>Refunds</h3>
