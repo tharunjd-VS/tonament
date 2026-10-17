@@ -33,7 +33,7 @@
   };
 
   const ROLE_NAMES = { admin: 'Site admin', owner: 'Owner', organiser: 'Organiser', umpire: 'Umpire' };
-  const STATUS = { setup: 'Setting up', league: 'League stage', knockout: 'Knockout stage', completed: 'Completed' };
+  const STATUS = { setup: 'Setting up', league: 'League stage', knockout: 'Knockout stage', completed: 'Completed', live: 'In progress' };
 
   // ---------- organiser keys (kept per tournament in this browser)
   const memKeys = {};
@@ -129,7 +129,8 @@
   const fmtWhen = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
   // Same rule as server/formats.js groupCount: about `size` per group, never a group of one.
   const groupCount = (n, size) => (n < 2 ? 1 : Math.min(Math.max(1, Math.round(n / size)), Math.floor(n / 2)));
-  const enteredKey = (id) => `tonament:entered:${id}`;
+  // "You're entered" is remembered per event (the old per-tournament key for single-event tournaments).
+  const enteredKey = (t) => `tonament:entered:${t.id}${t.events && t.events.length > 1 ? `:${t.eventId}` : ''}`;
   const nameOf = (p) => (p ? p.name : 'TBD');
   const pow2 = (n) => { let s = 2; while (s < n) s *= 2; return s; };
   const field = (label, control, cls, hint) =>
@@ -154,6 +155,39 @@
   }
   const placeLine = (venue, city) => [venue, city].filter(Boolean).join(', ') || null;
   const detailValues = (t) => ({ venue: t.venue, ...t.location, startsOn: t.startsOn, endsOn: t.endsOn });
+
+  // ---------- events
+  // The tournament page shows one event at a time. withEvent() gives the
+  // panels a tournament-shaped object for that event (its entries, draw,
+  // status and config), so they work the same with one event or many.
+  const CAT = window.TonamentEvents;
+  const allEntries = (t) => t.events.flatMap((e) => e.entries);
+  const allMatches = (t) => t.events.flatMap((e) => e.matches);
+  const multiEvent = (t) => t.events.length > 1;
+  function withEvent(t, ev) {
+    return {
+      ...t,
+      tournamentStatus: t.status,
+      eventId: ev.id,
+      event: ev,
+      status: ev.status,
+      format: ev.format,
+      formatName: ev.formatName,
+      config: ev.config,
+      entriesOpen: ev.entriesOpen,
+      placesLeft: ev.placesLeft,
+      entries: ev.entries,
+      groups: ev.groups,
+      matches: ev.matches,
+      champion: ev.champion,
+    };
+  }
+  const currentEvent = (t) => t.events.find((e) => e.id === S.route.eventId) || t.events[0];
+  const eventOfMatch = (t, mid) => t.events.find((e) => e.matches.some((m) => m.id === mid));
+  // A tab link that keeps the selected event.
+  const tabHref = (t, tab) => `#/t/${t.id}/${tab}${t.events && t.events.length > 1 && t.eventId ? `?e=${t.eventId}` : ''}`;
+  // Event-scoped request bodies name the event.
+  const withEv = (t, body = {}) => ({ ...body, event: t.eventId });
   async function ensurePlaces() {
     if (S.places) return S.places;
     S.places = await api('GET', '/tournaments/places').catch(() => []);
@@ -182,9 +216,11 @@
       const key = params.get('key');
       if (key) {
         keys.set(id, key);
-        history.replaceState(null, '', `#/${parts.map(encodeURIComponent).join('/')}`);
+        history.replaceState(null, '', `#/${parts.map(encodeURIComponent).join('/')}${params.get('e') ? `?e=${params.get('e')}` : ''}`);
       }
-      S.route = parts[2] === 'm' ? { name: 'match', id, mid: Number(parts[3]) } : { name: 'tournament', id, tab: parts[2] || null };
+      S.route = parts[2] === 'm'
+        ? { name: 'match', id, mid: Number(parts[3]) }
+        : { name: 'tournament', id, tab: parts[2] || null, eventId: Number(params.get('e')) || null };
       if (S.route.tab === 'team') S.members = null; // reload: invitees may have signed up since
       if (!S.t || S.t.id !== id || key) {
         S.t = null;
@@ -253,8 +289,10 @@
 
   function mergeMatch(m) {
     if (!S.t) return;
-    const i = S.t.matches.findIndex((x) => x.id === m.id);
-    if (i >= 0) S.t.matches[i] = m;
+    for (const ev of S.t.events) {
+      const i = ev.matches.findIndex((x) => x.id === m.id);
+      if (i >= 0) ev.matches[i] = m;
+    }
   }
 
   // ---------- live updates (polling)
@@ -265,7 +303,7 @@
   function schedulePoll(delay) {
     clearTimeout(pollTimer);
     if (!S.t) return;
-    const live = S.t.matches.some((m) => m.status === 'live');
+    const live = allMatches(S.t).some((m) => m.status === 'live');
     pollTimer = setTimeout(poll, delay ?? (document.hidden ? 30000 : live ? 2000 : 5000));
   }
 
@@ -318,7 +356,7 @@
     S.pendingRender = false;
     // Check-ins still being saved win over whatever the server last sent.
     if (S.t && S.pendingCheckIns.size) {
-      for (const e of S.t.entries) if (S.pendingCheckIns.has(e.id)) e.checkedIn = S.pendingCheckIns.get(e.id);
+      for (const e of allEntries(S.t)) if (S.pendingCheckIns.has(e.id)) e.checkedIn = S.pendingCheckIns.get(e.id);
     }
     let view;
     if (S.error) view = errorView(S.error, S.errorCode);
@@ -611,10 +649,20 @@
     };
   }
 
-  function settingsFields(sport, v) {
+  // Self-entry for the whole tournament.
+  function entryFields(v) {
+    return h('fieldset', { class: 'entry-settings' }, h('legend', {}, 'Entries'),
+      h('label', { class: 'check-field' },
+        h('input', { type: 'checkbox', name: 'selfEntry', checked: v.selfEntry !== false }),
+        h('span', {}, h('strong', {}, 'Players can enter themselves'), h('small', {}, 'Adds an "Enter" form to the public page. You can still add people yourself.'))),
+      field('Entries close (optional)', h('input', { type: 'datetime-local', name: 'entriesCloseAt', value: toLocalInput(v.entriesCloseAt) }), null,
+        'Leave empty to keep entries open until each event starts.'));
+  }
+
+  // Format, entry cap, late entry and scoring (one event, or defaults for new ones).
+  function formatFields(sport, v, legend = 'Format') {
     return [
-      detailsFields(v),
-      h('fieldset', { class: 'formats' }, h('legend', {}, 'Format'),
+      h('fieldset', { class: 'formats' }, h('legend', {}, legend),
         FORMATS.map(([value, label, desc]) => h('label', { class: 'format-option' },
           h('input', { type: 'radio', name: 'format', value, checked: v.format === value, onchange: (e) => syncFormat(e.target.form) }),
           h('span', {}, h('strong', {}, label), h('small', {}, desc))))),
@@ -622,17 +670,12 @@
         field('Players per group (about)', h('input', { type: 'number', name: 'groupSize', min: 2, max: 16, value: v.groupSize ?? 4, required: true }), 'groups-field',
           'Groups are made from the final head-count when you start.'),
         field('Qualify from each group', h('input', { type: 'number', name: 'qualifiers', min: 1, max: 8, value: v.qualifiers, required: true }), 'qualifiers-field')),
-      h('fieldset', { class: 'entry-settings' }, h('legend', {}, 'Entries'),
-        h('label', { class: 'check-field' },
-          h('input', { type: 'checkbox', name: 'selfEntry', checked: v.selfEntry !== false }),
-          h('span', {}, h('strong', {}, 'Players can enter themselves'), h('small', {}, 'Adds an "Enter this tournament" form to the public page. You can still add people yourself.'))),
-        field('Entries close (optional)', h('input', { type: 'datetime-local', name: 'entriesCloseAt', value: toLocalInput(v.entriesCloseAt) }), null,
-          'Leave empty to keep entries open until you start the tournament.'),
+      h('fieldset', { class: 'entry-settings' }, h('legend', {}, 'Places'),
         field('Maximum entries (optional)', h('input', { type: 'number', name: 'maxEntries', min: 2, max: 128, value: v.maxEntries ?? '', placeholder: 'No limit' }), null,
           'Players see how many places are left. Once it\'s reached, new entries join a waitlist for you to confirm.'),
         h('label', { class: 'check-field' },
           h('input', { type: 'checkbox', name: 'lateEntry', checked: Boolean(v.lateEntry) }),
-          h('span', {}, h('strong', {}, 'Allow late entries after the start'), h('small', {}, 'Latecomers join the smallest group with catch-up matches, or take a bye in a knockout. You can change this during the event.')))),
+          h('span', {}, h('strong', {}, 'Allow late entries after the start'), h('small', {}, 'Latecomers join the smallest group with catch-up matches, or take a bye in a knockout. You can change this during play.')))),
       h('fieldset', {}, h('legend', {}, `${sport.name} scoring`),
         h('div', { class: 'grid-3' }, sport.fields.map((f) => field(f.label,
           f.type === 'select'
@@ -642,24 +685,84 @@
     ];
   }
 
+  // A select of standard values with "Custom…" revealing a text box.
+  function choiceField(label, name, options, value) {
+    const custom = value && !options.includes(value);
+    const select = h('select', {
+      name: `${name}Choice`,
+      value: custom ? '__custom' : value || options[0],
+      onchange: (e) => { box.hidden = e.target.value !== '__custom'; if (!box.hidden) box.focus(); },
+    }, options.map((o) => h('option', { value: o }, o)), h('option', { value: '__custom' }, 'Custom…'));
+    const box = h('input', { name: `${name}Custom`, maxlength: 30, value: custom ? value : '', placeholder: `Custom ${label.toLowerCase()}`, hidden: !custom });
+    return field(label, h('div', { class: 'stack' }, select, box));
+  }
+  const readChoice = (fd, name) => (fd.get(`${name}Choice`) === '__custom' ? (fd.get(`${name}Custom`) || '').trim() || 'Open' : fd.get(`${name}Choice`));
+
+  // What an event is: type, age group, level, optional name.
+  function categoryFields(v) {
+    const type = v.discipline === 'any' ? 'any' : `${v.gender}-${v.discipline}`;
+    const types = [
+      ...CAT.PRESETS.map((p) => [`${p.gender}-${p.discipline}`, p.label]),
+      ['any', 'Open (singles or pairs)'],
+    ];
+    return h('fieldset', { class: 'details-set' }, h('legend', {}, 'Event'),
+      h('div', { class: 'grid-2' },
+        field('Type', h('select', { name: 'type', value: type }, types.map(([value, label]) => h('option', { value }, label)))),
+        field('Name (optional)', h('input', { name: 'eventName', maxlength: 60, value: v.customName || '', placeholder: 'Generated from the type' }))),
+      h('div', { class: 'grid-2' }, choiceField('Age group', 'age', CAT.AGES, v.age), choiceField('Level', 'level', CAT.LEVELS, v.level)));
+  }
+
+  function readCategory(form) {
+    const fd = new FormData(form);
+    const type = fd.get('type');
+    const [gender, discipline] = type === 'any' ? ['open', 'any'] : type.split('-');
+    return { discipline, gender, age: readChoice(fd, 'age'), level: readChoice(fd, 'level'), name: fd.get('eventName') || '' };
+  }
+
+  // Create form: tick the events to run; age group and level apply to all of them.
+  function quickAddFields(defaults = ['OS']) {
+    return h('fieldset', { class: 'details-set quick-add' }, h('legend', {}, 'Events'),
+      h('p', { class: 'hint', style: 'margin:0' }, 'Tick every event you\'re running — each gets its own entries and draw. You can add more later.'),
+      h('div', { class: 'quick-grid' }, CAT.PRESETS.map((p) => h('label', { class: 'check-field' },
+        h('input', { type: 'checkbox', name: 'preset', value: p.key, checked: defaults.includes(p.key) }),
+        h('span', {}, h('strong', {}, p.label))))),
+      h('div', { class: 'grid-2' }, choiceField('Age group', 'age', CAT.AGES, 'Open'), choiceField('Level', 'level', CAT.LEVELS, 'Open')));
+  }
+
+  function readQuickAdd(form) {
+    const fd = new FormData(form);
+    const age = readChoice(fd, 'age');
+    const level = readChoice(fd, 'level');
+    return fd.getAll('preset').map((key) => {
+      const p = CAT.PRESETS.find((x) => x.key === key);
+      return { discipline: p.discipline, gender: p.gender, age, level };
+    });
+  }
+
   function syncFormat(form) {
     const fmt = form.querySelector('input[name=format]:checked')?.value;
     form.querySelector('.groups-field').hidden = fmt === 'knockout';
     form.querySelector('.qualifiers-field').hidden = fmt !== 'league_knockout';
   }
 
-  function readSettings(form, sport) {
+  function readTournament(form) {
+    const fd = new FormData(form);
+    return {
+      ...readDetails(form),
+      name: fd.get('name'),
+      selfEntry: fd.get('selfEntry') === 'on',
+      entriesCloseAt: fd.get('entriesCloseAt') ? new Date(fd.get('entriesCloseAt')).toISOString() : '',
+    };
+  }
+
+  function readFormat(form, sport) {
     const fd = new FormData(form);
     const scoring = {};
     for (const f of sport.fields) scoring[f.key] = Number(fd.get(`scoring.${f.key}`));
     return {
-      ...readDetails(form),
-      name: fd.get('name'),
       format: fd.get('format'),
       groupSize: Number(fd.get('groupSize')),
       qualifiers: Number(fd.get('qualifiers')),
-      selfEntry: fd.get('selfEntry') === 'on',
-      entriesCloseAt: fd.get('entriesCloseAt') ? new Date(fd.get('entriesCloseAt')).toISOString() : '',
       maxEntries: fd.get('maxEntries') ? Number(fd.get('maxEntries')) : '',
       lateEntry: fd.get('lateEntry') === 'on',
       scoring,
@@ -677,7 +780,9 @@
         const btn = form.querySelector('button[type=submit]');
         btn.disabled = true;
         try {
-          const body = { sport: form.sport.value, ...readSettings(form, sport) };
+          const events = readQuickAdd(form);
+          if (!events.length) throw new Error('Tick at least one event');
+          const body = { sport: form.sport.value, ...readTournament(form), ...readFormat(form, sport), events };
           const { id } = await api('POST', '/tournaments', body);
           toast('Tournament created — now add your players');
           location.hash = `#/t/${id}`;
@@ -695,7 +800,10 @@
         disabled: s.status !== 'live',
       }, s.status === 'live' ? s.name : `${s.name} (coming soon)`))), null,
       h('span', {}, 'More sports are on the way — ', h('a', { href: '#/' }, 'request yours on the home page'), '.'))),
-    settingsFields(sport, { country: REGIONS.defaultCountry, format: 'league_knockout', groupSize: 4, qualifiers: 2, selfEntry: true, entriesCloseAt: null, maxEntries: null, lateEntry: false, scoring: sport.defaults }),
+    detailsFields({ country: REGIONS.defaultCountry }),
+    quickAddFields(),
+    entryFields({ selfEntry: true }),
+    formatFields(sport, { format: 'league_knockout', groupSize: 4, qualifiers: 2, maxEntries: null, lateEntry: false, scoring: sport.defaults }, 'Format (for every event — change any of them later)'),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
     syncFormat(form);
     return form;
@@ -713,24 +821,47 @@
 
   function tabsWithTeam(t) {
     const tabs = tabsFor(t);
-    if (t.can.manage) tabs.push({ id: 'team', label: 'Team' });
+    if (t.can.manage) tabs.push({ id: 'events', label: 'Events' }, { id: 'team', label: 'Team' });
     return tabs;
   }
 
+  // Chips to switch event; only shown when there's more than one.
+  function eventPicker(t, current) {
+    if (!multiEvent(t)) return null;
+    return h('nav', { class: 'event-picker', 'aria-label': 'Events' },
+      t.events.map((ev) => h('a', {
+        class: `event-chip${ev.id === current.id ? ' active' : ''}`,
+        href: `#/t/${t.id}/${S.route.tab && !['events', 'team'].includes(S.route.tab) ? S.route.tab : 'entries'}?e=${ev.id}`,
+        'aria-current': ev.id === current.id ? 'true' : null,
+      },
+      h('span', { class: `dot ${ev.status}`, 'aria-hidden': 'true' }),
+      h('span', { class: 'event-chip-name' }, ev.name),
+      h('span', { class: 'event-chip-count' }, ev.entries.length))));
+  }
+
   function viewTournament() {
-    const t = S.t;
-    document.title = `${t.name} · Tonament`;
+    const tt = S.t;
+    const ev = currentEvent(tt);
+    const t = withEvent(tt, ev);
+    document.title = `${tt.name} · Tonament`;
     const tabs = tabsWithTeam(t);
     const active = tabs.some((x) => x.id === S.route.tab) ? S.route.tab : tabs[0].id;
-    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, team: panelTeam };
+    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, team: panelTeam, events: panelEvents };
+    const perEvent = !['team', 'events'].includes(active);
+    const statusLine = multiEvent(tt) ? (tt.entriesOpen ? 'Entries open' : null) : entryStatusLine(t);
     return [
       h('header', { class: 't-header' },
-        h('div', { class: 't-title' }, h('h1', {}, t.name), pill(t.status, STATUS[t.status]), t.can.score ? visibilityPill(t.visibility) : null),
+        h('div', { class: 't-title' }, h('h1', {}, tt.name), pill(tt.status, STATUS[tt.status]), tt.can.score ? visibilityPill(tt.visibility) : null),
         h('p', { class: 'muted small' },
-          [fmtDates(t.startsOn, t.endsOn), placeLine(t.venue, t.location.city), t.sport.name, t.formatName, entryStatusLine(t)].filter(Boolean).join(' · '), '  ', connDot())),
+          [fmtDates(tt.startsOn, tt.endsOn), placeLine(tt.venue, tt.location.city), tt.sport.name, multiEvent(tt) ? `${tt.events.length} events` : t.formatName, statusLine]
+            .filter(Boolean).join(' · '), '  ', connDot())),
       roleBar(t),
-      t.visibility === 'private' ? visibilityBanner(t) : null,
-      h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: `#/t/${t.id}/${x.id}`, class: x.id === active ? 'active' : '' }, x.label))),
+      tt.visibility === 'private' ? visibilityBanner(t) : null,
+      perEvent ? eventPicker(tt, ev) : null,
+      h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: tabHref(t, x.id), class: x.id === active ? 'active' : '' }, x.label))),
+      perEvent && multiEvent(tt)
+        ? h('p', { class: 'event-title' }, h('strong', {}, ev.name), ' · ', ev.formatName, ev.status !== 'setup' ? ` · ${STATUS[ev.status]}` : '')
+        : null,
       h('section', {}, panels[active](t)),
     ];
   }
@@ -752,7 +883,7 @@
     const running = t.status === 'league' || t.status === 'knockout';
     const usingCheckIn = setup && t.entries.some((e) => e.checkedIn);
     const hereCount = t.entries.filter((e) => e.checkedIn).length;
-    const confirmedCount = t.entries.filter((e) => e.confirmed).length;
+    const confirmedCount = allEntries(t).filter((e) => e.confirmed).length; // the plan counts every event
     const groupLabel = (g) => (g == null || t.format === 'knockout' ? null : h('span', { class: 'pill' }, `Group ${String.fromCharCode(65 + g)}`));
     const tags = (e) => [
       setup && !e.confirmed ? pill('waiting', t.can.manage ? 'Unconfirmed' : 'Awaiting confirmation') : null,
@@ -823,14 +954,16 @@
         list,
       ];
     }
-    if (!setup) return [upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), list, detailsCard(t)];
-    return [upgradeCard(t), venueCard(t), addEntriesForm(t, usingCheckIn), list, startCard(t), settingsCard(t)];
+    if (!setup) return [upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), list, tournamentSettingsCard(t)];
+    return [upgradeCard(t), venueCard(t), addEntriesForm(t, usingCheckIn), list, startCard(t), eventSettingsCard(t), tournamentSettingsCard(t)];
   }
 
   function addEntriesForm(t, walkIn) {
     const ta = h('textarea', {
       name: 'names', rows: walkIn ? 2 : 4,
-      placeholder: 'One player or pair per line, e.g.\nAsha Rao\nLee / Chan',
+      placeholder: t.event.discipline === 'doubles' ? 'One pair per line, e.g.\nAsha Rao / Lee Chan\nRavi / Meena'
+        : t.event.discipline === 'singles' ? 'One player per line, e.g.\nAsha Rao\nLee Chan'
+          : 'One player or pair per line, e.g.\nAsha Rao\nLee / Chan',
       oninput: (e) => { S.draft = e.target.value; },
     });
     ta.value = S.draft;
@@ -841,7 +974,7 @@
         const names = ta.value.split('\n').map((x) => x.trim()).filter(Boolean);
         if (!names.length) return;
         act(async () => {
-          S.t = await api('POST', `${tPath(t)}/entries`, { names, walkIn }, t.id);
+          S.t = await api('POST', `${tPath(t)}/entries`, withEv(t, { names, walkIn }), t.id);
           S.draft = '';
         }, `Added ${names.length} ${names.length === 1 ? 'entry' : 'entries'}`);
       },
@@ -855,7 +988,7 @@
   // "Enter this tournament" for players (no account needed).
   function publicEntryCard(t) {
     let entered = null;
-    try { entered = localStorage.getItem(enteredKey(t.id)); } catch { /* storage unavailable */ }
+    try { entered = localStorage.getItem(enteredKey(t)); } catch { /* storage unavailable */ }
     const closes = t.config.entriesCloseAt ? `Entries close ${fmtWhen(t.config.entriesCloseAt)}.` : 'Entries close when the draw is made.';
     const mine = entered && t.entries.find((e) => e.name === entered);
     if (mine && !mine.confirmed) {
@@ -879,8 +1012,8 @@
         btn.disabled = true;
         try {
           const body = Object.fromEntries(new FormData(form));
-          const res = await api('POST', `${tPath(t)}/register`, body);
-          try { localStorage.setItem(enteredKey(t.id), res.name || body.name); } catch { /* fine */ }
+          const res = await api('POST', `${tPath(t)}/register`, withEv(t, body));
+          try { localStorage.setItem(enteredKey(t), res.name || body.name); } catch { /* fine */ }
           toast(res.confirmed === false ? 'Entry received — the organiser will confirm your place' : 'You\'re entered — see you there!');
           refresh();
           render();
@@ -891,13 +1024,17 @@
       },
     },
     h('div', {},
-      h('h2', {}, full ? 'This tournament is full' : 'Enter this tournament'),
+      h('h2', {}, multiEvent(t) ? (full ? `${t.event.name} is full` : `Enter ${t.event.name}`) : full ? 'This tournament is full' : 'Enter this tournament'),
       h('p', { class: 'muted small', style: 'margin:0' }, full
         ? 'Join the waitlist — the organiser will confirm your place if one opens up.'
         : t.placesLeft != null ? `${t.placesLeft} of ${t.config.maxEntries} places left. ${closes}` : closes)),
     h('div', { class: 'grid-2' },
       field('Your name', h('input', { name: 'name', required: true, maxlength: 40, autocomplete: 'name' })),
-      field('Partner (doubles only)', h('input', { name: 'partner', maxlength: 40, autocomplete: 'off' }))),
+      // Doubles events need a partner; singles have none; catch-all events make it optional.
+      t.event.discipline === 'singles' ? null
+        : t.event.discipline === 'doubles'
+          ? field('Partner\'s name', h('input', { name: 'partner', required: true, maxlength: 40, autocomplete: 'off' }))
+          : field('Partner (doubles only)', h('input', { name: 'partner', maxlength: 40, autocomplete: 'off' }))),
     field('Phone or email', h('input', { name: 'contact', required: true, maxlength: 120, autocomplete: 'email' }), null,
       'Only the organisers see this, in case they need to reach you.'),
     // honeypot: hidden from people, filled in by bots
@@ -907,7 +1044,7 @@
   }
 
   function lateEntryCard(t) {
-    const setLate = (on) => act(async () => { S.t = await api('PATCH', tPath(t), { lateEntry: on }, t.id); }, on ? 'Late entries allowed' : 'Late entries switched off');
+    const setLate = (on) => act(async () => { S.t = await api('PATCH', tPath(t), withEv(t, { lateEntry: on }), t.id); }, on ? 'Late entries allowed' : 'Late entries switched off');
     if (!t.config.lateEntry) {
       return h('div', { class: 'card' },
         h('div', { class: 'card-head' },
@@ -931,7 +1068,7 @@
           onsubmit: (e) => {
             e.preventDefault();
             const name = input.value;
-            act(async () => { S.t = await api('POST', `${tPath(t)}/late-entry`, { name }, t.id); }, `${name} added`);
+            act(async () => { S.t = await api('POST', `${tPath(t)}/late-entry`, withEv(t, { name }), t.id); }, `${name} added`);
           },
         }, input, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add late entry'))
         : null,
@@ -949,7 +1086,7 @@
       if (S.t && S.t.id === data.id) S.t = data;
     } catch (err) {
       S.pendingCheckIns.delete(e.id);
-      const row = S.t && S.t.entries.find((x) => x.id === e.id);
+      const row = S.t && allEntries(S.t).find((x) => x.id === e.id);
       if (row) row.checkedIn = !here;
       S.shake = e.id;
       setTimeout(() => { if (S.shake === e.id) S.shake = null; }, 700);
@@ -962,13 +1099,13 @@
     if (!here && !confirm(`Clear check-in for all ${n} checked-in ${n === 1 ? 'entry' : 'entries'}?`)) return;
     const before = new Map(t.entries.map((e) => [e.id, e.checkedIn]));
     S.checkAllBusy = true;
-    for (const e of S.t.entries) e.checkedIn = here;
+    for (const e of t.entries) e.checkedIn = here;
     render();
     try {
-      S.t = await api('POST', `${tPath(t)}/check-in-all`, { here }, t.id);
+      S.t = await api('POST', `${tPath(t)}/check-in-all`, withEv(t, { here }), t.id);
       toast(here ? 'Everyone checked in' : 'Check-in cleared');
     } catch (err) {
-      for (const e of S.t.entries) if (before.has(e.id)) e.checkedIn = before.get(e.id);
+      for (const e of allEntries(S.t)) if (before.has(e.id)) e.checkedIn = before.get(e.id);
       toast(err.message, true);
     } finally {
       S.checkAllBusy = false;
@@ -981,7 +1118,7 @@
   }
 
   function saveOrder(t, ids, msg) {
-    act(async () => { S.t = await api('PUT', `${tPath(t)}/entries/order`, { ids }, t.id); }, msg);
+    act(async () => { S.t = await api('PUT', `${tPath(t)}/entries/order`, withEv(t, { ids }), t.id); }, msg);
   }
   function move(t, i, dir) {
     const ids = t.entries.map((e) => e.id);
@@ -1057,7 +1194,7 @@
             : 'Start the tournament now?';
           if (waiting) msg += `\n\n${waitingText} will be left out of the draw.`;
           if (!confirm(msg)) return;
-          act(async () => { S.t = await api('POST', `${tPath(t)}/start`, { skipUnconfirmed: waiting > 0 }, t.id); location.hash = `#/t/${t.id}/live`; }, 'Tournament started — good luck!');
+          act(async () => { S.t = await api('POST', `${tPath(t)}/start`, withEv(t, { skipUnconfirmed: waiting > 0 }), t.id); location.hash = tabHref(t, 'live'); }, multiEvent(t) ? `${t.event.name} started — good luck!` : 'Tournament started — good luck!');
         },
       }, 'Start tournament'));
   }
@@ -1115,36 +1252,85 @@
     }
   }
 
-  // After the start only the date and venue can still change.
-  function detailsCard(t) {
+  // Name, venue, dates and self-entry: editable at any stage.
+  function tournamentSettingsCard(t) {
     if (!t.can.manage) return null;
     const form = h('form', {
       class: 'form',
       onsubmit: (e) => {
         e.preventDefault();
-        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), readDetails(form), t.id); }, 'Venue and date saved');
+        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), readTournament(form), t.id); }, 'Tournament settings saved');
       },
     },
+    field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: t.name })),
     detailsFields(detailValues(t)),
+    entryFields(t.config),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
-    return panel(t, 'details', 'Venue & date', form);
+    return panel(t, 'settings', 'Tournament settings · venue, dates, entries', form);
   }
 
-  function settingsCard(t) {
+  // The selected event's type, format and scoring (until it starts).
+  function eventSettingsCard(t) {
     const sport = S.sports.find((s) => s.id === t.sport.id);
-    if (!sport) return null;
+    if (!sport || !t.can.manage || t.status !== 'setup') return null;
     const form = h('form', {
       class: 'form',
       onsubmit: (e) => {
         e.preventDefault();
-        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), readSettings(form, sport), t.id); }, 'Settings saved');
+        saveForm(form, async () => {
+          S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ...readCategory(form), ...readFormat(form, sport) }, t.id);
+        }, 'Event settings saved');
       },
     },
-    field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: t.name })),
-    settingsFields(sport, { format: t.format, ...t.config, ...detailValues(t) }),
-    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save settings')));
+    categoryFields(t.event),
+    formatFields(sport, { format: t.format, ...t.config }),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
     syncFormat(form);
-    return panel(t, 'settings', `Settings · ${t.formatName}`, form);
+    return panel(t, `event-${t.eventId}`, multiEvent(t) ? `Event settings · ${t.event.name}` : `Event settings · ${t.formatName}`, form);
+  }
+
+  // ----- events tab (organisers): add, reorder, delete
+  function panelEvents(t) {
+    const move = (i, dir) => {
+      const ids = t.events.map((e) => e.id);
+      [ids[i], ids[i + dir]] = [ids[i + dir], ids[i]];
+      act(async () => { S.t = await api('PUT', `${tPath(t)}/events/order`, { ids }, t.id); });
+    };
+    const remove = (ev) => {
+      const n = ev.entries.length;
+      if (!confirm(`Delete ${ev.name}${n ? ` and its ${n} ${n === 1 ? 'entry' : 'entries'}` : ''}? This can't be undone.`)) return;
+      act(async () => { S.t = await api('DELETE', `${tPath(t)}/events/${ev.id}`, undefined, t.id); }, `${ev.name} deleted`);
+    };
+    const addForm = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const events = readQuickAdd(addForm);
+        if (!events.length) { toast('Tick at least one event', true); return; }
+        saveForm(addForm, async () => { S.t = await api('POST', `${tPath(t)}/events`, { events }, t.id); },
+          `${events.length} event${events.length > 1 ? 's' : ''} added`);
+      },
+    },
+    quickAddFields([]),
+    h('p', { class: 'hint', style: 'margin:0' }, 'New events copy the format and scoring of the first event; change them in each event\'s settings.'),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add events')));
+    return [
+      h('div', { class: 'card' },
+        h('h2', {}, `Events (${t.events.length})`),
+        h('ol', { class: 'entries events-list' }, t.events.map((ev, i) => h('li', {},
+          h('span', { class: 'seed' }, i + 1),
+          h('span', { class: 'name' },
+            h('a', { class: 'entry-name', href: `#/t/${t.id}/entries?e=${ev.id}` }, ev.name),
+            h('small', { class: 'contact' }, [ev.formatName, `${ev.entries.length} ${ev.entries.length === 1 ? 'entry' : 'entries'}`, STATUS[ev.status]].join(' · '))),
+          h('span', { class: 'row-actions' },
+            h('button', { class: 'icon-btn', 'aria-label': `Move ${ev.name} up`, disabled: i === 0, onclick: () => move(i, -1) }, '↑'),
+            h('button', { class: 'icon-btn', 'aria-label': `Move ${ev.name} down`, disabled: i === t.events.length - 1, onclick: () => move(i, 1) }, '↓'),
+            h('button', {
+              class: 'icon-btn', 'aria-label': `Delete ${ev.name}`, title: ev.status === 'setup' ? 'Delete event' : 'Started events can\'t be deleted',
+              disabled: ev.status !== 'setup' || t.events.length === 1, onclick: () => remove(ev),
+            }, '✕')))))),
+      panel(t, 'add-events', 'Add events', addForm),
+    ];
   }
 
   function dangerZone(t) {
@@ -1199,7 +1385,7 @@
         class: 'btn btn-small',
         onclick: () => {
           if (!confirm('Redo the draw? All fixtures are removed and you go back to the entry list to add players and start again.')) return;
-          act(async () => { S.t = await api('POST', `${tPath(t)}/redraw`, {}, t.id); location.hash = `#/t/${t.id}/entries`; }, 'Draw undone — add players and start again');
+          act(async () => { S.t = await api('POST', `${tPath(t)}/redraw`, withEv(t), t.id); location.hash = tabHref(t, 'entries'); }, 'Draw undone — add players and start again');
         },
       }, 'Redraw'));
   }
@@ -1224,8 +1410,8 @@
           ? h('button', {
             class: 'btn btn-primary',
             onclick: () => act(async () => {
-              S.t = await api('POST', `${tPath(t)}/knockout`, {}, t.id);
-              location.hash = `#/t/${t.id}/bracket`;
+              S.t = await api('POST', `${tPath(t)}/knockout`, withEv(t), t.id);
+              location.hash = tabHref(t, 'bracket');
             }, 'Knockout bracket drawn'),
           }, 'Draw knockout bracket')
           : h('span', { class: 'muted' }, 'Waiting for the organiser to draw the bracket.'));
@@ -1353,16 +1539,22 @@
     return t.can.score && m.a && m.b && (m.status === 'scheduled' || m.status === 'live') && stageOpen(t, m);
   }
 
+  // The tournament as seen from a match's own event (its scoring rules).
+  function forMatch(mid) {
+    const ev = S.t && eventOfMatch(S.t, mid);
+    return ev ? withEvent(S.t, ev) : null;
+  }
+
   function viewMatch() {
-    const t = S.t;
-    const confirmed = t.matches.find((x) => x.id === S.route.mid);
+    const t = forMatch(S.route.mid);
+    const confirmed = t && t.matches.find((x) => x.id === S.route.mid);
     if (!confirmed) return errorView('Match not found.');
     const m = withPending(t, confirmed);
     if (pendingOps(m.id).length && !sending.has(m.id)) sendQueue(t, m.id); // resume after navigating away
     document.title = `${nameOf(m.a)} v ${nameOf(m.b)} · ${t.name}`;
     const backTab = m.stage === 'knockout' ? 'bracket' : 'live';
     return [
-      h('a', { class: 'back', href: `#/t/${t.id}/${backTab}` }, `← ${t.name}`),
+      h('a', { class: 'back', href: tabHref(t, backTab) }, `← ${t.name}${multiEvent(t) ? ` · ${t.event.name}` : ''}`),
       h('div', { class: 'match-head' },
         h('span', {}, matchLabel(m)),
         h('span', { class: 'actions' }, connDot(), statusTag(m))),
@@ -1453,7 +1645,7 @@
   const pendingOps = (mid) => queues.get(mid) || [];
   const scoringBusy = () => sending.size > 0 || [...queues.values()].some((q) => q.length);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const confirmedMatch = (mid) => S.t && S.t.matches.find((x) => x.id === mid);
+  const confirmedMatch = (mid) => S.t && allMatches(S.t).find((x) => x.id === mid);
 
   // The match as the umpire should see it: confirmed state plus queued taps.
   function withPending(t, m) {
@@ -1559,13 +1751,14 @@
   // Keyboard scoring for umpires on a laptop.
   document.addEventListener('keydown', (e) => {
     if (S.route.name !== 'match' || !S.t || !S.t.can.score || isEditing() || e.metaKey || e.ctrlKey || e.altKey) return;
-    const confirmed = S.t.matches.find((x) => x.id === S.route.mid);
+    const t = forMatch(S.route.mid);
+    const confirmed = t && t.matches.find((x) => x.id === S.route.mid);
     if (!confirmed) return;
-    const m = withPending(S.t, confirmed);
+    const m = withPending(t, confirmed);
     const k = e.key.toLowerCase();
-    if ((k === 'a' || k === 'arrowleft') && canScore(S.t, m)) rally(S.t, m, 'a');
-    else if ((k === 'l' || k === 'arrowright') && canScore(S.t, m)) rally(S.t, m, 'b');
-    else if ((k === 'z' || k === 'backspace') && m.rallies && (canScore(S.t, m) || m.status === 'done')) undo(S.t, m);
+    if ((k === 'a' || k === 'arrowleft') && canScore(t, m)) rally(t, m, 'a');
+    else if ((k === 'l' || k === 'arrowright') && canScore(t, m)) rally(t, m, 'b');
+    else if ((k === 'z' || k === 'backspace') && m.rallies && (canScore(t, m) || m.status === 'done')) undo(t, m);
     else return;
     e.preventDefault();
   });
@@ -1608,7 +1801,7 @@
               await api('POST', '/billing/razorpay/verify', resp);
               S.upgradeFor = null;
               await load(t.id);
-              const waiting = t.entries.filter((e) => !e.confirmed).length;
+              const waiting = allEntries(t).filter((e) => !e.confirmed).length;
               toast(waiting
                 ? `Payment received — Event Pass active ✓ ${waiting} waiting ${waiting === 1 ? 'entry' : 'entries'} confirmed`
                 : 'Payment received — Event Pass active ✓');
@@ -1638,9 +1831,9 @@
   // Shown to organisers when a free tournament is full (or just hit the limit).
   function upgradeCard(t) {
     if (!S.billing.enabled || !t.can.manage || t.plan === 'pass' || !t.limits || !t.limits.entries) return null;
-    const full = t.entries.filter((e) => e.confirmed).length >= t.limits.entries;
+    const full = allEntries(t).filter((e) => e.confirmed).length >= t.limits.entries;
     // Waiting because of the plan limit (not the organiser's own maximum).
-    const waiting = full && t.status === 'setup' ? t.entries.filter((e) => !e.confirmed).length : 0;
+    const waiting = full ? allEntries(t).filter((e) => !e.confirmed).length : 0;
     if (!full && S.upgradeFor !== t.id) return null;
     return h('div', { class: 'card upgrade-card' },
       h('h2', {}, waiting
@@ -1679,7 +1872,7 @@
     return h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Plan'), pill('', 'Free')),
       t.limits && t.limits.entries
-        ? h('p', { class: 'muted small' }, `Up to ${t.limits.entries} entries — ${t.entries.filter((e) => e.confirmed).length} used. The Event Pass (${rupees()}, one-time) gives this tournament unlimited entries.`)
+        ? h('p', { class: 'muted small' }, `Up to ${t.limits.entries} entries — ${allEntries(t).filter((e) => e.confirmed).length} used. The Event Pass (${rupees()}, one-time) gives this tournament unlimited entries.`)
         : h('p', { class: 'muted small' }, 'Payments aren\'t set up yet, so there\'s no entry limit.'),
       h('div', { class: 'actions' },
         S.billing.enabled

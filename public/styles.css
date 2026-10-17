@@ -507,3 +507,24 @@ fieldset.details-set { display: grid; gap: 12px; }
   .filters[open] > summary { margin: 0; }
   .filter-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
+
+/* Events */
+.event-picker { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 10px; margin: 0 -2px 4px; scrollbar-width: thin; }
+.event-chip {
+  flex: none; display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none; font-weight: 600; font-size: 0.9rem;
+}
+.event-chip:hover { border-color: var(--accent); }
+.event-chip.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.event-chip-count { font-variant-numeric: tabular-nums; font-size: 0.78rem; opacity: 0.75; }
+.event-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.event-chip .dot.league, .event-chip .dot.knockout { background: var(--live); }
+.event-chip .dot.completed { background: currentColor; opacity: 0.5; }
+.event-chip.active .dot.setup { background: var(--on-accent); opacity: 0.5; }
+.event-title { margin: 0 0 12px; color: var(--muted); }
+.event-title strong { color: var(--text); }
+.quick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.quick-grid .check-field { margin-bottom: 6px; }
+@media (min-width: 640px) { .quick-grid { grid-template-columns: repeat(3, 1fr); } }
+.events-list .entry-name { color: var(--text); text-decoration: none; font-weight: 600; }
+.events-list .entry-name:hover { text-decoration: underline; }
