@@ -261,7 +261,34 @@
       : part))));
   }
 
-  const hasPage = (t) => Boolean(t.about || t.photos.length || Object.values(t.pageLinks || {}).some(Boolean));
+  const hasExtras = (t) => Boolean(t.notes || perkLabels(t).length || t.events.some((e) => (e.prizes || []).length));
+  const hasPage = (t) => Boolean(t.about || t.photos.length || Object.values(t.pageLinks || {}).some(Boolean) || hasExtras(t));
+
+  // ----- prizes, what's included and other details (for players)
+  const PRIZE_ICON = { winner: '🥇', runner_up: '🥈', semis: '🥉', third: '🥉' };
+  const perkLabels = (t) => [...((t.perks && t.perks.items) || []).map((k) => CAT.PERKS[k]).filter(Boolean), ...((t.perks && t.perks.other) || [])];
+  const prizeMoney = (ev) => (ev.prizes || []).reduce((sum, p) => sum + (p.cash || 0), 0);
+
+  function prizesCard(t, events) {
+    const withPrizes = events.filter((ev) => (ev.prizes || []).length);
+    const perks = perkLabels(t);
+    if (!withPrizes.length && !perks.length && !t.notes) return null;
+    const named = events.length > 1;
+    return h('div', { class: 'card prizes-card' },
+      withPrizes.length
+        ? [h('h2', {}, 'Prizes'),
+          withPrizes.map((ev) => [
+            named ? h('h3', { class: 'prize-event' }, ev.name) : null,
+            h('ul', { class: 'prize-list' }, ev.prizes.map((p) => h('li', {},
+              h('span', { class: 'prize-icon', 'aria-hidden': 'true' }, PRIZE_ICON[p.place] || '🏅'),
+              h('span', { class: 'prize-place' }, CAT.placeLabel(p.place)),
+              h('span', { class: 'prize-what' }, [p.cash ? rupees(p.cash) : null, p.reward].filter(Boolean).join(' + ')))))])]
+        : null,
+      perks.length
+        ? [h('h2', {}, 'What\'s included'), h('ul', { class: 'perk-list' }, perks.map((x) => h('li', {}, x)))]
+        : null,
+      t.notes ? [h('h2', {}, 'Other details'), h('div', { class: 'about-text' }, richText(t.notes))] : null);
+  }
 
   function panelAbout(t) {
     const L = t.pageLinks || {};
@@ -274,6 +301,7 @@
           t.about ? h('div', { class: 'about-text' }, richText(t.about)) : null,
           links.length ? h('div', { class: 'actions' }, links.map(([k, label]) => h('a', { class: 'btn btn-small', href: L[k], target: '_blank', rel: 'noopener nofollow' }, label))) : null)
         : null,
+      prizesCard(t, t.events),
       photos.length
         ? h('div', { class: 'card' },
           h('h2', {}, 'Photos'),
@@ -575,7 +603,7 @@
   }
 
   // ----- find a tournament (home page)
-  const FILTER_KEYS = ['q', 'sport', 'event', 'age', 'level', 'country', 'region', 'city', 'when', 'open'];
+  const FILTER_KEYS = ['q', 'sport', 'event', 'age', 'level', 'country', 'region', 'city', 'when', 'open', 'prizes'];
   const WHEN = [['upcoming', 'Upcoming & live'], ['week', 'Next 7 days'], ['month', 'Next 30 days'], ['past', 'Past'], ['any', 'Any time']];
   const FILTERS_KEY = 'tonament:filters';
 
@@ -666,7 +694,10 @@
             select('city', 'City', cities, { disabled: !f.country || !cities.length }),
             h('label', { class: 'check-field filter-open' },
               h('input', { type: 'checkbox', checked: f.open === '1', onchange: (e) => setFilter('open', e.target.checked ? '1' : '') }),
-              h('span', {}, h('strong', {}, 'Open for entries')))))),
+              h('span', {}, h('strong', {}, 'Open for entries'))),
+            h('label', { class: 'check-field filter-open' },
+              h('input', { type: 'checkbox', checked: f.prizes === '1', onchange: (e) => setFilter('prizes', e.target.checked ? '1' : '') }),
+              h('span', {}, h('strong', {}, 'Prize money')))))),
       h('div', { id: 'find-results' }, findResults()));
   }
 
@@ -733,6 +764,11 @@
       // Events by short name ("MS U19 · XD") once a tournament has real categories.
       (t.events || []).length > 1 || ((t.events || [])[0] && t.events[0] !== 'Open')
         ? h('div', { class: 't-card-events' }, t.events.map((e) => h('span', { class: 'event-tag' }, e)))
+        : null,
+      t.prizeTotal || t.meals
+        ? h('div', { class: 't-card-events' },
+          t.prizeTotal ? h('span', { class: 'event-tag perk-tag' }, `🏆 ${rupees(t.prizeTotal)} in prizes`) : null,
+          t.meals ? h('span', { class: 'event-tag perk-tag' }, 'Meals included') : null)
         : null,
       h('div', { class: 'muted small' }, [sport ? sport.name : t.sport, (t.events || []).length > 1 ? null : t.formatName, `${t.entries} entries`].filter(Boolean).join(' · ')));
   }
@@ -1130,7 +1166,7 @@
       perEvent ? eventPicker(tt, ev) : null,
       h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: tabHref(t, x.id), class: x.id === active ? 'active' : '' }, x.label))),
       perEvent && multiEvent(tt)
-        ? h('p', { class: 'event-title' }, h('strong', {}, ev.name), ' · ', ev.formatName, ev.fee ? ` · ${money(ev.fee)} entry` : '', ev.status !== 'setup' ? ` · ${STATUS[ev.status]}` : '')
+        ? h('p', { class: 'event-title' }, h('strong', {}, ev.name), ' · ', ev.formatName, ev.fee ? ` · ${money(ev.fee)} entry` : '', prizeMoney(ev) ? ` · 🏆 ${rupees(prizeMoney(ev))} in prizes` : '', ev.status !== 'setup' ? ` · ${STATUS[ev.status]}` : '')
         : null,
       h('section', {}, panels[active](t)),
       brandFooter(tt),
@@ -1229,6 +1265,7 @@
     if (!t.can.manage) {
       return [
         venueCard(t),
+        prizesCard(t, [t.event]),
         setup && t.entriesOpen ? publicEntryCard(t) : null,
         setup && t.solos.length
           ? h('div', { class: 'card' }, h('h2', {}, `Looking for a partner (${t.solos.length})`),
@@ -1240,8 +1277,8 @@
         list,
       ];
     }
-    if (!setup) return [upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), list, tournamentSettingsCard(t)];
-    return [upgradeCard(t), venueCard(t), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), tournamentSettingsCard(t)];
+    if (!setup) return [upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, prizeSettingsCard(t), tournamentSettingsCard(t)];
+    return [upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
   }
 
   function addEntriesForm(t, walkIn) {
@@ -1714,6 +1751,67 @@
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
     syncFormat(form);
     return panel(t, `event-${t.eventId}`, multiEvent(t) ? `Event settings · ${t.event.name}` : `Event settings · ${t.formatName}`, form);
+  }
+
+  // Prize money, trophies and rewards for the selected event; editable at any stage.
+  function prizeSettingsCard(t) {
+    if (!t.can.manage) return null;
+    const list = h('div', { class: 'ev-rows' });
+    const touched = () => list.closest('form')?.setAttribute('data-dirty', '');
+    const addRow = (p) => {
+      const standard = Boolean(CAT.PLACES[p.place]);
+      const place = h('select', {
+        value: standard ? p.place : 'custom',
+        onchange: () => { customField.hidden = place.value !== 'custom'; if (!customField.hidden) custom.focus(); },
+      }, Object.entries(CAT.PLACES).map(([v, l]) => h('option', { value: v }, l)), h('option', { value: 'custom' }, 'Custom…'));
+      const custom = h('input', { maxlength: 40, value: standard ? '' : p.place, placeholder: 'e.g. Best young player' });
+      const customField = field('Prize name', custom, 'prize-custom');
+      customField.hidden = standard;
+      const cash = h('input', { type: 'number', inputmode: 'numeric', min: 0, max: 10000000, step: 1, value: p.cash || '', placeholder: 'None' });
+      const reward = h('input', { maxlength: 80, value: p.reward || '', placeholder: 'e.g. Trophy + medals' });
+      const row = h('div', { class: 'ev-row prize-row' },
+        field('Place', place, 'prize-place'),
+        h('button', { type: 'button', class: 'icon-btn ev-remove', 'aria-label': 'Remove this prize', title: 'Remove', onclick: () => { row.remove(); touched(); } }, '✕'),
+        customField,
+        field('Prize money (₹)', cash, 'prize-cash'),
+        field('Trophy or reward', reward, 'prize-reward'));
+      row.read = () => ({
+        place: place.value === 'custom' ? custom.value.trim() : place.value,
+        cash: cash.value === '' ? null : Number(cash.value),
+        reward: reward.value.trim() || null,
+      });
+      list.append(row);
+    };
+    const saved = t.event.prizes || [];
+    for (const p of saved.length ? saved : [{ place: 'winner' }, { place: 'runner_up' }]) addRow(p);
+
+    const form = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        // Rows left blank (no money and no reward) are skipped.
+        const prizes = [...list.children].map((r) => r.read()).filter((p) => p.cash || p.reward);
+        const unnamed = prizes.find((p) => !p.place);
+        if (unnamed) { toast('Give the custom prize a name', true); return; }
+        saveForm(form, async () => { S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { prizes }, t.id); }, 'Prizes saved');
+      },
+    },
+    h('p', { class: 'hint', style: 'margin:0' }, 'Prize money, trophies and rewards — shown to players before they enter. Leave a row blank to skip it.'),
+    list,
+    h('div', { class: 'actions' },
+      h('button', {
+        type: 'button',
+        class: 'btn btn-small',
+        onclick: () => {
+          const used = new Set([...list.children].map((r) => r.read().place));
+          addRow({ place: Object.keys(CAT.PLACES).find((k) => !used.has(k)) || 'custom' });
+          touched();
+        },
+      }, '+ Add prize'),
+      h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save prizes')));
+    const total = prizeMoney(t.event);
+    const summary = [multiEvent(t) ? `Prizes · ${t.event.name}` : 'Prizes', total ? rupees(total) : saved.length ? `${saved.length} set` : null].filter(Boolean).join(' · ');
+    return panel(t, `prizes-${t.eventId}`, summary, form);
   }
 
   // ----- events tab (organisers): add, reorder, delete
@@ -2193,6 +2291,7 @@
 
   // ---------- paid plans (Razorpay checkout)
   const money = (paise) => `₹${(paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+  const rupees = (n) => `₹${n.toLocaleString('en-IN')}`;
 
   function loadRazorpay() {
     if (window.Razorpay) return Promise.resolve();
@@ -2402,12 +2501,18 @@
     const saved = t.brandingSettings || {};
     const B = draft ? { ...saved, orgName: draft.orgName, accent: draft.accentOn ? draft.accent : '' } : saved;
     const about = draft ? draft.about : t.about || '';
+    const perks = draft ? draft.perks : (t.perks && t.perks.items) || [];
+    const perksOther = draft ? draft.perksOther : ((t.perks && t.perks.other) || []).join(', ');
+    const notes = draft ? draft.notes : t.notes || '';
     const limits = t.mediaLimits || { photos: 3, sponsors: 0 };
     const keepDraft = (f) => {
       const fd = new FormData(f);
       S.pageDraft = {
         tid: t.id,
         about: fd.get('about') || '',
+        perks: fd.getAll('perk'),
+        perksOther: fd.get('perksOther') || '',
+        notes: fd.get('notes') || '',
         pageLinks: { website: fd.get('website') || '', instagram: fd.get('instagram') || '', whatsapp: fd.get('whatsapp') || '' },
         orgName: fd.get('orgName') || '',
         accent: fd.get('accent') || '',
@@ -2451,6 +2556,8 @@
         const fd = new FormData(form);
         const body = {
           about: fd.get('about') || '',
+          perks: { items: fd.getAll('perk'), other: (fd.get('perksOther') || '').split(',').map((x) => x.trim()).filter(Boolean) },
+          notes: fd.get('notes') || '',
           pageLinks: { website: fd.get('website') || '', instagram: fd.get('instagram') || '', whatsapp: fd.get('whatsapp') || '' },
           ...(paid && { branding: { orgName: fd.get('orgName') || '', accent: fd.get('accentOn') ? fd.get('accent') : '' } }),
         };
@@ -2459,11 +2566,18 @@
       oninput: () => keepDraft(form),
       onchange: () => keepDraft(form),
     },
-    field('About this tournament', h('textarea', { name: 'about', rows: 4, maxlength: 2000, value: about, placeholder: 'What it is, who can play, prizes, contact…' })),
+    field('About this tournament', h('textarea', { name: 'about', rows: 4, maxlength: 2000, value: about, placeholder: 'What it is, who can play, contact…' })),
     h('div', { class: 'grid-2' },
       field('Website', h('input', { name: 'website', type: 'url', value: L.website || '', placeholder: 'https://' })),
       field('Instagram', h('input', { name: 'instagram', type: 'url', value: L.instagram || '', placeholder: 'https://instagram.com/…' }))),
     field('WhatsApp group', h('input', { name: 'whatsapp', type: 'url', value: L.whatsapp || '', placeholder: 'https://chat.whatsapp.com/…' })),
+
+    h('fieldset', { class: 'details-set' }, h('legend', {}, 'What\'s included'),
+      h('p', { class: 'hint', style: 'margin:0' }, 'What players get with their entry. Prizes are set per event, on the Players tab.'),
+      h('div', { class: 'quick-grid perk-grid' }, Object.entries(CAT.PERKS).map(([k, label]) => h('label', { class: 'check-field' },
+        h('input', { type: 'checkbox', name: 'perk', value: k, checked: perks.includes(k) }), h('span', {}, label)))),
+      field('Anything else', h('input', { name: 'perksOther', maxlength: 220, value: perksOther, placeholder: 'e.g. Free physio, Photo booth' }), null, 'Separate items with commas (up to 5).')),
+    field('Other details', h('textarea', { name: 'notes', rows: 4, maxlength: 2000, value: notes, placeholder: 'Reporting time, dress code, shuttles used, rules, contact person…' }), null, 'Shown to players with the prizes. Links become clickable.'),
 
     h('fieldset', { class: 'details-set' }, h('legend', {}, 'Cover image'),
       t.cover ? h('img', { class: 'cover-preview', src: t.cover, alt: 'Cover' }) : h('p', { class: 'hint', style: 'margin:0' }, 'A poster or a photo — shown at the top of the page and on search results.'),
@@ -2517,7 +2631,7 @@
         ]),
     S.uploading ? h('p', { class: 'hint uploading', role: 'status' }, `Uploading ${S.uploading} image${S.uploading > 1 ? 's' : ''}…`) : null,
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save page')));
-    return panel(t, 'page', 'Public page · about, photos and branding', form);
+    return panel(t, 'page', 'Public page · about, what\'s included, photos, branding', form);
   }
 
   // ----- visibility (owner controls who can see the tournament)

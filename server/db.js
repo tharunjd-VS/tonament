@@ -215,11 +215,16 @@ CREATE TABLE IF NOT EXISTS media (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS media_t ON media(tournament_id, kind, position);
+
+-- What an entry includes (meals, T-shirt, …) and other details for players.
+-- Prizes live in each event's config.
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS perks JSONB;
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS notes TEXT;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 async function migrate(db) {
   try {

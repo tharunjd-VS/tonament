@@ -27,6 +27,24 @@
     { key: 'OD', discipline: 'doubles', gender: 'open', label: 'Open Doubles' },
   ];
 
+  // Prize places (custom text is allowed too) and what an entry includes.
+  const PLACES = { winner: 'Winner', runner_up: 'Runner-up', semis: 'Semi-finalists', third: 'Third place', fourth: 'Fourth place' };
+  const PERKS = {
+    shuttles: 'Shuttles provided',
+    water: 'Drinking water / water bottle',
+    snacks: 'Snacks / refreshments',
+    breakfast: 'Breakfast',
+    lunch: 'Lunch',
+    dinner: 'Dinner',
+    tshirt: 'Event T-shirt / jersey',
+    medal: 'Medal for every player',
+    certificate: 'Participation certificate',
+    goodies: 'Kit bag / goodies',
+    parking: 'Parking',
+    firstaid: 'First aid / physio on site',
+  };
+  const placeLabel = (place) => PLACES[place] || place;
+
   const GENDER_WORD = { men: 'Men\'s', women: 'Women\'s', mixed: 'Mixed', open: 'Open' };
   const DISCIPLINE_WORD = { singles: 'Singles', doubles: 'Doubles' };
   const SHORT_LEVEL = { Beginner: 'Beg', Intermediate: 'Int', Advanced: 'Adv' };
@@ -72,5 +90,5 @@
     return [base, e.age !== 'Open' ? e.age : null, level].filter(Boolean).join(' ');
   }
 
-  return { DISCIPLINES, GENDERS, LEVELS, AGES, PRESETS, normalize, eventName, shortName };
+  return { DISCIPLINES, GENDERS, LEVELS, AGES, PRESETS, PLACES, PERKS, placeLabel, normalize, eventName, shortName };
 });

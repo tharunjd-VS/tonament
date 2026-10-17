@@ -539,6 +539,22 @@ fieldset.details-set { display: grid; gap: 12px; }
 .solo-card .entries li { flex-wrap: wrap; }
 .pair-with { width: auto; max-width: 11rem; padding: 6px 10px; font-size: 0.875rem; }
 
+/* Prizes and what's included */
+.prizes-card h2 { margin-top: 18px; }
+.prizes-card h2:first-child { margin-top: 0; }
+.prize-event { font-size: 0.95rem; margin: 12px 0 4px; }
+.prize-list, .perk-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.prize-list li { display: grid; grid-template-columns: 24px auto 1fr; gap: 4px 8px; align-items: baseline; }
+.prize-place { font-weight: 600; }
+.prize-what { text-align: right; font-weight: 700; }
+.perk-list { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.perk-list li::before { content: '✓'; display: inline-block; width: 1.4em; font-weight: 700; color: var(--accent-text); }
+.prize-row .prize-place, .prize-row .prize-custom { grid-column: 1 / 3; }
+.prize-row .prize-cash { grid-column: 1; }
+.prize-row .prize-reward { grid-column: 2; }
+.perk-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.perk-tag { background: var(--surface); }
+
 /* Event list builder */
 .ev-rows { display: grid; gap: 10px; }
 .ev-row {

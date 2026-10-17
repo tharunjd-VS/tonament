@@ -20,7 +20,24 @@ const VISIBILITY = ['private', 'link', 'public'];
 // Settings that belong to the tournament as a whole; everything else in a
 // config (format details, scoring, caps) belongs to each event.
 const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
-const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'discipline', 'gender', 'age', 'level'];
+const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'discipline', 'gender', 'age', 'level'];
+// Event settings that can still change once the event has started.
+const LIVE_EVENT_KEYS = ['lateEntry', 'prizes'];
+const MAX_PRIZE = 10000000; // ₹1 crore
+
+// Prizes for one event: [{ place, cash (whole rupees), reward }].
+function prizesOf(list) {
+  if (!Array.isArray(list)) fail(400, 'prizes must be a list');
+  if (list.length > 10) fail(400, 'Up to 10 prizes per event');
+  return list.map((p) => {
+    const place = text(p && p.place, 'Prize place', { max: 40 });
+    const cash = p.cash === undefined || p.cash === null || p.cash === '' ? null : Number(p.cash);
+    if (cash !== null && (!Number.isInteger(cash) || cash < 0 || cash > MAX_PRIZE)) fail(400, 'Prize money must be a whole number of rupees');
+    const reward = text(p.reward, 'Reward', { max: 80, optional: true });
+    if (!cash && !reward) fail(400, `Add prize money or a reward for ${catalog.placeLabel(place)}`);
+    return { place, cash: cash || null, reward };
+  });
+}
 // Tournament page images. Free tournaments get a cover and a few photos;
 // paid ones also get their logo, colours and sponsors, and more photos.
 const MEDIA_KINDS = ['logo', 'cover', 'photo', 'sponsor'];
@@ -134,6 +151,10 @@ const saveDetails = (q, t, d) =>
     ...DETAIL_COLUMNS.map((c) => d[c]), t.id,
   ]);
 
+// Total prize money (whole rupees) across a tournament's events.
+const PRIZE_TOTAL_SQL = `(SELECT COALESCE(SUM((p->>'cash')::int), 0)::int FROM events ev,
+  jsonb_array_elements(COALESCE(ev.config->'prizes', '[]'::jsonb)) p WHERE ev.tournament_id = t.id)`;
+
 // Self-entry is open on the tournament and at least one event hasn't started.
 const ENTRIES_OPEN_SQL = `COALESCE((t.config->>'selfEntry')::boolean, true)
   AND (t.config->>'entriesCloseAt' IS NULL OR (t.config->>'entriesCloseAt')::timestamptz > now())
@@ -145,6 +166,8 @@ const CARD_COLUMNS = `t.id, t.name, t.venue, t.sport, t.format, t.status, t.visi
   (${ENTRIES_OPEN_SQL}) AS "entriesOpen",
   (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id AND e.paired_into IS NULL) AS entries,
   (SELECT m.id FROM media m WHERE m.tournament_id = t.id AND m.kind = 'cover' LIMIT 1) AS "coverId",
+  ${PRIZE_TOTAL_SQL} AS "prizeTotal",
+  COALESCE(t.perks->'items' ?| array['lunch', 'dinner'], false) AS meals,
   (SELECT COALESCE(json_agg(json_build_object('discipline', ev.discipline, 'gender', ev.gender, 'age', ev.age, 'level', ev.level, 'name', ev.name)
      ORDER BY ev.position, ev.id), '[]') FROM events ev WHERE ev.tournament_id = t.id) AS events`;
 // Cards list their events by short name ("MS U19", "XD").
@@ -596,6 +619,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       // Only the organiser's own maximum is shown publicly, never the plan limit.
       placesLeft: t.config.maxEntries ? Math.max(0, t.config.maxEntries - confirmed) : null,
       fee: feeOf(t),
+      prizes: t.config.prizes || [],
       ...(access.can.manage && feeOf(t) && {
         feeTotal: visible.filter((e) => e.fee_status === 'paid' || e.fee_status === 'cash').reduce((sum, e) => sum + (e.fee_amount || 0), 0),
       }),
@@ -731,6 +755,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const branding = t.branding || {};
     return {
       about: t.about,
+      perks: t.perks || { items: [], other: [] },
+      notes: t.notes,
       pageLinks: t.links || {}, // website / Instagram / WhatsApp (not the share links)
       cover: cover ? mediaUrl(cover.id) : null,
       photos: (access.can.manage ? of('photo') : of('photo').slice(0, photoLimit)).map(photo),
@@ -842,6 +868,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (f('sport')) add('t.sport = ?', f('sport'));
     if (f('q')) add(`(t.name ILIKE ? OR COALESCE(t.venue, '') ILIKE $${params.length + 1})`, `%${f('q').replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
     if (['1', 'true'].includes(f('open'))) where.push(ENTRIES_OPEN_SQL);
+    if (['1', 'true'].includes(f('prizes'))) where.push(`${PRIZE_TOTAL_SQL} > 0`);
     // Event filters (type, age group, level) must all match the same event.
     const preset = catalog.PRESETS.find((p) => p.key === f('event'));
     const evWhere = [];
@@ -975,6 +1002,21 @@ function createService(db, { mailer, fetchImpl } = {}) {
         if (about.length > 2000) fail(400, 'About must be at most 2,000 characters');
         await q('UPDATE tournaments SET about = $1 WHERE id = $2', [about || null, t.id]);
       }
+      if (input.perks !== undefined) {
+        const p = input.perks || {};
+        const items = Array.isArray(p.items) ? [...new Set(p.items)] : [];
+        const unknown = items.find((k) => !catalog.PERKS[k]);
+        if (unknown) fail(400, `Unknown item: ${unknown}`);
+        const other = (Array.isArray(p.other) ? p.other : []).map((x) => (typeof x === 'string' ? x.trim().replace(/\s+/g, ' ') : '')).filter(Boolean);
+        if (other.length > 5) fail(400, 'Add up to 5 other items');
+        if (other.some((x) => x.length > 40)) fail(400, 'Other items must be at most 40 characters each');
+        await q('UPDATE tournaments SET perks = $1::jsonb WHERE id = $2', [JSON.stringify({ items, other }), t.id]);
+      }
+      if (input.notes !== undefined) {
+        const notes = typeof input.notes === 'string' ? input.notes.trim().replace(/\r\n/g, '\n') : '';
+        if (notes.length > 2000) fail(400, 'Other details must be at most 2,000 characters');
+        await q('UPDATE tournaments SET notes = $1 WHERE id = $2', [notes || null, t.id]);
+      }
       if (input.pageLinks !== undefined) {
         const l = input.pageLinks || {};
         const links = {
@@ -1009,7 +1051,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // switch can change once the event has started.
   async function applyEventSettings(q, ev, input) {
     const keys = Object.keys(input).filter((k) => input[k] !== undefined && (EVENT_KEYS.includes(k) || k === 'name' || k === 'fee'));
-    if (ev.status !== 'setup' && keys.some((k) => k !== 'lateEntry')) {
+    if (ev.status !== 'setup' && keys.some((k) => !LIVE_EVENT_KEYS.includes(k))) {
       fail(409, 'Settings are locked once the tournament has started');
     }
     if (input.format !== undefined && !FORMATS[input.format]) fail(400, 'Unknown format');
@@ -1021,6 +1063,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       config.partners = input.partners;
     }
     if (input.balancePairs !== undefined) config.balancePairs = Boolean(input.balancePairs);
+    if (input.prizes !== undefined) config.prizes = prizesOf(input.prizes);
     if (input.fee !== undefined) {
       const fee = int(input.fee === '' || input.fee === null ? 0 : input.fee, 0, MAX_FEE, 0, 'Entry fee (in paise)');
       if (fee && !ev.official) fail(403, 'Entry fees are only available for tournaments organised by Tonament');
