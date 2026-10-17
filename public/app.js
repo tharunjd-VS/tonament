@@ -145,6 +145,7 @@
     const params = new URLSearchParams(qs || '');
     const prev = S.route;
     S.error = null;
+    S.errorCode = null;
 
     if (parts[0] === 't' && parts[1]) {
       const id = parts[1];
@@ -211,6 +212,7 @@
       S.connected = true;
     } catch (e) {
       S.error = e.message;
+      S.errorCode = e.code;
     }
   }
 
@@ -245,6 +247,12 @@
         render(true);
       }
     } catch (e) {
+      if (e.code === 'private') { // made private while we were watching
+        S.error = e.message;
+        S.errorCode = e.code;
+        render();
+        return;
+      }
       if (/not found/i.test(e.message)) {
         toast('This tournament was deleted');
         location.hash = '#/';
@@ -274,7 +282,7 @@
     }
     S.pendingRender = false;
     let view;
-    if (S.error) view = errorView(S.error);
+    if (S.error) view = errorView(S.error, S.errorCode);
     else if (S.route.name === 'new') view = viewNew();
     else if (S.route.name === 'signin' || S.route.name === 'signup') view = viewAuth();
     else if (S.route.name === 'forgot') view = viewForgot();
@@ -291,8 +299,16 @@
     if (S.pendingRender && !isEditing()) render();
   }, 0));
 
-  function errorView(message) {
+  function errorView(message, code) {
     document.title = 'Tonament';
+    if (code === 'private') {
+      return h('div', { class: 'card center' },
+        h('h2', {}, '🔒 This tournament isn\'t public'),
+        h('p', { class: 'muted' }, 'Only the organisers can see it right now. Ask them for access, or check back once it\'s published.'),
+        h('div', { class: 'actions', style: 'justify-content:center' },
+          S.me ? null : h('a', { class: 'btn btn-primary', href: `#/signin?next=${encodeURIComponent(location.hash.slice(1))}` }, 'Sign in'),
+          h('a', { class: 'btn', href: '#/' }, 'Back to home')));
+    }
     return h('div', { class: 'card center' },
       h('h2', {}, 'Something went wrong'),
       h('p', { class: 'muted' }, message),
@@ -386,7 +402,7 @@
     return h('a', { class: 'card t-card', href: `#/t/${t.id}` },
       h('div', { class: 'card-head' },
         h('h3', {}, t.name),
-        h('span', {}, roleName ? pill('org', roleName) : null, ' ', pill(t.status, STATUS[t.status]))),
+        h('span', {}, visibilityPill(t.visibility), ' ', roleName ? pill('org', roleName) : null, ' ', pill(t.status, STATUS[t.status]))),
       h('div', { class: 'muted small' }, [sport ? sport.name : t.sport, t.formatName, `${t.entries} entries`, t.venue].filter(Boolean).join(' · ')));
   }
 
@@ -511,10 +527,11 @@
     const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, team: panelTeam };
     return [
       h('header', { class: 't-header' },
-        h('div', { class: 't-title' }, h('h1', {}, t.name), pill(t.status, STATUS[t.status])),
+        h('div', { class: 't-title' }, h('h1', {}, t.name), pill(t.status, STATUS[t.status]), t.can.score ? visibilityPill(t.visibility) : null),
         h('p', { class: 'muted small' },
           [t.sport.name, t.formatName, t.venue, entryStatusLine(t)].filter(Boolean).join(' · '), '  ', connDot())),
       roleBar(t),
+      t.visibility === 'private' ? visibilityBanner(t) : null,
       h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: `#/t/${t.id}/${x.id}`, class: x.id === active ? 'active' : '' }, x.label))),
       h('section', {}, panels[active](t)),
     ];
@@ -1375,7 +1392,59 @@
     return h('div', { class: 'admin-bar' },
       h('span', {}, `🔑 ${label}`,
         !S.me ? h('span', { class: 'muted' }, ' (via a share link — ', h('a', { href: `#/signin?next=${encodeURIComponent(`/t/${t.id}`)}` }, 'sign in'), ' to keep it in your account)') : null),
-      h('button', { class: 'btn btn-small btn-ghost', onclick: () => copy(`${location.origin}/#/t/${t.id}`, 'Public link copied') }, 'Copy public link'));
+      h('button', {
+        class: 'btn btn-small btn-ghost',
+        onclick: () => copy(`${location.origin}/#/t/${t.id}`, t.visibility === 'private' ? 'Link copied — only your team can open it until you publish' : 'Public link copied'),
+      }, 'Copy public link'));
+  }
+
+  // ----- visibility (owner controls who can see the tournament)
+  const VISIBILITY = [
+    ['private', 'Private', 'Only your team can see it. No public sign-ups.'],
+    ['link', 'Link only', 'Anyone with the link can view and enter. Not listed on Tonament.'],
+    ['public', 'Public', 'Listed on the Tonament home page. Anyone can view and enter.'],
+  ];
+  function visibilityPill(v) {
+    if (v === 'private') return pill('waiting', '🔒 Private');
+    if (v === 'link') return pill('waiting', 'Link only');
+    return null;
+  }
+  function setVisibility(t, v) {
+    const label = VISIBILITY.find((x) => x[0] === v)[1];
+    act(async () => { S.t = await api('POST', `${tPath(t)}/visibility`, { visibility: v }, t.id); },
+      v === 'public' ? 'Published — your tournament is public' : `Visibility: ${label}`);
+  }
+  function visibilityControl(t) {
+    const current = VISIBILITY.find((x) => x[0] === t.visibility) || VISIBILITY[0];
+    return h('div', { class: 'visibility' },
+      h('div', { class: 'seg', role: 'group', 'aria-label': 'Who can see this tournament' },
+        VISIBILITY.map(([v, label]) => h('button', {
+          type: 'button',
+          'aria-pressed': String(v === t.visibility),
+          onclick: () => { if (v !== t.visibility) setVisibility(t, v); },
+        }, label))),
+      h('p', { class: 'hint', style: 'margin:8px 0 0' }, current[2]));
+  }
+  // Top of the page while private.
+  function visibilityBanner(t) {
+    if (!t.can.own) {
+      return t.can.score
+        ? h('div', { class: 'banner info' }, h('span', {}, '🔒 ', h('strong', {}, 'Private'), ' — only the team can see this. The owner can publish it.'))
+        : null;
+    }
+    return h('div', { class: 'banner info visibility-banner' },
+      h('div', {},
+        h('div', {}, '🔒 ', h('strong', {}, 'Private'), ' — only your team can see this.'),
+        h('div', { class: 'muted small' }, 'Publish when you\'re ready for players and spectators, or share it by link only.')),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn btn-primary', onclick: () => setVisibility(t, 'public') }, 'Publish'),
+        h('button', { class: 'btn btn-ghost', onclick: () => setVisibility(t, 'link') }, 'Link only')));
+  }
+  function visibilityCard(t) {
+    if (!t.can.own) return null;
+    return h('div', { class: 'card' },
+      h('h2', {}, 'Who can see this tournament'),
+      visibilityControl(t));
   }
 
   async function loadMembers(t) {
@@ -1403,6 +1472,7 @@
       h('button', { class: 'btn btn-small', onclick: () => copy(url, msg) }, 'Copy link'));
 
     return [
+      visibilityCard(t),
       h('div', { class: 'card' },
         h('h2', {}, 'Team'),
         h('p', { class: 'muted small' }, 'Add people by email. If they don\'t have an account yet, they get access as soon as they sign up with that email.',

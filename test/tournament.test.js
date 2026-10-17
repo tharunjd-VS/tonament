@@ -35,7 +35,7 @@ const names = (n) => Array.from({ length: n }, (_, i) => `Player ${i + 1}`);
 test('league + knockout: full tournament from draw to champion', async () => {
   const key = OWNER;
   const { id } = await svc.createTournament(OWNER, {
-    name: 'Club Open',
+    visibility: 'public', name: 'Club Open',
     format: 'league_knockout',
     groups: 2,
     qualifiers: 2,
@@ -95,7 +95,7 @@ test('league + knockout: full tournament from draw to champion', async () => {
 
 test('knockout only with byes', async () => {
   const key = OWNER;
-  const { id } = await svc.createTournament(OWNER, { name: 'Cup', format: 'knockout' });
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'Cup', format: 'knockout' });
   await svc.addEntries(id, key, names(5));
   const t = await svc.start(id, key);
   const ko = t.matches;
@@ -113,7 +113,7 @@ test('knockout only with byes', async () => {
 
 test('undo of a knockout win is blocked once the next match starts', async () => {
   const key = OWNER;
-  const { id } = await svc.createTournament(OWNER, { name: 'Cup', format: 'knockout' });
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'Cup', format: 'knockout' });
   await svc.addEntries(id, key, names(4));
   const t = await svc.start(id, key);
   const [s1, s2] = t.matches.filter((m) => m.round === 1);
@@ -132,7 +132,7 @@ test('undo of a knockout win is blocked once the next match starts', async () =>
 test('league only completes when all matches are played', async () => {
   const key = OWNER;
   const { id } = await svc.createTournament(OWNER, {
-    name: 'Ladder',
+    visibility: 'public', name: 'Ladder',
     format: 'league',
     groups: 1,
     scoring: { bestOf: 1, points: 11, cap: 15 },
@@ -147,7 +147,7 @@ test('league only completes when all matches are played', async () => {
 
 test('simultaneous rallies on one match are all counted', async () => {
   const key = OWNER;
-  const { id } = await svc.createTournament(OWNER, { name: 'Race', format: 'knockout' });
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'Race', format: 'knockout' });
   await svc.addEntries(id, key, ['A', 'B']);
   const [m] = (await svc.start(id, key)).matches;
   await Promise.all(Array.from({ length: 10 }, (_, i) => svc.rally(id, key, m.id, i % 2 ? 'b' : 'a')));
@@ -157,10 +157,10 @@ test('simultaneous rallies on one match are all counted', async () => {
 });
 
 test('validation and permissions', async () => {
-  await assert.rejects(svc.createTournament(OWNER, { name: '  ' }), /required/);
+  await assert.rejects(svc.createTournament(OWNER, { visibility: 'public', name: '  ' }), /required/);
   await assert.rejects(svc.createTournament({}, { name: 'X' }), /Sign in/);
   const key = OWNER;
-  const { id } = await svc.createTournament(OWNER, { name: 'X', groups: 2, qualifiers: 3 });
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'X', groups: 2, qualifiers: 3 });
   await assert.rejects(svc.addEntries(id, { key: 'wrong' }, ['A']), /organiser/);
   await svc.addEntries(id, key, ['A', 'B', 'C']);
   await assert.rejects(svc.addEntries(id, key, ['a']), /already entered/);
@@ -177,7 +177,7 @@ test('validation and permissions', async () => {
 
 test('reorder entries sets the seeding', async () => {
   const key = OWNER;
-  const { id } = await svc.createTournament(OWNER, { name: 'X' });
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'X' });
   let t = await svc.addEntries(id, key, ['A', 'B', 'C']);
   const ids = t.entries.map((e) => e.id).reverse();
   t = await svc.reorderEntries(id, key, ids);
@@ -190,11 +190,11 @@ test('roles: owner, organiser, umpire, share links and site admin', async () => 
   const ump = { user: { email: 'ump@example.com', isAdmin: false } };
   const stranger = { user: { email: 'nobody@example.com', isAdmin: false } };
   const admin = { user: { email: 'boss@example.com', isAdmin: true } };
-  const { id } = await svc.createTournament(OWNER, { name: 'Roles', format: 'knockout' });
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'Roles', format: 'knockout' });
 
   let t = await svc.getTournament(id, OWNER);
   assert.equal(t.role, 'owner');
-  assert.deepEqual(t.can, { score: true, manage: true, delete: true, claim: false });
+  assert.deepEqual(t.can, { score: true, manage: true, delete: true, own: true, claim: false });
   const { organiser: orgLink, scorer: scorerLink } = t.links;
 
   // Team members are added by email, before or after they sign up.
@@ -245,7 +245,7 @@ test('roles: owner, organiser, umpire, share links and site admin', async () => 
 });
 
 test('ownerless tournaments can be claimed with the organiser link', async () => {
-  const { id } = await svc.createTournament(OWNER, { name: 'Legacy' });
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'Legacy' });
   const { organiser: link } = (await svc.getTournament(id, OWNER)).links;
   await db.query(`DELETE FROM members WHERE tournament_id = $1`, [id]); // as if created before accounts
   const me = { user: { email: 'new-owner@example.com', isAdmin: false } };
@@ -321,7 +321,7 @@ test('HTTP: roles, invites before signup, caching and cross-site protection', as
       const anon = client();
       assert.equal((await anon('POST', '/api/tournaments', { name: 'Nope' })).status, 401);
       await owner('POST', '/api/auth/signup', { name: 'Olu', email: 'olu@x.dev', password: 'password123' });
-      const created = await owner('POST', '/api/tournaments', { name: 'Live Test', format: 'knockout' });
+      const created = await owner('POST', '/api/tournaments', { visibility: 'public', name: 'Live Test', format: 'knockout' });
       assert.equal(created.status, 201);
       const { id } = created.data;
       assert.match(id, /^live-test-[0-9a-f]{6}$/);
@@ -492,7 +492,7 @@ test('team invites are emailed', async () => {
       const owner = client();
       await owner('POST', '/api/auth/signup', { name: 'Omar <Owner>', email: 'omar@x.dev', password: 'password123' });
       await client()('POST', '/api/auth/signup', { name: 'Has Account', email: 'has@x.dev', password: 'password123' });
-      const { id } = (await owner('POST', '/api/tournaments', { name: 'Invite Cup' })).data;
+      const { id } = (await owner('POST', '/api/tournaments', { visibility: 'public', name: 'Invite Cup' })).data;
 
       const added = await owner('POST', `/api/tournaments/${id}/members`, { email: 'new@x.dev', role: 'umpire' });
       assert.equal(added.data.emailed, true);
@@ -546,7 +546,7 @@ test('Resend request format, and no-op without an API key', async () => {
 });
 
 test('scoring with the expected rally count rejects stale or repeated requests', async () => {
-  const { id } = await svc.createTournament(OWNER, { name: 'Stale', format: 'knockout' });
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'Stale', format: 'knockout' });
   await svc.addEntries(id, OWNER, ['A', 'B']);
   const [m] = (await svc.start(id, OWNER)).matches;
   let r = await svc.rally(id, OWNER, m.id, 'a', 0);
@@ -576,8 +576,8 @@ test('sport catalogue lists playable and upcoming sports', async () => {
   assert.equal(tt.fields, undefined);
   assert.equal(list.find((s) => s.id === 'cricket').status, 'later');
   assert.equal(sports.get('table-tennis'), null); // no rules yet
-  await assert.rejects(svc.createTournament(OWNER, { name: 'TT Open', sport: 'table-tennis' }), /Table tennis isn't available yet/);
-  await assert.rejects(svc.createTournament(OWNER, { name: 'X', sport: 'quidditch' }), /Unknown sport/);
+  await assert.rejects(svc.createTournament(OWNER, { visibility: 'public', name: 'TT Open', sport: 'table-tennis' }), /Table tennis isn't available yet/);
+  await assert.rejects(svc.createTournament(OWNER, { visibility: 'public', name: 'X', sport: 'quidditch' }), /Unknown sport/);
 });
 
 test('HTTP: request a sport (one vote per person, toggleable)', async () => {

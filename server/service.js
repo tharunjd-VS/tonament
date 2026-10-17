@@ -14,6 +14,7 @@ const FORMATS = {
   knockout: 'Knockout',
 };
 const MAX_ENTRIES = 128;
+const VISIBILITY = ['private', 'link', 'public'];
 
 const ROLES = { owner: 'Owner', organiser: 'Organiser', umpire: 'Umpire' };
 const fail = (status, message, code) => {
@@ -147,6 +148,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       manage: RANK[role] >= RANK.organiser,
       // An ownerless (pre-accounts) tournament can be deleted with its organiser link.
       delete: RANK[role] >= RANK.owner || (!owner && RANK[role] >= RANK.organiser),
+      own: RANK[role] >= RANK.owner || (!owner && RANK[role] >= RANK.organiser), // e.g. who can see it
       claim: Boolean(!owner && actor.user && keyMatches(actor.key, t.admin_key)),
     };
   }
@@ -155,6 +157,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     score: 'Only the tournament team can score matches',
     manage: 'Only the organisers can do that',
     delete: 'Only the owner can delete this tournament',
+    own: 'Only the owner can change who can see this tournament',
   };
 
   async function lockWith(q, id, actor, need) {
@@ -351,6 +354,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       createdAt: t.created_at,
       sport: { id: t.sportDef.id, name: t.sportDef.name },
       config: t.config,
+      visibility: t.visibility,
       entriesOpen: entriesOpen(t),
       // Only the organiser's own maximum is shown publicly, never the plan limit.
       placesLeft: t.config.maxEntries ? Math.max(0, t.config.maxEntries - confirmed) : null,
@@ -377,7 +381,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // Viewer-specific fields. Public (cacheable) views pass no actor.
   async function accessFields(q, t, actor) {
-    if (!actor) return { role: null, can: { score: false, manage: false, delete: false, claim: false } };
+    if (!actor) return { role: null, can: { score: false, manage: false, delete: false, own: false, claim: false } };
     const { role, ...can } = await accessOf(q, t, actor);
     return {
       role,
@@ -414,18 +418,35 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const rows = await db.query(`
       SELECT t.id, t.name, t.venue, t.sport, t.format, t.status, t.created_at AS "createdAt",
              (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries
-      FROM tournaments t ORDER BY t.created_at DESC, t.id LIMIT 100`);
+      FROM tournaments t WHERE t.visibility = 'public' ORDER BY t.created_at DESC, t.id LIMIT 100`);
     return rows.map((r) => ({ ...r, formatName: FORMATS[r.format] }));
   }
 
+  // Private tournaments are visible to the team only. Anonymous (cacheable)
+  // reads of one always fail, so the CDN never holds private data.
+  async function requireVisible(q, t, actor) {
+    if (t.visibility !== 'private') return;
+    if (actor && (await accessOf(q, t, actor)).score) return;
+    fail(404, 'This tournament isn\'t public. Ask the organiser for access.', 'private');
+  }
+
   async function getTournament(id, actor) {
-    return view(db.query, await load(db.query, id), actor);
+    const t = await load(db.query, id);
+    await requireVisible(db.query, t, actor);
+    return view(db.query, t, actor);
+  }
+
+  async function setVisibility(id, actor, visibility) {
+    if (!VISIBILITY.includes(visibility)) fail(400, 'visibility must be "private", "link" or "public"');
+    return mutate(id, actor, async (q, t) => {
+      await q('UPDATE tournaments SET visibility = $1 WHERE id = $2', [visibility, t.id]);
+    }, 'own');
   }
 
   async function myTournaments(actor) {
     if (!actor.user) fail(401, 'Sign in to see your tournaments');
     const rows = await db.query(
-      `SELECT t.id, t.name, t.venue, t.sport, t.format, t.status, t.created_at AS "createdAt", m.role,
+      `SELECT t.id, t.name, t.venue, t.sport, t.format, t.status, t.visibility, t.created_at AS "createdAt", m.role,
               (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries
        FROM members m JOIN tournaments t ON t.id = m.tournament_id
        WHERE m.email = $1 ORDER BY t.created_at DESC`,
@@ -444,6 +465,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
       fail(400, info ? `${info.name} isn't available yet — vote for it on the home page` : 'Unknown sport');
     }
     const format = FORMATS[input.format] ? input.format : 'league_knockout';
+    // New tournaments are private until the owner publishes them.
+    const visibility = input.visibility ?? 'private';
+    if (!VISIBILITY.includes(visibility)) fail(400, 'visibility must be "private", "link" or "public"');
     const config = buildConfig(input, sport);
     checkMaxEntries(config, 'free');
     const id = `${slugify(name)}-${crypto.randomBytes(3).toString('hex')}`;
@@ -451,9 +475,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const scorerKey = crypto.randomBytes(18).toString('base64url');
     await db.tx(async (q) => {
       await q(
-        `INSERT INTO tournaments (id, name, venue, sport, format, config, admin_key, scorer_key)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
-        [id, name, venue, sport.id, format, JSON.stringify(config), adminKey, scorerKey],
+        `INSERT INTO tournaments (id, name, venue, sport, format, config, admin_key, scorer_key, visibility)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)`,
+        [id, name, venue, sport.id, format, JSON.stringify(config), adminKey, scorerKey, visibility],
       );
       await q(`INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, 'owner')`, [id, actor.user.email]);
     });
@@ -548,6 +572,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const contact = contactOf(input.contact);
     const result = await db.tx(async (q) => {
       const t = await load(q, id, { lock: true });
+      await requireVisible(q, t, null);
       if (t.status !== 'setup') fail(409, 'Entries are closed — the draw has been made');
       if (!t.config.selfEntry) fail(409, 'This tournament doesn\'t take entries online — contact the organiser');
       if (!entriesOpen(t)) fail(409, 'Entries are closed');
@@ -1243,6 +1268,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     claim,
     listTournaments,
     getTournament,
+    setVisibility,
     createTournament,
     updateSettings,
     deleteTournament,

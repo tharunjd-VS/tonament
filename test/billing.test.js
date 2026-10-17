@@ -107,7 +107,7 @@ test('signature helpers', () => {
 
 test('billing off: no entry limit', async () => {
   withBilling(false);
-  const { id } = await svc.createTournament(ORG, { name: 'Unlimited Free', format: 'knockout' });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Unlimited Free', format: 'knockout' });
   const t = await svc.addEntries(id, ORG, names(20));
   assert.equal(t.entries.length, 20);
   assert.equal(t.limits.entries, null);
@@ -117,7 +117,7 @@ test('billing off: no entry limit', async () => {
 test('billing on: 16 free entries, then organisers are asked to upgrade', async () => {
   withBilling(true);
   try {
-    const { id } = await svc.createTournament(ORG, { name: 'Limited Open', format: 'knockout' });
+    const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Limited Open', format: 'knockout' });
     let t = await svc.addEntries(id, ORG, names(15));
     assert.equal(t.limits.entries, 16);
     assert.equal(t.plan, 'free');
@@ -133,7 +133,7 @@ test('billing on: 16 free entries, then organisers are asked to upgrade', async 
 test('over the free limit, players can still enter: unconfirmed until the organiser pays', async () => {
   withBilling(true);
   try {
-    const { id } = await svc.createTournament(ORG, { name: 'Waiting Cup', format: 'knockout' });
+    const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Waiting Cup', format: 'knockout' });
     await svc.addEntries(id, ORG, names(16));
     const sentBefore = mailer.sent.length;
     const base = { baseUrl: 'https://tonament.example' };
@@ -180,7 +180,7 @@ test('over the free limit, players can still enter: unconfirmed until the organi
 test('start without unconfirmed entries leaves them out of the draw', async () => {
   withBilling(true);
   try {
-    const { id } = await svc.createTournament(ORG, { name: 'Skip Cup', format: 'knockout' });
+    const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Skip Cup', format: 'knockout' });
     await svc.addEntries(id, ORG, names(16));
     await svc.register(id, { name: 'Waiter', contact: 'w@x.dev' });
     const t = await svc.start(id, ORG, { skipUnconfirmed: true });
@@ -196,8 +196,8 @@ test('start without unconfirmed entries leaves them out of the draw', async () =
 test('organiser maximum: places left, waitlist, and over 16 needs the Pass', async () => {
   withBilling(true);
   try {
-    await assert.rejects(svc.createTournament(ORG, { name: 'Too Big', maxEntries: 24 }), (e) => e.code === 'upgrade' && /maximum of 24/.test(e.message));
-    const { id } = await svc.createTournament(ORG, { name: 'Small Cup', format: 'knockout', maxEntries: 8 });
+    await assert.rejects(svc.createTournament(ORG, { visibility: 'public', name: 'Too Big', maxEntries: 24 }), (e) => e.code === 'upgrade' && /maximum of 24/.test(e.message));
+    const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Small Cup', format: 'knockout', maxEntries: 8 });
     let pub = await svc.getTournament(id);
     assert.equal(pub.placesLeft, 8);
     await svc.addEntries(id, ORG, names(7));
@@ -224,7 +224,7 @@ test('organiser maximum: places left, waitlist, and over 16 needs the Pass', asy
 
 test('billing off: self-entries are only unconfirmed past the organiser maximum', async () => {
   withBilling(false);
-  const { id } = await svc.createTournament(ORG, { name: 'Free For All', format: 'knockout' });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Free For All', format: 'knockout' });
   await svc.addEntries(id, ORG, names(20));
   assert.equal((await svc.register(id, { name: 'Twenty-one', contact: 't21@x.dev' })).confirmed, true);
   await svc.updateSettings(id, ORG, { maxEntries: 21 });
@@ -234,7 +234,7 @@ test('billing off: self-entries are only unconfirmed past the organiser maximum'
 test('checkout -> verify activates the Pass, sends a receipt, and is idempotent', async () => {
   withBilling(true);
   try {
-    const { id } = await svc.createTournament(ORG, { name: 'Paid Cup', format: 'knockout' });
+    const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Paid Cup', format: 'knockout' });
     await svc.addEntries(id, ORG, names(16));
     await assert.rejects(svc.checkout(id, { user: { email: 'stranger@x.dev', isAdmin: false } }), /organisers/);
 
@@ -281,13 +281,13 @@ test('checkout -> verify activates the Pass, sends a receipt, and is idempotent'
 test('verify refuses a payment whose amount does not match, and captures authorized payments', async () => {
   withBilling(true);
   try {
-    const { id } = await svc.createTournament(ORG, { name: 'Cheap Trick', format: 'knockout' });
+    const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Cheap Trick', format: 'knockout' });
     const order = await svc.checkout(id, ORG);
     const forged = rp.pay(order.orderId, { amount: 100 }); // validly signed, but only ₹1 paid
     await assert.rejects(svc.verifyPayment(forged), /don't match/);
     assert.equal((await svc.getTournament(id)).plan, 'free');
 
-    const { id: id2 } = await svc.createTournament(ORG, { name: 'Auth Only', format: 'knockout' });
+    const { id: id2 } = await svc.createTournament(ORG, { visibility: 'public', name: 'Auth Only', format: 'knockout' });
     const order2 = await svc.checkout(id2, ORG);
     const authorized = rp.pay(order2.orderId, { status: 'authorized' });
     await svc.verifyPayment(authorized);
@@ -327,7 +327,7 @@ test('HTTP: webhook (raw-body signature), config endpoint and admin controls', a
 
     const org = client();
     await org('POST', '/api/auth/signup', { name: 'Hook Org', email: 'hook.org@x.dev', password: 'password123' });
-    const { id } = (await org('POST', '/api/tournaments', { name: 'Webhook Cup', format: 'knockout' })).data;
+    const { id } = (await org('POST', '/api/tournaments', { visibility: 'public', name: 'Webhook Cup', format: 'knockout' })).data;
     const order = (await org('POST', `/api/tournaments/${id}/checkout`)).data;
     assert.match(order.orderId, /^order_/);
 

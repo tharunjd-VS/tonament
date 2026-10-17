@@ -253,6 +253,8 @@ legend { font-weight: 700; padding: 0 6px; }
 }
 .banner.champion strong { color: var(--lime); font-weight: 700; }
 .banner.info { background: var(--surface); border: 1px solid var(--border); }
+.visibility-banner .actions { margin: 0; }
+.visibility .seg button { max-width: none; }
 .progress { height: 6px; background: var(--surface-2); border-radius: 999px; overflow: hidden; flex-basis: 100%; }
 .progress > span { display: block; height: 100%; background: var(--accent); }
 

@@ -47,7 +47,7 @@ test('groupCount: about N per group, never a group of one', () => {
 });
 
 test('self-entry: open until the deadline or the draw; contact details stay private', async () => {
-  const { id } = await svc.createTournament(ORG, { name: 'Club Night', format: 'knockout' });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Club Night', format: 'knockout' });
   let t = await svc.getTournament(id);
   assert.equal(t.config.selfEntry, true);
   assert.equal(t.entriesOpen, true);
@@ -83,7 +83,7 @@ test('self-entry: open until the deadline or the draw; contact details stay priv
 });
 
 test('check-in: only checked-in players are drawn, walk-ins are checked in, groups sized at the start', async () => {
-  const { id } = await svc.createTournament(ORG, { name: 'Saturday Open', groupSize: 4, qualifiers: 2 });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Saturday Open', groupSize: 4, qualifiers: 2 });
   await svc.addEntries(id, ORG, names(12));
   let t = await svc.getTournament(id, ORG);
   // 9 of 12 turn up, plus 2 walk-ins = 11 -> 3 groups (4, 4, 3)
@@ -102,7 +102,7 @@ test('check-in: only checked-in players are drawn, walk-ins are checked in, grou
 });
 
 test('no check-ins at all: everyone is drawn (unchanged behaviour)', async () => {
-  const { id } = await svc.createTournament(ORG, { name: 'No Checkin', format: 'knockout' });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'No Checkin', format: 'knockout' });
   await svc.addEntries(id, ORG, names(5));
   const t = await svc.start(id, ORG);
   assert.ok(t.entries.every((e) => e.inDraw));
@@ -110,7 +110,7 @@ test('no check-ins at all: everyone is drawn (unchanged behaviour)', async () =>
 });
 
 test('redraw: allowed until the first point, then blocked', async () => {
-  const { id } = await svc.createTournament(ORG, { name: 'Redraw Cup', groupSize: 4 });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Redraw Cup', groupSize: 4 });
   await svc.addEntries(id, ORG, names(8));
   let t = await svc.start(id, ORG);
   await svc.updateMatch(id, ORG, t.matches[0].id, { status: 'live' }); // on court, no points yet
@@ -127,7 +127,7 @@ test('redraw: allowed until the first point, then blocked', async () => {
 });
 
 test('late entry in the group stage: off by default, then joins the smallest group with catch-up matches', async () => {
-  const { id } = await svc.createTournament(ORG, { name: 'Late League', groupSize: 4, qualifiers: 2 });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Late League', groupSize: 4, qualifiers: 2 });
   await svc.addEntries(id, ORG, names(11)); // groups of 4, 4, 3
   let t = await svc.start(id, ORG);
   await assert.rejects(svc.lateEntry(id, ORG, { name: 'Zed' }), (e) => e.code === 'late_off');
@@ -152,7 +152,7 @@ test('late entry in the group stage: off by default, then joins the smallest gro
 });
 
 test('late entry in a knockout takes a bye; refused when the bracket is full', async () => {
-  const { id } = await svc.createTournament(ORG, { name: 'Late Cup', format: 'knockout', lateEntry: true });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Late Cup', format: 'knockout', lateEntry: true });
   await svc.addEntries(id, ORG, names(6)); // 8-draw, 2 byes (top 2 seeds)
   let t = await svc.start(id, ORG);
   assert.equal(t.matches.filter((m) => m.status === 'bye').length, 2);
@@ -173,7 +173,7 @@ test('late entry in a knockout takes a bye; refused when the bracket is full', a
 });
 
 test('withdraw: remaining matches become walkovers that count as wins but not games/points', async () => {
-  const { id } = await svc.createTournament(ORG, { name: 'Withdraw League', format: 'league', groups: 1 });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Withdraw League', format: 'league', groups: 1 });
   await svc.addEntries(id, ORG, ['A', 'B', 'C', 'D']);
   let t = await svc.start(id, ORG);
   const ab = t.matches.find((m) => [m.a.name, m.b.name].sort().join() === 'A,B');
@@ -198,7 +198,7 @@ test('withdraw: remaining matches become walkovers that count as wins but not ga
 });
 
 test('withdraw in a knockout: opponent goes through, now or when they arrive', async () => {
-  const { id } = await svc.createTournament(ORG, { name: 'Withdraw Cup', format: 'knockout' });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Withdraw Cup', format: 'knockout' });
   await svc.addEntries(id, ORG, names(4)); // semis: P1 v P4, P2 v P3
   let t = await svc.start(id, ORG);
   const [s1, s2] = t.matches.filter((m) => m.round === 1);
@@ -216,7 +216,7 @@ test('withdraw in a knockout: opponent goes through, now or when they arrive', a
 });
 
 test('withdrawn players are skipped when the knockout is drawn from the groups', async () => {
-  const { id } = await svc.createTournament(ORG, { name: 'Skip Withdrawn', groups: 2, qualifiers: 1 });
+  const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Skip Withdrawn', groups: 2, qualifiers: 1 });
   await svc.addEntries(id, ORG, names(6));
   let t = await svc.start(id, ORG);
   // P1 tops group A, then withdraws before the knockout

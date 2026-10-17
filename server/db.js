@@ -129,11 +129,15 @@ UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WH
 -- organiser to confirm them; they don't go into the draw until then.
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS confirmed BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS waiting_notified BOOLEAN NOT NULL DEFAULT false;
+
+-- Who can see a tournament: private (team only) | link (anyone with the link) | public (also listed).
+-- Existing tournaments stay public; new ones are created private.
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'public';
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 async function migrate(db) {
   try {
