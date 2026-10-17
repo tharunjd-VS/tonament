@@ -34,6 +34,14 @@ function roundRobin(ids) {
   return rounds;
 }
 
+// Number of groups for n entries at "about `size` per group": the nearest
+// whole number of groups, never so many that a group has fewer than 2.
+// Snake seeding then keeps group sizes within one of each other.
+function groupCount(n, size) {
+  if (n < 2) return 1;
+  return Math.min(Math.max(1, Math.round(n / size)), Math.floor(n / 2));
+}
+
 function bracketSize(n) {
   let size = 2;
   while (size < n) size *= 2;
@@ -128,4 +136,4 @@ function standings(memberIds, results) {
   return ranked.map((r, i) => ({ rank: i + 1, ...r }));
 }
 
-module.exports = { snakeGroups, roundRobin, bracketSize, seedOrder, knockoutSlots, roundName, standings };
+module.exports = { groupCount, snakeGroups, roundRobin, bracketSize, seedOrder, knockoutSlots, roundName, standings };

@@ -91,6 +91,16 @@ CREATE TABLE IF NOT EXISTS sport_interest (
   PRIMARY KEY (user_id, sport)
 );
 
+-- Event-day entries: check-in, self-entry, walk-ins, withdrawals.
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS checked_in BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS in_draw BOOLEAN NOT NULL DEFAULT true;   -- false = didn't show at the start
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS withdrawn BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'organiser'; -- organiser | self | walk-in
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS contact TEXT;                              -- self-entry phone/email (organisers only)
+CREATE UNIQUE INDEX IF NOT EXISTS entries_contact ON entries(tournament_id, contact) WHERE contact IS NOT NULL;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS walkover BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS catch_up BOOLEAN NOT NULL DEFAULT false;  -- added for a late entry
+
 -- Scoring-only share link, alongside the organiser link (admin_key).
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS scorer_key TEXT;
 UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WHERE scorer_key IS NULL;
@@ -98,7 +108,7 @@ UPDATE tournaments SET scorer_key = replace(gen_random_uuid()::text, '-', '') WH
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 async function migrate(db) {
   try {

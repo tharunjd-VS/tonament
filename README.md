@@ -11,6 +11,13 @@ Tournament management with live scoring for **tonament.com**. Starts with badmin
 - **Live scoring:** the umpire taps the side that won each rally, on a phone or with the keyboard. Spectators' screens update within about 2 seconds.
 - **Badminton rules:** BWF rally scoring to 21, win by 2, capped at 30. The app tracks the server and which court they serve from, and flags game point and match point. Match length (1, 3 or 5 games), points per game and the cap can be changed for club formats.
 - **Undo:** works on any point, including the one that won a match. It's blocked once the next match has started.
+- **Entries and the event day:**
+  - Players can enter themselves on the public page (name, partner, phone or email, no account needed) until a closing date/time or the draw.
+  - On the day, organisers tick players as they arrive; only ticked players go into the draw, and walk-ins are added already checked in.
+  - Groups are sized "about N per group" from the final head-count.
+  - **Redraw** works until the first point is played.
+  - Optional **late entries** after the start: a latecomer joins the smallest group with catch-up matches, or takes a bye in a knockout.
+  - **Withdraw** turns a player's remaining matches into walkovers. These count as wins but not towards games or points, and a withdrawn player can't qualify for the knockout.
 - **Accounts and roles:** sign up with email and password. Whoever creates a tournament is its **owner** and can add **organisers** (manage everything) and **umpires** (score matches only) by email. Someone without an account yet gets access as soon as they sign up with that email. Spectators don't need an account.
 - **Share links:** each tournament also has a *scorer link* (scoring only) and an *organiser link* (full control) for people without an account, such as a volunteer on a borrowed phone. Tournaments created before accounts existed can be added to your account from the organiser link.
 - **Site admins:** anyone whose email is listed in `ADMIN_EMAILS` can manage every tournament and see all users at `/#/admin`.
@@ -114,7 +121,12 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | GET/POST | `/tournaments/:id/members` | Team list / add or change a member `{ email, role }` |
 | DELETE | `/tournaments/:id/members/:memberId` | Remove a team member |
 | POST | `/tournaments/:id/claim` | Add an ownerless tournament to your account (needs the organiser link) |
-| POST | `/tournaments/:id/entries` | `{ names: [...] }` |
+| POST | `/tournaments/:id/entries` | `{ names: [...], walkIn }` |
+| POST | `/tournaments/:id/register` | Public self-entry `{ name, partner?, contact }` while entries are open |
+| POST | `/tournaments/:id/entries/:entryId/check-in` `{ here }`, `/tournaments/:id/check-in-all` | Event-day check-in |
+| POST | `/tournaments/:id/redraw` | Undo the draw (only before the first point) |
+| POST | `/tournaments/:id/late-entry` `{ name }` | Add a player after the start (when late entries are allowed) |
+| POST | `/tournaments/:id/entries/:entryId/withdraw` | Withdraw a player; remaining matches become walkovers |
 | PUT | `/tournaments/:id/entries/order` | `{ ids: [...] }` sets the seeding |
 | DELETE | `/tournaments/:id/entries/:entryId` | Remove an entry |
 | POST | `/tournaments/:id/start` | Make the draw and fixtures |

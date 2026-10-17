@@ -108,6 +108,17 @@
   }
 
   const tPath = (t) => `/tournaments/${encodeURIComponent(t.id)}`;
+  const pad2 = (n) => String(n).padStart(2, '0');
+  // ISO time -> value for <input type="datetime-local"> in the viewer's timezone
+  const toLocalInput = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  };
+  const fmtWhen = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  // Same rule as server/formats.js groupCount: about `size` per group, never a group of one.
+  const groupCount = (n, size) => (n < 2 ? 1 : Math.min(Math.max(1, Math.round(n / size)), Math.floor(n / 2)));
+  const enteredKey = (id) => `tonament:entered:${id}`;
   const nameOf = (p) => (p ? p.name : 'TBD');
   const pow2 = (n) => { let s = 2; while (s < n) s *= 2; return s; };
   const field = (label, control, cls, hint) =>
@@ -388,8 +399,18 @@
           h('input', { type: 'radio', name: 'format', value, checked: v.format === value, onchange: (e) => syncFormat(e.target.form) }),
           h('span', {}, h('strong', {}, label), h('small', {}, desc))))),
       h('div', { class: 'grid-2' },
-        field('Number of groups', h('input', { type: 'number', name: 'groups', min: 1, max: 16, value: v.groups, required: true }), 'groups-field'),
+        field('Players per group (about)', h('input', { type: 'number', name: 'groupSize', min: 2, max: 16, value: v.groupSize ?? 4, required: true }), 'groups-field',
+          'Groups are made from the final head-count when you start.'),
         field('Qualify from each group', h('input', { type: 'number', name: 'qualifiers', min: 1, max: 8, value: v.qualifiers, required: true }), 'qualifiers-field')),
+      h('fieldset', { class: 'entry-settings' }, h('legend', {}, 'Entries'),
+        h('label', { class: 'check-field' },
+          h('input', { type: 'checkbox', name: 'selfEntry', checked: v.selfEntry !== false }),
+          h('span', {}, h('strong', {}, 'Players can enter themselves'), h('small', {}, 'Adds an "Enter this tournament" form to the public page. You can still add people yourself.'))),
+        field('Entries close (optional)', h('input', { type: 'datetime-local', name: 'entriesCloseAt', value: toLocalInput(v.entriesCloseAt) }), null,
+          'Leave empty to keep entries open until you start the tournament.'),
+        h('label', { class: 'check-field' },
+          h('input', { type: 'checkbox', name: 'lateEntry', checked: Boolean(v.lateEntry) }),
+          h('span', {}, h('strong', {}, 'Allow late entries after the start'), h('small', {}, 'Latecomers join the smallest group with catch-up matches, or take a bye in a knockout. You can change this during the event.')))),
       h('fieldset', {}, h('legend', {}, `${sport.name} scoring`),
         h('div', { class: 'grid-3' }, sport.fields.map((f) => field(f.label,
           f.type === 'select'
@@ -413,8 +434,11 @@
       name: fd.get('name'),
       venue: fd.get('venue'),
       format: fd.get('format'),
-      groups: Number(fd.get('groups')),
+      groupSize: Number(fd.get('groupSize')),
       qualifiers: Number(fd.get('qualifiers')),
+      selfEntry: fd.get('selfEntry') === 'on',
+      entriesCloseAt: fd.get('entriesCloseAt') ? new Date(fd.get('entriesCloseAt')).toISOString() : '',
+      lateEntry: fd.get('lateEntry') === 'on',
       scoring,
     };
   }
@@ -449,7 +473,7 @@
       }, s.status === 'live' ? s.name : `${s.name} (coming soon)`))), null,
       h('span', {}, 'More sports are on the way — ', h('a', { href: '#/' }, 'request yours on the home page'), '.')),
       field('Venue (optional)', h('input', { name: 'venue', maxlength: 80, placeholder: 'e.g. City Sports Hall' }))),
-    settingsFields(sport, { format: 'league_knockout', groups: 2, qualifiers: 2, scoring: sport.defaults }),
+    settingsFields(sport, { format: 'league_knockout', groupSize: 4, qualifiers: 2, selfEntry: true, entriesCloseAt: null, lateEntry: false, scoring: sport.defaults }),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
     syncFormat(form);
     return form;
@@ -481,7 +505,7 @@
       h('header', { class: 't-header' },
         h('div', { class: 't-title' }, h('h1', {}, t.name), pill(t.status, STATUS[t.status])),
         h('p', { class: 'muted small' },
-          [t.sport.name, t.formatName, t.venue].filter(Boolean).join(' · '), '  ', connDot())),
+          [t.sport.name, t.formatName, t.venue, entryStatusLine(t)].filter(Boolean).join(' · '), '  ', connDot())),
       roleBar(t),
       h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: `#/t/${t.id}/${x.id}`, class: x.id === active ? 'active' : '' }, x.label))),
       h('section', {}, panels[active](t)),
@@ -489,39 +513,78 @@
   }
 
   // ----- entries tab
+  function entryStatusLine(t) {
+    if (t.status !== 'setup') return null;
+    if (t.entriesOpen) {
+      return t.config.entriesCloseAt ? `Entries open · close ${fmtWhen(t.config.entriesCloseAt)}` : 'Entries open';
+    }
+    return t.config.selfEntry ? 'Entries closed' : null;
+  }
+
   function panelEntries(t) {
-    const editable = t.can.manage && t.status === 'setup';
+    const setup = t.status === 'setup';
+    const editable = t.can.manage && setup;
+    const running = t.status === 'league' || t.status === 'knockout';
+    const usingCheckIn = setup && t.entries.some((e) => e.checkedIn);
+    const hereCount = t.entries.filter((e) => e.checkedIn).length;
     const groupLabel = (g) => (g == null || t.format === 'knockout' ? null : h('span', { class: 'pill' }, `Group ${String.fromCharCode(65 + g)}`));
+    const tags = (e) => [
+      e.source === 'self' ? pill('', 'Self-entered') : e.source === 'walk-in' ? pill('', 'Walk-in') : null,
+      !setup && e.withdrawn ? pill('withdrawn', 'Withdrew') : null,
+      !setup && !e.inDraw ? pill('', 'Didn\'t show') : null,
+    ];
+
     const list = h('div', { class: 'card' },
       h('div', { class: 'card-head' },
-        h('h2', {}, `Entries (${t.entries.length})`),
-        editable && t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null),
+        h('h2', {}, editable && usingCheckIn ? `Entries · ${hereCount} of ${t.entries.length} here` : `Entries (${t.entries.length})`),
+        editable && t.entries.length ? h('span', { class: 'actions' },
+          h('button', { class: 'btn btn-small btn-ghost', onclick: () => checkInAll(t, !usingCheckIn) }, usingCheckIn ? 'Clear check-in' : 'Check in all'),
+          t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null) : null),
       t.entries.length
-        ? h('ol', { class: 'entries' }, t.entries.map((e, i) => h('li', {},
+        ? h('ol', { class: 'entries' }, t.entries.map((e, i) => h('li', { class: `${!setup && (e.withdrawn || !e.inDraw) ? 'out' : ''}${usingCheckIn && !e.checkedIn ? ' not-here' : ''}` },
+          editable
+            ? h('button', {
+              class: `check${e.checkedIn ? ' on' : ''}`,
+              'aria-pressed': String(e.checkedIn),
+              'aria-label': `${e.name} ${e.checkedIn ? 'is checked in' : 'is not checked in'}`,
+              title: e.checkedIn ? 'Checked in — tap to undo' : 'Tap when they arrive',
+              onclick: () => checkIn(t, e, !e.checkedIn),
+            }, e.checkedIn ? '✓' : '')
+            : null,
           h('span', { class: 'seed' }, i + 1),
-          h('span', { class: 'name' }, e.name),
-          groupLabel(e.group),
+          h('span', { class: 'name' },
+            h('span', { class: 'entry-name' }, e.name),
+            e.contact ? h('small', { class: 'contact' }, e.contact) : null,
+            h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group))),
           editable ? h('span', { class: 'row-actions' },
             h('button', { class: 'icon-btn', title: 'Move up', 'aria-label': `Move ${e.name} up`, disabled: i === 0, onclick: () => move(t, i, -1) }, '↑'),
             h('button', { class: 'icon-btn', title: 'Move down', 'aria-label': `Move ${e.name} down`, disabled: i === t.entries.length - 1, onclick: () => move(t, i, 1) }, '↓'),
-            h('button', { class: 'icon-btn', title: 'Remove', 'aria-label': `Remove ${e.name}`, onclick: () => removeEntry(t, e) }, '✕')) : null)))
+            h('button', { class: 'icon-btn', title: 'Remove', 'aria-label': `Remove ${e.name}`, onclick: () => removeEntry(t, e) }, '✕')) : null,
+          t.can.manage && running && e.inDraw && !e.withdrawn
+            ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => withdrawEntry(t, e) }, 'Withdraw')
+            : null)))
         : empty(editable ? 'No entries yet. Add players or pairs above.' : 'No entries yet.'),
-      editable && t.entries.length > 1
-        ? h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'List order is the seeding (1 = top seed). Seeds are spread across groups with a snake draw.')
+      editable && t.entries.length
+        ? h('p', { class: 'hint', style: 'margin:8px 0 0' },
+          'On the day, tick players as they arrive — once anyone is ticked, only ticked players go into the draw. List order is the seeding (1 = top seed).')
         : null);
 
-    if (!editable) {
+    if (!t.can.manage) {
       return [
-        t.status === 'setup' ? h('div', { class: 'banner info' }, 'The organiser is still adding players. The draw will appear here once the tournament starts.') : null,
+        setup && t.entriesOpen ? publicEntryCard(t) : null,
+        setup && !t.entriesOpen
+          ? h('div', { class: 'banner info' }, t.config.selfEntry ? 'Entries are closed. The draw will appear here once the tournament starts.' : 'The organiser is still adding players. The draw will appear here once the tournament starts.')
+          : null,
         list,
       ];
     }
-    return [addEntriesForm(t), list, startCard(t), settingsCard(t)];
+    if (!setup) return [running ? lateEntryCard(t) : null, list];
+    return [addEntriesForm(t, usingCheckIn), list, startCard(t), settingsCard(t)];
   }
 
-  function addEntriesForm(t) {
+  function addEntriesForm(t, walkIn) {
     const ta = h('textarea', {
-      name: 'names', rows: 4,
+      name: 'names', rows: walkIn ? 2 : 4,
       placeholder: 'One player or pair per line, e.g.\nAsha Rao\nLee / Chan',
       oninput: (e) => { S.draft = e.target.value; },
     });
@@ -530,16 +593,106 @@
       class: 'card',
       onsubmit: (e) => {
         e.preventDefault();
-        const names = ta.value.split('\n').map((s) => s.trim()).filter(Boolean);
+        const names = ta.value.split('\n').map((x) => x.trim()).filter(Boolean);
         if (!names.length) return;
         act(async () => {
-          S.t = await api('POST', `${tPath(t)}/entries`, { names }, t.id);
+          S.t = await api('POST', `${tPath(t)}/entries`, { names, walkIn }, t.id);
           S.draft = '';
         }, `Added ${names.length} ${names.length === 1 ? 'entry' : 'entries'}`);
       },
     },
-    h('h2', {}, 'Add players or pairs'), ta,
+    h('h2', {}, walkIn ? 'Add walk-ins' : 'Add players or pairs'),
+    walkIn ? h('p', { class: 'muted small' }, 'Walk-ins are checked in automatically.') : null,
+    ta,
     h('div', { class: 'actions', style: 'margin-top:10px' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add')));
+  }
+
+  // "Enter this tournament" for players (no account needed).
+  function publicEntryCard(t) {
+    let entered = null;
+    try { entered = localStorage.getItem(enteredKey(t.id)); } catch { /* storage unavailable */ }
+    const closes = t.config.entriesCloseAt ? `Entries close ${fmtWhen(t.config.entriesCloseAt)}.` : 'Entries close when the draw is made.';
+    if (entered) {
+      return h('div', { class: 'card entry-card' },
+        h('h2', {}, 'You\'re entered ✓'),
+        h('p', {}, h('strong', {}, entered), ' is on the entry list. See you on the day!'),
+        h('p', { class: 'muted small', style: 'margin:0' }, `Something wrong? Contact the organiser. ${closes}`));
+    }
+    const form = h('form', {
+      class: 'card form entry-card',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const btn = form.querySelector('button[type=submit]');
+        btn.disabled = true;
+        try {
+          const body = Object.fromEntries(new FormData(form));
+          const res = await api('POST', `${tPath(t)}/register`, body);
+          try { localStorage.setItem(enteredKey(t.id), res.name || body.name); } catch { /* fine */ }
+          toast('You\'re entered — see you there!');
+          refresh();
+          render();
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+        }
+      },
+    },
+    h('div', {},
+      h('h2', {}, 'Enter this tournament'),
+      h('p', { class: 'muted small', style: 'margin:0' }, closes)),
+    h('div', { class: 'grid-2' },
+      field('Your name', h('input', { name: 'name', required: true, maxlength: 40, autocomplete: 'name' })),
+      field('Partner (doubles only)', h('input', { name: 'partner', maxlength: 40, autocomplete: 'off' }))),
+    field('Phone or email', h('input', { name: 'contact', required: true, maxlength: 120, autocomplete: 'email' }), null,
+      'Only the organisers see this, in case they need to reach you.'),
+    // honeypot: hidden from people, filled in by bots
+    h('label', { class: 'hp', 'aria-hidden': 'true' }, 'Website', h('input', { name: 'website', tabindex: '-1', autocomplete: 'off' })),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Enter')));
+    return form;
+  }
+
+  function lateEntryCard(t) {
+    const setLate = (on) => act(async () => { S.t = await api('PATCH', tPath(t), { lateEntry: on }, t.id); }, on ? 'Late entries allowed' : 'Late entries switched off');
+    if (!t.config.lateEntry) {
+      return h('div', { class: 'card' },
+        h('div', { class: 'card-head' },
+          h('h2', {}, 'Late entries'),
+          h('button', { class: 'btn btn-small', onclick: () => setLate(true) }, 'Allow late entries')),
+        h('p', { class: 'muted small', style: 'margin:0' }, 'Off — nobody can be added now that the draw is made.'));
+    }
+    const groupsStage = t.status === 'league';
+    const knockoutOnly = t.format === 'knockout';
+    const how = groupsStage
+      ? 'They join the smallest group and get catch-up matches against everyone in it.'
+      : knockoutOnly ? 'They take a first-round bye and play the seed who had it.' : null;
+    const input = h('input', { name: 'name', required: true, maxlength: 60, placeholder: 'Player or pair name', autocomplete: 'off' });
+    return h('div', { class: 'card' },
+      h('div', { class: 'card-head' },
+        h('h2', {}, 'Late entries'),
+        h('button', { class: 'btn btn-small btn-ghost', onclick: () => setLate(false) }, 'Switch off')),
+      how
+        ? h('form', {
+          class: 'team-form',
+          onsubmit: (e) => {
+            e.preventDefault();
+            const name = input.value;
+            act(async () => { S.t = await api('POST', `${tPath(t)}/late-entry`, { name }, t.id); }, `${name} added`);
+          },
+        }, input, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add late entry'))
+        : null,
+      h('p', { class: 'muted small', style: 'margin:8px 0 0' },
+        how || 'The knockout has started — late entries could only join during the group stage.'));
+  }
+
+  function checkIn(t, e, here) {
+    act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/check-in`, { here }, t.id); });
+  }
+  function checkInAll(t, here) {
+    act(async () => { S.t = await api('POST', `${tPath(t)}/check-in-all`, { here }, t.id); }, here ? 'Everyone checked in' : 'Check-in cleared');
+  }
+  function withdrawEntry(t, e) {
+    if (!confirm(`Withdraw ${e.name}? Their remaining matches become walkovers. This can't be undone.`)) return;
+    act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/withdraw`, {}, t.id); }, `${e.name} withdrawn`);
   }
 
   function saveOrder(t, ids, msg) {
@@ -562,35 +715,43 @@
     act(async () => { S.t = await api('DELETE', `${tPath(t)}/entries/${e.id}`, undefined, t.id); }, `Removed ${e.name}`);
   }
 
-  function planText(t) {
-    const n = t.entries.length;
-    const { groups: g, qualifiers: q } = t.config;
+  function planText(t, n) {
+    const { qualifiers: q } = t.config;
     if (t.format === 'knockout') {
-      if (n < 2) return 'Add at least 2 entries.';
+      if (n < 2) return 'Needs at least 2 entries.';
       const size = pow2(n);
       const byes = size - n;
       return `${n} entries → ${size}-draw knockout, ${Math.log2(size)} rounds${byes ? `, ${byes} bye${byes > 1 ? 's' : ''} for top seeds` : ''}.`;
     }
-    if (n < g * 2) return `Add at least ${g * 2} entries for ${g} group${g > 1 ? 's' : ''}.`;
+    const g = t.config.groupSize ? groupCount(n, t.config.groupSize) : t.config.groups;
+    if (n < 2 || n < g * 2) return `Needs at least ${Math.max(2, g * 2)} entries.`;
     const small = Math.floor(n / g);
     const big = Math.ceil(n / g);
     const bigCount = n % g;
     const matches = bigCount * (big * (big - 1)) / 2 + (g - bigCount) * (small * (small - 1)) / 2;
-    const sizes = small === big ? `of ${small}` : `of ${small}–${big}`;
-    let s = `${n} entries → ${g} group${g > 1 ? 's' : ''} ${sizes}, ${matches} league matches.`;
+    const sizes = Array.from({ length: g }, (_, i) => (i < bigCount ? big : small)).join(', ');
+    let s = `${n} entries → ${g} group${g > 1 ? 's' : ''} (${sizes}), ${matches} league matches.`;
     if (t.format === 'league_knockout') s += ` Top ${q} of each group → ${g * q}-player knockout.`;
     return s;
   }
 
   function startCard(t) {
+    const here = t.entries.filter((e) => e.checkedIn).length;
+    const usingCheckIn = here > 0;
+    const n = usingCheckIn ? here : t.entries.length;
+    const absent = t.entries.length - here;
     return h('div', { class: 'card' },
       h('h2', {}, 'Ready to start?'),
-      h('p', { class: 'plan' }, planText(t)),
-      h('p', { class: 'muted small' }, 'Starting makes the draw and fixtures. Entries and settings are locked after that.'),
+      usingCheckIn ? h('p', { class: 'muted small' }, `${here} checked in${absent ? ` · ${absent} not here (left out of the draw)` : ''}`) : null,
+      h('p', { class: 'plan' }, planText(t, n)),
+      h('p', { class: 'muted small' }, 'Starting makes the draw and fixtures. You can redo the draw until the first point is played.'),
       h('button', {
         class: 'btn btn-primary btn-lg',
         onclick: () => {
-          if (!confirm('Start the tournament now? Entries and settings will be locked.')) return;
+          const msg = usingCheckIn && absent
+            ? `Start with the ${here} checked-in entries? ${absent} not checked in will be left out.`
+            : 'Start the tournament now?';
+          if (!confirm(msg)) return;
           act(async () => { S.t = await api('POST', `${tPath(t)}/start`, {}, t.id); location.hash = `#/t/${t.id}/live`; }, 'Tournament started — good luck!');
         },
       }, 'Start tournament'));
@@ -640,16 +801,36 @@
   function panelLive(t) {
     const ms = t.matches.filter((m) => m.status !== 'bye');
     const live = ms.filter((m) => m.status === 'live').sort(byOrder);
-    const upcoming = ms.filter((m) => m.status === 'scheduled' && m.a && m.b).sort(byOrder).slice(0, 8);
+    // Late entries' catch-up matches go first so they can catch up.
+    const upcoming = ms.filter((m) => m.status === 'scheduled' && m.a && m.b)
+      .sort((x, y) => Number(y.catchUp) - Number(x.catchUp) || byOrder(x, y)).slice(0, 8);
     const results = ms.filter((m) => m.status === 'done')
       .sort((x, y) => (y.updatedAt || '').localeCompare(x.updatedAt || '') || y.id - x.id).slice(0, 12);
     return [
       championBanner(t),
       stageBanner(t),
+      redrawCard(t),
       matchSection(t, 'On court now', live, 'No matches in progress.', true),
       upcoming.length || t.status !== 'completed' ? matchSection(t, 'Up next', upcoming, 'Nothing scheduled right now.') : null,
       matchSection(t, 'Latest results', results, 'No results yet.'),
     ];
+  }
+
+  // Redo the draw (e.g. more players arrived) until the first point is played.
+  function redrawCard(t) {
+    if (!t.can.manage) return null;
+    const canRedraw = (t.status === 'league' || (t.status === 'knockout' && t.format === 'knockout'))
+      && !t.matches.some((m) => m.rallies > 0 || m.walkover);
+    if (!canRedraw) return null;
+    return h('div', { class: 'banner info' },
+      h('span', {}, h('strong', {}, 'More players just arrived? '), 'You can redo the draw until the first point is played.'),
+      h('button', {
+        class: 'btn btn-small',
+        onclick: () => {
+          if (!confirm('Redo the draw? All fixtures are removed and you go back to the entry list to add players and start again.')) return;
+          act(async () => { S.t = await api('POST', `${tPath(t)}/redraw`, {}, t.id); location.hash = `#/t/${t.id}/entries`; }, 'Draw undone — add players and start again');
+        },
+      }, 'Redraw'));
   }
 
   function championBanner(t) {
@@ -690,11 +871,16 @@
   }
 
   function matchLabel(m) {
-    return [m.stage === 'league' ? `${m.groupName} · ${m.roundName}` : m.roundName, m.court ? `Court ${m.court}` : null].filter(Boolean).join(' · ');
+    return [
+      m.stage === 'league' ? `${m.groupName} · ${m.roundName}` : m.roundName,
+      m.catchUp && m.status !== 'done' ? 'Catch-up' : null,
+      m.court ? `Court ${m.court}` : null,
+    ].filter(Boolean).join(' · ');
   }
 
   function statusTag(m) {
     if (m.status === 'live') return pill('live', 'Live');
+    if (m.walkover) return pill('done', 'Walkover');
     if (m.status === 'done') return pill('done', 'Final');
     if (m.status === 'bye') return pill('', 'Bye');
     return pill('', m.a && m.b ? 'Upcoming' : 'Waiting');
@@ -736,9 +922,9 @@
           h('h2', {}, g.name),
           h('div', { class: 'table-wrap' }, h('table', {},
             h('thead', {}, h('tr', {}, ['#', 'Player', 'P', 'W', 'L', 'Games', 'Pts'].map((c, i) => h('th', { class: i === 1 ? '' : 'num', title: c === 'Pts' ? 'Point difference' : null }, c)))),
-            h('tbody', {}, g.standings.map((r) => h('tr', { class: r.rank <= q ? 'q' : '' },
+            h('tbody', {}, g.standings.map((r) => h('tr', { class: qualifying(g, q).has(r.id) ? 'q' : r.withdrawn ? 'out' : '' },
               h('td', { class: 'num' }, r.rank),
-              h('td', { class: 'name' }, r.name),
+              h('td', { class: 'name' }, r.name, r.withdrawn ? [' ', pill('withdrawn', 'Withdrew')] : null),
               h('td', { class: 'num' }, r.played),
               h('td', { class: 'num' }, r.won),
               h('td', { class: 'num' }, r.lost),
@@ -749,6 +935,11 @@
             h('div', { class: 'match-list', style: 'grid-template-columns:1fr' }, fixtures.map((m) => matchCard(t, m)))));
       })),
     ];
+  }
+
+  // Top q of a group, skipping withdrawn players (same rule as the knockout draw).
+  function qualifying(g, q) {
+    return new Set(g.standings.filter((r) => !r.withdrawn).slice(0, q).map((r) => r.id));
   }
 
   // ----- knockout tab
@@ -774,7 +965,8 @@
       const p = m[s];
       const won = Boolean(m.winner && p && m.winner === p.id);
       const label = p ? p.name : m.status === 'bye' ? 'Bye' : 'TBD';
-      const score = m.status === 'bye' || m.status === 'scheduled' ? '' : visibleGames(m).map((g) => g[s]).join(' ');
+      const score = m.walkover ? (won ? 'w/o' : '')
+        : m.status === 'bye' || m.status === 'scheduled' ? '' : visibleGames(m).map((g) => g[s]).join(' ');
       return h('div', { class: `b-line${won ? ' won' : ''}${p ? '' : ' tbd'}` }, h('span', { class: 'b-name' }, label), h('span', { class: 'b-score' }, score));
     };
     const attrs = { class: `b-match ${m.status}` };

@@ -421,3 +421,27 @@ button.sport-chip:hover { border-color: var(--muted); }
 }
 .sport-chip.live .chip-tag { background: var(--navy); color: var(--lime); }
 .chip-count { font-size: 0.78rem; font-weight: 700; color: var(--accent-text); font-variant-numeric: tabular-nums; padding-right: 4px; }
+
+/* ---------- entries: check-in, self-entry, withdrawals */
+.check {
+  width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 800;
+  border: 2px solid var(--border); background: transparent; color: var(--on-accent);
+}
+.check:hover { border-color: var(--accent); }
+.check.on { background: var(--accent); border-color: var(--accent); }
+.entries li.not-here .entry-name, .entries li.out .entry-name { color: var(--muted); }
+.entries li.out .entry-name { text-decoration: line-through; }
+.entries .contact { display: block; font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+.entries .entry-name { display: block; }
+.entry-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.entry-tags:empty { display: none; }
+.entries .entry-name { overflow-wrap: anywhere; }
+.entries .row-actions .icon-btn { width: 30px; }
+.pill.withdrawn { background: var(--live-soft); color: var(--live); }
+tr.out td { color: var(--muted); }
+.entry-card { border-left: 4px solid var(--accent); }
+.check-field { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; margin-bottom: 10px; }
+.check-field input { width: 18px; height: 18px; margin-top: 3px; flex: none; accent-color: var(--lime); }
+.check-field small { display: block; color: var(--muted); }
+.entry-settings { display: grid; gap: 6px; }
+.hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
