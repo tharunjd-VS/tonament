@@ -564,3 +564,56 @@ fieldset.details-set { display: grid; gap: 12px; }
   .ev-row .ev-level { grid-column: 3; }
   .ev-row .ev-remove { grid-column: 4; grid-row: 1; align-self: end; }
 }
+
+/* Tournament page: cover, about, photos */
+.brand .brand-mark { display: none; }
+body.branded .brand .brand-full { display: none; }
+body.branded .brand .brand-mark { display: block; }
+.t-hero { margin: 0 0 14px; border-radius: var(--radius); overflow: hidden; aspect-ratio: 16 / 7; background: var(--surface-2); }
+.t-hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.t-card.has-cover { padding-top: 0; overflow: hidden; }
+.t-card-cover { display: block; width: calc(100% + 32px); margin: 0 -16px 12px; aspect-ratio: 16 / 7; object-fit: cover; background: var(--surface-2); }
+.about-text p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.gallery { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+.gallery-item { padding: 0; border: 0; border-radius: 10px; overflow: hidden; cursor: zoom-in; aspect-ratio: 4 / 3; background: var(--surface-2); }
+.gallery-item img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.2s; }
+.gallery-item:hover img { transform: scale(1.03); }
+.lightbox { position: fixed; inset: 0; z-index: 50; background: rgba(7, 12, 23, 0.94); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.lightbox figure { margin: 0; max-width: 100%; max-height: 100%; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.lightbox img { max-width: 100%; max-height: calc(100vh - 110px); border-radius: 8px; }
+.lb-caption { color: #E5E7EB; margin: 0; text-align: center; }
+.lightbox button { position: absolute; background: rgba(255, 255, 255, 0.12); color: #fff; border: 0; border-radius: 999px; width: 44px; height: 44px; font-size: 1.4rem; cursor: pointer; }
+.lb-close { top: 14px; right: 14px; }
+.lb-prev { left: 10px; top: 50%; transform: translateY(-50%); }
+.lb-next { right: 10px; top: 50%; transform: translateY(-50%); }
+
+/* Organiser branding (paid) */
+.org-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
+.org-logo { height: 44px; width: auto; max-width: 160px; object-fit: contain; }
+.org-name { font-weight: 700; font-size: 1.1rem; }
+.sponsors { margin: 28px 0 8px; text-align: center; }
+.sponsor-logos { display: flex; flex-wrap: wrap; gap: 14px 24px; justify-content: center; align-items: center; }
+.sponsor-logos img { height: 44px; width: auto; max-width: 140px; object-fit: contain; }
+.powered { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 20px 0 4px; color: var(--muted); text-decoration: none; font-size: 0.8rem; letter-spacing: 0.04em; }
+.powered img { height: 14px; width: auto; }
+
+/* Page & branding panel */
+.cover-preview { width: 100%; aspect-ratio: 16 / 7; object-fit: cover; border-radius: 10px; }
+.photo-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.photo-list li { display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; align-items: center; }
+.photo-list li img { width: 64px; height: 48px; object-fit: cover; border-radius: 6px; }
+.photo-list li .hint { grid-column: 2; }
+.photo-list li.hidden-photo img { opacity: 0.4; }
+.locked { opacity: 0.95; border-style: dashed; }
+.brand-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.logo-preview { width: 72px; height: 72px; object-fit: contain; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
+.logo-preview.empty { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); font-size: 0.8rem; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.swatches input[type=color] { width: 44px; height: 36px; padding: 2px; }
+.swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--border); cursor: pointer; }
+.sponsor-admin { display: grid; gap: 8px; }
+.sponsor-admin .sponsor-logos { justify-content: flex-start; }
+.sponsor-edit { position: relative; display: inline-flex; }
+.sponsor-edit .icon-btn { position: absolute; top: -10px; right: -12px; width: 26px; height: 26px; background: var(--surface); border: 1px solid var(--border); }
+label.btn.disabled { opacity: 0.5; pointer-events: none; }
+.uploading { margin: 0; }

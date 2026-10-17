@@ -198,11 +198,28 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS player TEXT;
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS solo BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS solo_side TEXT;      -- mixed doubles: man | woman
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS paired_into INTEGER;
+
+-- Tournament page content: about text, links, organiser branding (paid), and
+-- images (cover, photos, logo, sponsors), stored here to keep hosting simple.
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS about TEXT;
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS links JSONB;
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS branding JSONB;
+CREATE TABLE IF NOT EXISTS media (
+  id            TEXT PRIMARY KEY,                -- hash of tournament + kind + bytes
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  kind          TEXT NOT NULL,                   -- logo | cover | photo | sponsor
+  mime          TEXT NOT NULL,
+  bytes         BYTEA NOT NULL,
+  caption       TEXT,
+  position      INTEGER NOT NULL DEFAULT 0,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS media_t ON media(tournament_id, kind, position);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 async function migrate(db) {
   try {

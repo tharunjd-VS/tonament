@@ -11,6 +11,7 @@ const { billingConfig, publicBillingConfig } = require('./billing');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MAX_BODY = 100 * 1024;
+const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -64,7 +65,7 @@ function readRaw(req) {
   });
 }
 
-function readJson(req) {
+function readJson(req, limit = MAX_BODY) {
   // Vercel's Node runtime parses the body itself and exposes it as req.body.
   if ('body' in req) {
     let body;
@@ -84,7 +85,7 @@ function readJson(req) {
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
+      if (size > limit) {
         reject(new HttpError(413, 'Request body too large'));
         req.destroy();
       } else chunks.push(chunk);
@@ -171,6 +172,9 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${T}/visibility`, (c, id) => svc.setVisibility(id, c.actor, c.body.visibility)],
     ['POST', `${T}/register`, (c, id) => svc.register(id, { ...c.body, event: ev(c) }, { baseUrl: baseUrl(c.req) })],
     ['POST', `${T}/entries/${N}/confirm`, (c, id, eid) => svc.confirmEntry(id, c.actor, eid)],
+    ['POST', `${T}/media`, (c, id) => svc.uploadMedia(id, c.actor, c.body)],
+    ['PATCH', `${T}/media/([0-9a-f]{32})`, (c, id, mid) => svc.updateMedia(id, c.actor, mid, c.body)],
+    ['DELETE', `${T}/media/([0-9a-f]{32})`, (c, id, mid) => svc.deleteMedia(id, c.actor, mid)],
     ['POST', `${T}/pairs`, (c, id) => svc.pairSolos(id, c.actor, c.body.a, c.body.b)],
     ['POST', `${T}/pairs/draw`, (c, id) => svc.drawPairs(id, c.actor, { event: ev(c), balance: c.body.balance })],
     ['DELETE', `${T}/pairs/${N}`, (c, id, eid) => svc.unpair(id, c.actor, eid)],
@@ -275,6 +279,19 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         const result = await svc.razorpayWebhook(raw, req.headers['x-razorpay-signature'], { baseUrl: baseUrl(req) });
         return send(res, 200, result);
       }
+      // Images: binary responses, cached for good (the id is a content hash).
+      const media = pathname.match(/^\/api\/media\/([0-9a-f]{32})$/);
+      if (media && (req.method === 'GET' || req.method === 'HEAD')) {
+        const file = await svc.getMedia(media[1], () => auth.userFromRequest(req).then((user) => ({ user, key: req.headers['x-admin-key'] || null })));
+        res.writeHead(200, {
+          'Content-Type': file.mime,
+          'Content-Length': file.bytes.length,
+          'Cache-Control': file.public ? 'public, max-age=31536000, immutable' : 'private, max-age=3600',
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'",
+        });
+        return res.end(req.method === 'HEAD' ? undefined : file.bytes);
+      }
       if (pathname === '/api' || pathname.startsWith('/api/')) {
         let pathMatched = false;
         for (const route of routes) {
@@ -288,7 +305,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
           const ctx = {
             req,
             query: url.searchParams,
-            body: write ? await readJson(req) : {},
+            body: write ? await readJson(req, /\/media$/.test(pathname) ? MAX_MEDIA_BODY : MAX_BODY) : {},
             setCookie: (cookie) => cookies.push(cookie),
           };
           const cache = typeof route.cache === 'function' ? route.cache(ctx) : route.cache;

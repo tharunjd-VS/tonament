@@ -21,6 +21,34 @@ const VISIBILITY = ['private', 'link', 'public'];
 // config (format details, scoring, caps) belongs to each event.
 const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
 const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'discipline', 'gender', 'age', 'level'];
+// Tournament page images. Free tournaments get a cover and a few photos;
+// paid ones also get their logo, colours and sponsors, and more photos.
+const MEDIA_KINDS = ['logo', 'cover', 'photo', 'sponsor'];
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const PHOTO_LIMITS = { free: 3, paid: 30 };
+const SPONSOR_LIMIT = 8;
+const mediaUrl = (id) => `/api/media/${id}`;
+// The real type, from the file's first bytes (never trust a name or a header).
+function imageType(buf) {
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length > 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+const HEX_COLOUR = /^#[0-9a-f]{6}$/i;
+function linkOf(value, label, host) {
+  if (!value) return null;
+  let url;
+  try {
+    url = new URL(String(value).trim());
+  } catch {
+    fail(400, `${label}: enter a full link starting with https://`);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') fail(400, `${label}: enter a full link starting with https://`);
+  if (host && url.hostname !== host && !url.hostname.endsWith(`.${host}`)) fail(400, `${label}: use a ${host} link`);
+  return url.toString().slice(0, 300);
+}
+
 const eventConfigOf = (config) => Object.fromEntries(Object.entries(config).filter(([k]) => !TOURNAMENT_KEYS.includes(k)));
 
 const ROLES = { owner: 'Owner', organiser: 'Organiser', umpire: 'Umpire' };
@@ -115,11 +143,17 @@ const ENTRIES_OPEN_SQL = `COALESCE((t.config->>'selfEntry')::boolean, true)
 const CARD_COLUMNS = `t.id, t.name, t.venue, t.sport, t.format, t.status, t.visibility, t.created_at AS "createdAt",
   t.city, t.region, t.country, t.starts_on AS "startsOn", t.ends_on AS "endsOn",
   (${ENTRIES_OPEN_SQL}) AS "entriesOpen",
-  (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id) AS entries,
+  (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id AND e.paired_into IS NULL) AS entries,
+  (SELECT m.id FROM media m WHERE m.tournament_id = t.id AND m.kind = 'cover' LIMIT 1) AS "coverId",
   (SELECT COALESCE(json_agg(json_build_object('discipline', ev.discipline, 'gender', ev.gender, 'age', ev.age, 'level', ev.level, 'name', ev.name)
      ORDER BY ev.position, ev.id), '[]') FROM events ev WHERE ev.tournament_id = t.id) AS events`;
 // Cards list their events by short name ("MS U19", "XD").
-const cardOf = (r) => ({ ...r, formatName: FORMATS[r.format], events: (r.events || []).map((e) => catalog.shortName(e)) });
+const cardOf = ({ coverId, ...r }) => ({
+  ...r,
+  formatName: FORMATS[r.format],
+  events: (r.events || []).map((e) => catalog.shortName(e)),
+  cover: coverId ? mediaUrl(coverId) : null,
+});
 const WHEN = ['upcoming', 'week', 'month', 'past', 'any'];
 
 const groupName = (no) => `Group ${String.fromCharCode(65 + no)}`;
@@ -595,6 +629,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   async function view(q, t, actor) {
     const events = await eventsOf(q, t.id); // first: it may attach stray entries to a new event
+    const media = await q('SELECT id, kind, caption, position FROM media WHERE tournament_id = $1 ORDER BY kind, position, created_at', [t.id]);
     const [entries, rows, access] = await Promise.all([
       q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE tournament_id = $1 ORDER BY seed, id`, [t.id]),
       q(`SELECT * FROM matches WHERE tournament_id = $1 ORDER BY ${MATCH_ORDER}`, [t.id]),
@@ -619,6 +654,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       sport: { id: t.sportDef.id, name: t.sportDef.name },
       visibility: t.visibility,
       official: t.official,
+      ...pageContent(t, media, access),
       plan: t.plan,
       ...(access.can.manage && {
         planName: planName(t.plan),
@@ -673,6 +709,112 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (!Number.isInteger(at) || at !== m.rallies.length) {
       fail(409, 'The score was changed on another device — showing the latest score', 'stale');
     }
+  }
+
+  // ---------- tournament page: about, links, images, branding
+
+  const brandingAllowed = (t) => !billingConfig().enabled || t.plan !== 'free' || Boolean(t.official);
+
+  // What the public page shows (and, for organisers, everything uploaded).
+  function pageContent(t, media, access) {
+    const paid = brandingAllowed(t);
+    const of = (kind) => media.filter((m) => m.kind === kind);
+    const photoLimit = paid ? PHOTO_LIMITS.paid : PHOTO_LIMITS.free;
+    const logo = of('logo')[0];
+    const cover = of('cover')[0];
+    const photo = (m, i) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption, ...(access.can.manage && { hidden: i >= photoLimit }) });
+    const branding = t.branding || {};
+    return {
+      about: t.about,
+      pageLinks: t.links || {}, // website / Instagram / WhatsApp (not the share links)
+      cover: cover ? mediaUrl(cover.id) : null,
+      photos: (access.can.manage ? of('photo') : of('photo').slice(0, photoLimit)).map(photo),
+      // Organiser branding and sponsors come with a paid plan; kept but hidden otherwise.
+      branding: paid && (branding.orgName || branding.accent || logo)
+        ? { orgName: branding.orgName || null, accent: branding.accent || null, logo: logo ? mediaUrl(logo.id) : null }
+        : null,
+      sponsors: paid ? of('sponsor').map((m) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption })) : [],
+      ...(access.can.manage && {
+        brandingAllowed: paid,
+        brandingSettings: { orgName: branding.orgName || '', accent: branding.accent || '', logo: logo ? mediaUrl(logo.id) : null, logoId: logo?.id ?? null },
+        coverId: cover?.id ?? null,
+        allSponsors: of('sponsor').map((m) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption })),
+        mediaLimits: { photos: photoLimit, sponsors: paid ? SPONSOR_LIMIT : 0 },
+      }),
+    };
+  }
+
+  async function uploadMedia(id, actor, input = {}) {
+    const kind = input.kind;
+    if (!MEDIA_KINDS.includes(kind)) fail(400, 'kind must be logo, cover, photo or sponsor');
+    const raw = typeof input.data === 'string' ? input.data.replace(/^data:[^,]*,/, '') : '';
+    const bytes = Buffer.from(raw, 'base64');
+    if (!bytes.length) fail(400, 'Choose an image to upload');
+    if (bytes.length > MAX_IMAGE_BYTES) fail(413, 'That image is too large — try a smaller one');
+    const mime = imageType(bytes);
+    if (!mime) fail(400, 'Upload a JPEG, PNG or WebP image');
+    const caption = text(input.caption, 'Caption', { max: 120, optional: true });
+    return mutate(id, actor, async (q, t) => {
+      const paid = brandingAllowed(t);
+      if ((kind === 'logo' || kind === 'sponsor') && !paid) fail(402, 'Your logo and sponsors come with a paid plan', 'upgrade');
+      const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
+      if (kind === 'photo' && n >= (paid ? PHOTO_LIMITS.paid : PHOTO_LIMITS.free)) {
+        fail(402, paid ? `You can add up to ${PHOTO_LIMITS.paid} photos` : `The free plan includes ${PHOTO_LIMITS.free} photos — a paid plan allows up to ${PHOTO_LIMITS.paid}`, paid ? undefined : 'upgrade');
+      }
+      if (kind === 'sponsor' && n >= SPONSOR_LIMIT) fail(409, `You can add up to ${SPONSOR_LIMIT} sponsor logos`);
+      // One logo and one cover: a new upload replaces the old one.
+      if (kind === 'logo' || kind === 'cover') await q('DELETE FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
+      const mediaId = crypto.createHash('sha256').update(`${t.id}:${kind}:`).update(bytes).digest('hex').slice(0, 32);
+      const [{ next }] = await q('SELECT COALESCE(MAX(position), -1)::int + 1 AS next FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
+      await q(
+        `INSERT INTO media (id, tournament_id, kind, mime, bytes, caption, position) VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO NOTHING`,
+        [mediaId, t.id, kind, mime, bytes, caption, next],
+      );
+    });
+  }
+
+  // Caption, or move one place up/down in its list.
+  async function updateMedia(id, actor, mediaId, input = {}) {
+    return mutate(id, actor, async (q, t) => {
+      const [m] = await q('SELECT * FROM media WHERE id = $1 AND tournament_id = $2', [mediaId, t.id]);
+      if (!m) fail(404, 'Image not found');
+      if (input.caption !== undefined) {
+        await q('UPDATE media SET caption = $1 WHERE id = $2', [text(input.caption, 'Caption', { max: 120, optional: true }), m.id]);
+      }
+      if (input.move === -1 || input.move === 1) {
+        const list = await q('SELECT id FROM media WHERE tournament_id = $1 AND kind = $2 ORDER BY position, created_at', [t.id, m.kind]);
+        const i = list.findIndex((x) => x.id === m.id);
+        const j = i + input.move;
+        if (j >= 0 && j < list.length) {
+          [list[i], list[j]] = [list[j], list[i]];
+          for (const [pos, x] of list.entries()) await q('UPDATE media SET position = $1 WHERE id = $2', [pos, x.id]);
+        }
+      }
+    });
+  }
+
+  // Organisers delete their images; site admins can delete any (moderation).
+  async function deleteMedia(id, actor, mediaId) {
+    return mutate(id, actor, async (q, t) => { // site admins count as organisers everywhere
+      const rows = await q('DELETE FROM media WHERE id = $1 AND tournament_id = $2 RETURNING id', [mediaId, t.id]);
+      if (!rows.length) fail(404, 'Image not found');
+    });
+  }
+
+  // An image for /api/media/:id. Private tournaments' images are for the team only.
+  async function getMedia(mediaId, actorOf) {
+    const [m] = await db.query(
+      `SELECT m.mime, m.bytes, t.id AS tid, t.visibility, t.admin_key, t.scorer_key
+       FROM media m JOIN tournaments t ON t.id = m.tournament_id WHERE m.id = $1`,
+      [mediaId],
+    );
+    if (!m) fail(404, 'Not found');
+    if (m.visibility === 'private') {
+      const access = await accessOf(db.query, { id: m.tid, admin_key: m.admin_key, scorer_key: m.scorer_key }, await actorOf());
+      if (!access.score) fail(404, 'Not found');
+    }
+    return { mime: m.mime, bytes: Buffer.from(m.bytes), public: m.visibility !== 'private' };
   }
 
   // ---------- tournaments
@@ -822,6 +964,28 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return mutate(id, actor, async (q, t) => {
       const details = detailsOf(input, t);
       const name = input.name === undefined ? t.name : text(input.name, 'Tournament name');
+      if (input.about !== undefined) {
+        const about = typeof input.about === 'string' ? input.about.trim().replace(/\r\n/g, '\n') : '';
+        if (about.length > 2000) fail(400, 'About must be at most 2,000 characters');
+        await q('UPDATE tournaments SET about = $1 WHERE id = $2', [about || null, t.id]);
+      }
+      if (input.pageLinks !== undefined) {
+        const l = input.pageLinks || {};
+        const links = {
+          website: linkOf(l.website, 'Website'),
+          instagram: linkOf(l.instagram, 'Instagram', 'instagram.com'),
+          whatsapp: linkOf(l.whatsapp, 'WhatsApp group', 'chat.whatsapp.com'),
+        };
+        await q('UPDATE tournaments SET links = $1::jsonb WHERE id = $2', [JSON.stringify(links), t.id]);
+      }
+      if (input.branding !== undefined) {
+        const b = input.branding || {};
+        const orgName = text(b.orgName, 'Organiser name', { max: 60, optional: true });
+        const accent = b.accent ? String(b.accent).trim() : null;
+        if (accent && !HEX_COLOUR.test(accent)) fail(400, 'Brand colour must be a hex colour like #F97316');
+        if ((orgName || accent) && !brandingAllowed(t)) fail(402, 'Your logo and colours come with a paid plan', 'upgrade');
+        await q('UPDATE tournaments SET branding = $1::jsonb WHERE id = $2', [JSON.stringify({ orgName, accent: accent && accent.toUpperCase() }), t.id]);
+      }
       const config = { ...t.config };
       if (input.selfEntry !== undefined) config.selfEntry = Boolean(input.selfEntry);
       if (input.entriesCloseAt !== undefined) config.entriesCloseAt = closeTime(input.entriesCloseAt);
@@ -1954,6 +2118,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
     getTournament,
     setVisibility,
     addEvents,
+    uploadMedia,
+    updateMedia,
+    deleteMedia,
+    getMedia,
     pairSolos,
     drawPairs,
     unpair,

@@ -156,6 +156,149 @@
   const placeLine = (venue, city) => [venue, city].filter(Boolean).join(', ') || null;
   const detailValues = (t) => ({ venue: t.venue, ...t.location, startsOn: t.startsOn, endsOn: t.endsOn });
 
+  // ---------- organiser branding (paid) and page images
+  // A brand colour replaces the lime accent on that tournament's pages. Text
+  // on it, and accent-coloured text on the page, are picked or adjusted so
+  // they stay readable (4.5:1) in both themes.
+  const hexRgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const toHex = (rgb) => `#${rgb.map((c) => Math.round(c).toString(16).padStart(2, '0')).join('')}`;
+  const luminance = (rgb) => {
+    const [r, g, b] = rgb.map((c) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a, b) => { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const mixRgb = (rgb, to, f) => rgb.map((c, i) => c + (to[i] - c) * f);
+  function readableOn(rgb, bg, towards) {
+    let c = rgb;
+    for (let i = 0; i < 12 && contrast(c, bg) < 4.5; i++) c = mixRgb(c, towards, 0.15);
+    return toHex(c);
+  }
+  let brandStyle;
+  function applyBranding(b) {
+    document.body.classList.toggle('branded', Boolean(b));
+    const accent = b && b.accent;
+    if (!accent) {
+      if (brandStyle) brandStyle.textContent = '';
+      return;
+    }
+    if (!brandStyle) {
+      brandStyle = document.createElement('style');
+      document.head.append(brandStyle);
+    }
+    const NAVY = [11, 18, 32];
+    const WHITE = [255, 255, 255];
+    const rgb = hexRgb(accent);
+    const on = contrast(rgb, NAVY) >= contrast(rgb, WHITE) ? '#0B1220' : '#FFFFFF';
+    brandStyle.textContent = `
+:root { --accent: ${accent}; --on-accent: ${on}; --accent-text: ${readableOn(rgb, NAVY, WHITE)}; --accent-soft: rgba(${rgb.join(',')}, 0.14); --link: ${readableOn(rgb, NAVY, WHITE)}; }
+:root[data-theme='light'] { --accent-text: ${readableOn(rgb, WHITE, NAVY)}; --accent-soft: rgba(${rgb.join(',')}, 0.12); }
+:root[data-theme='light'] .btn-primary, :root[data-theme='light'] .btn-primary:hover { border-color: var(--accent); }`;
+  }
+
+  // Shrinks a picked image in the browser (and drops camera data such as
+  // location) before upload: photos to 1600px JPEG, logos to 512px PNG.
+  async function prepareImage(file, kind) {
+    if (!/^image\/(jpeg|png|webp|heic|heif|gif)$/.test(file.type) && !/\.(jpe?g|png|webp|heic)$/i.test(file.name)) {
+      throw new Error('Choose a photo or image file');
+    }
+    const small = kind === 'logo' || kind === 'sponsor';
+    const max = small ? 512 : 1600;
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => {
+      throw new Error('That image couldn\'t be read — try a JPEG or PNG');
+    });
+    const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, small ? 'image/png' : 'image/jpeg', 0.82));
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('That image couldn\'t be read'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Full-screen photo viewer: arrows / swipe to move, Esc or tap outside to close.
+  function openLightbox(photos, start) {
+    let i = start;
+    const img = h('img', { alt: '' });
+    const caption = h('p', { class: 'lb-caption' });
+    const show = () => {
+      img.src = photos[i].url;
+      img.alt = photos[i].caption || `Photo ${i + 1} of ${photos.length}`;
+      caption.textContent = [photos[i].caption, `${i + 1} / ${photos.length}`].filter(Boolean).join(' · ');
+    };
+    const go = (d) => { i = (i + d + photos.length) % photos.length; show(); };
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') close();
+      else if (e.key === 'ArrowRight') go(1);
+      else if (e.key === 'ArrowLeft') go(-1);
+    };
+    let startX = null;
+    const box = h('div', {
+      class: 'lightbox', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Photos',
+      onclick: (e) => { if (e.target === box) close(); },
+      ontouchstart: (e) => { startX = e.touches[0].clientX; },
+      ontouchend: (e) => { if (startX != null) { const dx = e.changedTouches[0].clientX - startX; if (Math.abs(dx) > 40) go(dx < 0 ? 1 : -1); } startX = null; },
+    },
+    h('button', { class: 'lb-close', 'aria-label': 'Close', onclick: close }, '✕'),
+    photos.length > 1 ? h('button', { class: 'lb-prev', 'aria-label': 'Previous photo', onclick: () => go(-1) }, '‹') : null,
+    h('figure', {}, img, caption),
+    photos.length > 1 ? h('button', { class: 'lb-next', 'aria-label': 'Next photo', onclick: () => go(1) }, '›') : null);
+    show();
+    document.body.append(box);
+    document.addEventListener('keydown', onKey);
+    box.querySelector('.lb-close').focus();
+  }
+
+  // Plain text with line breaks; web links become links (never raw HTML).
+  function richText(text) {
+    return text.split('\n').map((line) => h('p', {}, line.split(/(https?:\/\/[^\s]+)/g).map((part, i) => (i % 2
+      ? h('a', { href: part, target: '_blank', rel: 'noopener nofollow' }, part)
+      : part))));
+  }
+
+  const hasPage = (t) => Boolean(t.about || t.photos.length || Object.values(t.pageLinks || {}).some(Boolean));
+
+  function panelAbout(t) {
+    const L = t.pageLinks || {};
+    const links = [['website', 'Website'], ['instagram', 'Instagram'], ['whatsapp', 'WhatsApp group']].filter(([k]) => L[k]);
+    const photos = t.photos.filter((p) => !p.hidden);
+    return [
+      t.about || links.length
+        ? h('div', { class: 'card about-card' },
+          h('h2', {}, 'About'),
+          t.about ? h('div', { class: 'about-text' }, richText(t.about)) : null,
+          links.length ? h('div', { class: 'actions' }, links.map(([k, label]) => h('a', { class: 'btn btn-small', href: L[k], target: '_blank', rel: 'noopener nofollow' }, label))) : null)
+        : null,
+      photos.length
+        ? h('div', { class: 'card' },
+          h('h2', {}, 'Photos'),
+          h('div', { class: 'gallery' }, photos.map((p, i) => h('button', { class: 'gallery-item', 'aria-label': p.caption || `Photo ${i + 1}`, onclick: () => openLightbox(photos, i) },
+            h('img', { src: p.url, alt: p.caption || '', loading: 'lazy' })))))
+        : null,
+      !hasPage(t) ? empty('Nothing here yet.') : null,
+    ];
+  }
+
+  // Under the tournament: sponsors (paid) and the "Powered by" credit on branded pages.
+  function brandFooter(t) {
+    return [
+      t.sponsors && t.sponsors.length
+        ? h('section', { class: 'sponsors', 'aria-label': 'Sponsors' },
+          h('p', { class: 'eyebrow' }, 'Supported by'),
+          h('div', { class: 'sponsor-logos' }, t.sponsors.map((sp) => h('img', { src: sp.url, alt: sp.caption || 'Sponsor', loading: 'lazy' }))))
+        : null,
+      t.branding
+        ? h('a', { class: 'powered', href: '/', 'aria-label': 'Powered by Tonament' },
+          h('span', {}, 'Powered by'), h('img', { class: 'on-dark', src: '/brand/logo-white.svg', alt: 'TONAMENT', height: 14 }), h('img', { class: 'on-light', src: '/brand/logo.svg', alt: 'TONAMENT', height: 14 }))
+        : null,
+    ];
+  }
+
   // ---------- events
   // The tournament page shows one event at a time. withEvent() gives the
   // panels a tournament-shaped object for that event (its entries, draw,
@@ -371,6 +514,7 @@
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
     else view = viewHome();
     app.replaceChildren(...[view].flat(Infinity).filter(Boolean));
+    applyBranding(['tournament', 'match'].includes(S.route.name) && S.t && !S.error ? S.t.branding : null);
     renderNav();
   }
 
@@ -577,7 +721,8 @@
 
   function tournamentCard(t, roleName) {
     const sport = S.sports.find((s) => s.id === t.sport);
-    return h('a', { class: 'card t-card', href: `#/t/${t.id}` },
+    return h('a', { class: `card t-card${t.cover ? ' has-cover' : ''}`, href: `#/t/${t.id}` },
+      t.cover ? h('img', { class: 't-card-cover', src: t.cover, alt: '', loading: 'lazy' }) : null,
       h('div', { class: 'card-head' },
         h('h3', {}, t.name),
         h('span', {}, visibilityPill(t.visibility), ' ', roleName ? pill('org', roleName) : null, ' ',
@@ -939,6 +1084,7 @@
 
   function tabsWithTeam(t) {
     const tabs = tabsFor(t);
+    if (hasPage(t)) tabs.push({ id: 'about', label: 'About' });
     if (t.can.manage) tabs.push({ id: 'events', label: 'Events' }, { id: 'team', label: 'Team' });
     return tabs;
   }
@@ -964,10 +1110,15 @@
     document.title = `${tt.name} · Tonament`;
     const tabs = tabsWithTeam(t);
     const active = tabs.some((x) => x.id === S.route.tab) ? S.route.tab : tabs[0].id;
-    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, team: panelTeam, events: panelEvents };
-    const perEvent = !['team', 'events'].includes(active);
+    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, team: panelTeam, events: panelEvents, about: panelAbout };
+    const perEvent = !['team', 'events', 'about'].includes(active);
     const statusLine = multiEvent(tt) ? (tt.entriesOpen ? 'Entries open' : null) : entryStatusLine(t);
+    const b = tt.branding;
     return [
+      b ? h('div', { class: 'org-bar' },
+        b.logo ? h('img', { src: b.logo, alt: '', class: 'org-logo' }) : null,
+        b.orgName ? h('span', { class: 'org-name' }, b.orgName) : null) : null,
+      tt.cover ? h('div', { class: 't-hero' }, h('img', { src: tt.cover, alt: '' })) : null,
       h('header', { class: 't-header' },
         h('div', { class: 't-title' }, h('h1', {}, tt.name), pill(tt.status, STATUS[tt.status]), tt.can.score ? visibilityPill(tt.visibility) : null,
           tt.official ? pill('org', 'Organised by Tonament') : null),
@@ -982,6 +1133,7 @@
         ? h('p', { class: 'event-title' }, h('strong', {}, ev.name), ' · ', ev.formatName, ev.fee ? ` · ${money(ev.fee)} entry` : '', ev.status !== 'setup' ? ` · ${STATUS[ev.status]}` : '')
         : null,
       h('section', {}, panels[active](t)),
+      brandFooter(tt),
     ];
   }
 
@@ -2168,7 +2320,7 @@
         : full ? `This tournament is full on the ${t.planName} plan (${t.limits.entries} entries)` : 'Need more entries?'),
       h('p', {}, waiting
         ? 'Move up a plan to include them — everyone waiting is confirmed automatically.'
-        : `Move up a plan for more entries across all events — one-time, for this tournament${paidBefore ? '; you only pay the difference' : ''}.`),
+        : `Move up a plan for more entries across all events${paidBefore ? '' : ', plus your logo, colours and sponsors on the public pages'} — one-time, for this tournament${paidBefore ? '; you only pay the difference' : ''}.`),
       h('div', { class: 'actions' }, upgradeButtons(t), h('a', { class: 'btn btn-ghost', href: '/pricing', target: '_blank', rel: 'noopener' }, 'Compare plans')),
       h('p', { class: 'hint', style: 'margin:10px 0 0' }, 'Secure payment by Razorpay — UPI, cards, netbanking or wallets. Activated instantly.'));
   }
@@ -2236,6 +2388,133 @@
         class: 'btn btn-small btn-ghost',
         onclick: () => copy(`${location.origin}/#/t/${t.id}`, t.visibility === 'private' ? 'Link copied — only your team can open it until you publish' : 'Public link copied'),
       }, 'Copy public link'));
+  }
+
+  // ----- page & branding (organisers)
+  function pageCard(t) {
+    if (!t.can.manage) return null;
+    // Unsaved text survives the redraws that uploads cause.
+    const draft = S.pageDraft && S.pageDraft.tid === t.id ? S.pageDraft : null;
+    const L = draft ? draft.pageLinks : t.pageLinks || {};
+    const saved = t.brandingSettings || {};
+    const B = draft ? { ...saved, orgName: draft.orgName, accent: draft.accentOn ? draft.accent : '' } : saved;
+    const about = draft ? draft.about : t.about || '';
+    const limits = t.mediaLimits || { photos: 3, sponsors: 0 };
+    const keepDraft = (f) => {
+      const fd = new FormData(f);
+      S.pageDraft = {
+        tid: t.id,
+        about: fd.get('about') || '',
+        pageLinks: { website: fd.get('website') || '', instagram: fd.get('instagram') || '', whatsapp: fd.get('whatsapp') || '' },
+        orgName: fd.get('orgName') || '',
+        accent: fd.get('accent') || '',
+        accentOn: Boolean(fd.get('accentOn')),
+      };
+    };
+    const paid = t.brandingAllowed;
+    const upload = (kind, files, caption) => {
+      const list = [...files];
+      if (!list.length) return;
+      S.uploading = (S.uploading || 0) + list.length;
+      render();
+      (async () => {
+        for (const file of list) {
+          try {
+            const data = await prepareImage(file, kind);
+            S.t = await api('POST', `${tPath(t)}/media`, { kind, data, caption }, t.id);
+            toast(kind === 'photo' ? 'Photo added ✓' : kind === 'cover' ? 'Cover updated ✓' : kind === 'logo' ? 'Logo updated ✓' : 'Sponsor added ✓');
+          } catch (e) {
+            if (e.code === 'upgrade') S.upgradeFor = t.id;
+            toast(e.message, true);
+          } finally {
+            S.uploading -= 1;
+            render();
+          }
+        }
+      })();
+    };
+    const fileButton = (label, kind, multiple, disabled) => h('label', { class: `btn btn-small${disabled ? ' disabled' : ''}` },
+      label,
+      h('input', { type: 'file', accept: 'image/*', multiple: multiple || null, hidden: true, disabled: disabled || null, onchange: (e) => { upload(kind, e.target.files); e.target.value = ''; } }));
+    const mediaAct = (mediaId, body, msg) => act(async () => {
+      S.t = await api(body ? 'PATCH' : 'DELETE', `${tPath(t)}/media/${mediaId}`, body, t.id);
+    }, msg);
+    const swatches = ['#A3E635', '#F97316', '#EF4444', '#EC4899', '#8B5CF6', '#3B82F6', '#06B6D4', '#EAB308'];
+
+    const form = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const body = {
+          about: fd.get('about') || '',
+          pageLinks: { website: fd.get('website') || '', instagram: fd.get('instagram') || '', whatsapp: fd.get('whatsapp') || '' },
+          ...(paid && { branding: { orgName: fd.get('orgName') || '', accent: fd.get('accentOn') ? fd.get('accent') : '' } }),
+        };
+        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), body, t.id); S.pageDraft = null; }, 'Page saved');
+      },
+      oninput: () => keepDraft(form),
+      onchange: () => keepDraft(form),
+    },
+    field('About this tournament', h('textarea', { name: 'about', rows: 4, maxlength: 2000, value: about, placeholder: 'What it is, who can play, prizes, contact…' })),
+    h('div', { class: 'grid-2' },
+      field('Website', h('input', { name: 'website', type: 'url', value: L.website || '', placeholder: 'https://' })),
+      field('Instagram', h('input', { name: 'instagram', type: 'url', value: L.instagram || '', placeholder: 'https://instagram.com/…' }))),
+    field('WhatsApp group', h('input', { name: 'whatsapp', type: 'url', value: L.whatsapp || '', placeholder: 'https://chat.whatsapp.com/…' })),
+
+    h('fieldset', { class: 'details-set' }, h('legend', {}, 'Cover image'),
+      t.cover ? h('img', { class: 'cover-preview', src: t.cover, alt: 'Cover' }) : h('p', { class: 'hint', style: 'margin:0' }, 'A poster or a photo — shown at the top of the page and on search results.'),
+      h('div', { class: 'actions' },
+        fileButton(t.cover ? 'Replace cover' : 'Upload cover', 'cover'),
+        t.cover ? h('button', { type: 'button', class: 'btn btn-small btn-ghost', onclick: () => mediaAct(t.coverId, null, 'Cover removed') }, 'Remove') : null)),
+
+    h('fieldset', { class: 'details-set' }, h('legend', {}, `Photos (${t.photos.length} of ${limits.photos})`),
+      t.photos.length
+        ? h('ol', { class: 'photo-list' }, t.photos.map((p, i) => h('li', { class: p.hidden ? 'hidden-photo' : '' },
+          h('img', { src: p.url, alt: '' }),
+          h('input', {
+            value: p.caption || '', placeholder: 'Caption (optional)', maxlength: 120, 'aria-label': 'Caption',
+            onchange: (e) => mediaAct(p.id, { caption: e.target.value }, 'Caption saved'),
+          }),
+          p.hidden ? h('small', { class: 'hint' }, 'Hidden on the free plan') : null,
+          h('span', { class: 'row-actions' },
+            h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move up', disabled: i === 0, onclick: () => mediaAct(p.id, { move: -1 }) }, '↑'),
+            h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move down', disabled: i === t.photos.length - 1, onclick: () => mediaAct(p.id, { move: 1 }) }, '↓'),
+            h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Delete photo', onclick: () => confirm('Delete this photo?') && mediaAct(p.id, null, 'Photo deleted') }, '✕')))))
+        : h('p', { class: 'hint', style: 'margin:0' }, 'Photos from past editions, the venue or the trophies.'),
+      h('div', { class: 'actions' }, fileButton('Add photos', 'photo', true, t.photos.length >= limits.photos)),
+      !paid ? h('p', { class: 'hint', style: 'margin:0' }, `Free plan: ${limits.photos} photos. Paid plans: up to 30.`) : null),
+
+    h('fieldset', { class: `details-set${paid ? '' : ' locked'}` }, h('legend', {}, paid ? 'Your branding' : 'Your branding · paid plans'),
+      !paid
+        ? [h('p', { class: 'hint', style: 'margin:0' }, 'Put your logo, name and colours on the public pages, add sponsor logos, and show up to 30 photos — with "Powered by TONAMENT" at the bottom. Included with every paid plan.'),
+          (t.upgrades || []).length ? h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn btn-primary btn-small', onclick: () => payPass(t, t.upgrades[0].id) }, `Get ${t.upgrades[0].name} — ${money(t.upgrades[0].amount)}`)) : null]
+        : [
+          h('div', { class: 'brand-row' },
+            B.logo ? h('img', { class: 'logo-preview', src: B.logo, alt: 'Logo' }) : h('span', { class: 'logo-preview empty' }, 'Logo'),
+            h('div', { class: 'actions' },
+              fileButton(B.logo ? 'Replace logo' : 'Upload logo', 'logo'),
+              B.logo ? h('button', { type: 'button', class: 'btn btn-small btn-ghost', onclick: () => mediaAct(B.logoId, null, 'Logo removed') }, 'Remove') : null)),
+          field('Organiser name', h('input', { name: 'orgName', maxlength: 60, value: B.orgName || '', placeholder: 'e.g. Smash Badminton Club' })),
+          h('label', { class: 'check-field' },
+            h('input', { type: 'checkbox', name: 'accentOn', checked: Boolean(B.accent) }),
+            h('span', {}, h('strong', {}, 'Use our brand colour'), h('small', {}, 'For buttons, tabs and highlights on your public pages.'))),
+          h('div', { class: 'swatches' },
+            h('input', { type: 'color', name: 'accent', value: B.accent || '#F97316', 'aria-label': 'Brand colour' }),
+            swatches.map((c) => h('button', {
+              type: 'button', class: 'swatch', style: `background:${c}`, 'aria-label': `Use ${c}`,
+              onclick: (e) => { const f = e.target.form; f.accent.value = c; f.accentOn.checked = true; f.setAttribute('data-dirty', ''); keepDraft(f); },
+            }))),
+          h('div', { class: 'sponsor-admin' },
+            h('strong', {}, `Sponsor logos (${(t.allSponsors || []).length} of ${limits.sponsors})`),
+            h('div', { class: 'sponsor-logos' }, (t.allSponsors || []).map((sp) => h('span', { class: 'sponsor-edit' },
+              h('img', { src: sp.url, alt: '' }),
+              h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Remove sponsor', onclick: () => mediaAct(sp.id, null, 'Sponsor removed') }, '✕')))),
+            fileButton('Add sponsor logo', 'sponsor', true, (t.allSponsors || []).length >= limits.sponsors)),
+        ]),
+    S.uploading ? h('p', { class: 'hint uploading', role: 'status' }, `Uploading ${S.uploading} image${S.uploading > 1 ? 's' : ''}…`) : null,
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save page')));
+    return panel(t, 'page', 'Public page · about, photos and branding', form);
   }
 
   // ----- visibility (owner controls who can see the tournament)
@@ -2316,6 +2595,7 @@
 
     return [
       visibilityCard(t),
+      pageCard(t),
       h('div', { class: 'card' },
         h('h2', {}, 'Team'),
         h('p', { class: 'muted small' }, 'Add people by email. If they don\'t have an account yet, they get access as soon as they sign up with that email.',
