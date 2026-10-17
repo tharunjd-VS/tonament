@@ -25,6 +25,7 @@
     offline: false, // scoring requests are waiting for the connection to come back
     draft: '',
     pendingRender: false,
+    openPanels: new Set(), // "tournamentId:panel" for Settings / Venue & date panels left open
   };
 
   const ROLE_NAMES = { admin: 'Site admin', owner: 'Owner', organiser: 'Organiser', umpire: 'Umpire' };
@@ -157,7 +158,9 @@
 
   function isEditing() {
     const a = document.activeElement;
-    return Boolean(a && app.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.type !== 'radio');
+    if (a && app.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.type !== 'radio') return true;
+    // Unsaved changes in an open Settings-style panel hold back live redraws.
+    return Boolean(app.querySelector('details[data-panel][open] form[data-dirty]'));
   }
 
   // ---------- routing
@@ -322,6 +325,13 @@
     app.replaceChildren(...[view].flat(Infinity).filter(Boolean));
     renderNav();
   }
+
+  const markDirty = (e) => {
+    const form = e.target.closest && e.target.closest('details[data-panel] form');
+    if (form) form.setAttribute('data-dirty', '');
+  };
+  app.addEventListener('input', markDirty);
+  app.addEventListener('change', markDirty);
 
   app.addEventListener('focusout', () => setTimeout(() => {
     if (S.pendingRender && !isEditing()) render();
@@ -1012,6 +1022,40 @@
         : null);
   }
 
+  // A collapsible editing panel that stays open across live-update redraws.
+  function panel(t, name, summary, form) {
+    const key = `${t.id}:${name}`;
+    return h('details', {
+      class: 'card',
+      'data-panel': name,
+      open: S.openPanels.has(key) || null,
+      ontoggle: (e) => {
+        if (e.target.open) {
+          S.openPanels.add(key);
+          return;
+        }
+        S.openPanels.delete(key);
+        form.removeAttribute('data-dirty'); // closing discards unsaved edits
+        if (S.pendingRender && !isEditing()) render();
+      },
+    }, h('summary', {}, summary), form);
+  }
+
+  // Saves a panel's form. A failed save keeps what was typed (no redraw).
+  async function saveForm(form, fn, success) {
+    const btn = form.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      await fn();
+      toast(success);
+      render();
+    } catch (e) {
+      if (e.code === 'upgrade' && S.t) S.upgradeFor = S.t.id; // shown once the panel is saved or closed
+      toast(e.message, true);
+      btn.disabled = false;
+    }
+  }
+
   // After the start only the date and venue can still change.
   function detailsCard(t) {
     if (!t.can.manage) return null;
@@ -1019,12 +1063,12 @@
       class: 'form',
       onsubmit: (e) => {
         e.preventDefault();
-        act(async () => { S.t = await api('PATCH', tPath(t), readDetails(form), t.id); }, 'Venue and date saved');
+        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), readDetails(form), t.id); }, 'Venue and date saved');
       },
     },
     detailsFields(detailValues(t)),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
-    return h('details', { class: 'card' }, h('summary', {}, 'Venue & date'), form);
+    return panel(t, 'details', 'Venue & date', form);
   }
 
   function settingsCard(t) {
@@ -1034,14 +1078,14 @@
       class: 'form',
       onsubmit: (e) => {
         e.preventDefault();
-        act(async () => { S.t = await api('PATCH', tPath(t), readSettings(form, sport), t.id); }, 'Settings saved');
+        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), readSettings(form, sport), t.id); }, 'Settings saved');
       },
     },
     field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: t.name })),
     settingsFields(sport, { format: t.format, ...t.config, ...detailValues(t) }),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save settings')));
     syncFormat(form);
-    return h('details', { class: 'card' }, h('summary', {}, `Settings · ${t.formatName}`), form);
+    return panel(t, 'settings', `Settings · ${t.formatName}`, form);
   }
 
   function dangerZone(t) {
