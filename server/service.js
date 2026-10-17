@@ -786,6 +786,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const list = Array.isArray(input.events) && input.events.length ? input.events : [{}];
     if (list.length > 30) fail(400, 'A tournament can have at most 30 events');
     const events = list.map((e) => ({ ...eventFields({ ...e }), format: FORMATS[e.format] ? e.format : format }));
+    const listed = new Set();
+    for (const e of events) {
+      const label = catalog.eventName(e);
+      if (listed.has(label.toLowerCase())) fail(409, `${label} is listed twice`);
+      listed.add(label.toLowerCase());
+    }
     const id = `${slugify(name)}-${crypto.randomBytes(3).toString('hex')}`;
     const adminKey = crypto.randomBytes(18).toString('base64url');
     const scorerKey = crypto.randomBytes(18).toString('base64url');

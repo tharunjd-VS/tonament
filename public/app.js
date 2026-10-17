@@ -728,25 +728,134 @@
     return { discipline, gender, age: readChoice(fd, 'age'), level: readChoice(fd, 'level'), name: fd.get('eventName') || '' };
   }
 
-  // Create form: tick the events to run; age group and level apply to all of them.
-  function quickAddFields(defaults = ['OS']) {
-    return h('fieldset', { class: 'details-set quick-add' }, h('legend', {}, 'Events'),
-      h('p', { class: 'hint', style: 'margin:0' }, 'Tick every event you\'re running — each gets its own entries and draw. You can add more later.'),
-      h('div', { class: 'quick-grid' }, CAT.PRESETS.map((p) => h('label', { class: 'check-field' },
-        h('input', { type: 'checkbox', name: 'preset', value: p.key, checked: defaults.includes(p.key) }),
-        h('span', {}, h('strong', {}, p.label))))),
-      h('div', { class: 'grid-2' }, choiceField('Age group', 'age', CAT.AGES, 'Open'), choiceField('Level', 'level', CAT.LEVELS, 'Open')));
+  // ----- event list builder (create form and Events tab)
+  // One row per event, each with its own type, age group and level.
+  const EVENT_TYPES = [...CAT.PRESETS.map((p) => [`${p.gender}-${p.discipline}`, p.label]), ['any', 'Open (singles or pairs)']];
+  const typeOf = (e) => (e.discipline === 'any' ? 'any' : `${e.gender}-${e.discipline}`);
+  const fromType = (type) => {
+    if (type === 'any') return { gender: 'open', discipline: 'any' };
+    const [gender, discipline] = type.split('-');
+    return { gender, discipline };
+  };
+
+  // Standard values plus "Custom…", read with .read(); not tied to form field names.
+  function pickControl(label, options, value, onchange) {
+    const custom = value && !options.includes(value);
+    const box = h('input', {
+      class: 'pick-custom', maxlength: 30, value: custom ? value : '', placeholder: `Custom ${label.toLowerCase()}`,
+      'aria-label': `Custom ${label.toLowerCase()}`, hidden: !custom, oninput: onchange,
+    });
+    const select = h('select', {
+      value: custom ? '__custom' : value || options[0],
+      onchange: (e) => {
+        box.hidden = e.target.value !== '__custom';
+        if (!box.hidden) box.focus();
+        onchange();
+      },
+    }, options.map((o) => h('option', { value: o }, o)), h('option', { value: '__custom' }, 'Custom…'));
+    const wrap = h('div', { class: 'stack' }, select, box);
+    wrap.read = () => (select.value === '__custom' ? box.value.trim() || 'Open' : select.value);
+    return wrap;
   }
 
-  function readQuickAdd(form) {
-    const fd = new FormData(form);
-    const age = readChoice(fd, 'age');
-    const level = readChoice(fd, 'level');
-    return fd.getAll('preset').map((key) => {
-      const p = CAT.PRESETS.find((x) => x.key === key);
-      return { discipline: p.discipline, gender: p.gender, age, level };
-    });
+  function eventBuilder(initial = []) {
+    const list = h('div', { class: 'ev-rows' });
+    const note = h('p', { class: 'ev-note', hidden: true });
+    const touched = () => list.closest('form')?.setAttribute('data-dirty', ''); // keep live redraws away
+    const rows = () => [...list.children];
+
+    function refresh() {
+      const seen = new Set();
+      for (const r of rows()) {
+        const name = CAT.eventName(r.read());
+        const dup = seen.has(name.toLowerCase());
+        seen.add(name.toLowerCase());
+        r.classList.toggle('dup', dup);
+        r.preview.textContent = dup ? `${name} — already in the list` : name;
+      }
+      note.hidden = rows().length > 0;
+      note.textContent = 'Add at least one event.';
+    }
+
+    function addRow(v) {
+      const row = h('div', { class: 'ev-row' });
+      const type = h('select', { 'aria-label': 'Event type', value: typeOf(v), onchange: refresh },
+        EVENT_TYPES.map(([value, label]) => h('option', { value }, label)));
+      const age = pickControl('Age group', CAT.AGES, v.age, refresh);
+      const level = pickControl('Level', CAT.LEVELS, v.level, refresh);
+      row.read = () => ({ ...fromType(type.value), age: age.read(), level: level.read() });
+      row.preview = h('div', { class: 'ev-preview', 'aria-live': 'polite' });
+      row.append(
+        field('Event', type, 'ev-type'),
+        field('Age group', age, 'ev-age'),
+        field('Level', level, 'ev-level'),
+        h('button', { type: 'button', class: 'icon-btn ev-remove', 'aria-label': 'Remove this event', title: 'Remove', onclick: () => { row.remove(); touched(); refresh(); } }, '✕'),
+        row.preview);
+      list.append(row);
+      refresh();
+    }
+
+    // "Add several at once": every ticked type × age group × level.
+    const ticks = (options, prefix) => h('div', { class: 'quick-grid' }, options.map(([value, label]) => h('label', { class: 'check-field' },
+      h('input', { type: 'checkbox', 'data-group': prefix, value }), h('span', {}, label))));
+    const several = h('details', { class: 'ev-several' },
+      h('summary', {}, 'Add several at once'),
+      h('p', { class: 'hint' }, 'Tick event types, age groups and levels — one event is added for every combination.'),
+      h('strong', {}, 'Events'), ticks(CAT.PRESETS.map((p) => [`${p.gender}-${p.discipline}`, p.label]), 'type'),
+      h('strong', {}, 'Age groups'), ticks(CAT.AGES.map((a) => [a, a]), 'age'),
+      h('strong', {}, 'Levels'), ticks(CAT.LEVELS.map((l) => [l, l]), 'level'),
+      h('button', {
+        type: 'button',
+        class: 'btn btn-small',
+        onclick: () => {
+          const picked = (g) => [...several.querySelectorAll(`input[data-group=${g}]:checked`)].map((i) => i.value);
+          const types = picked('type');
+          if (!types.length) { toast('Tick at least one event type', true); return; }
+          const ages = picked('age').length ? picked('age') : ['Open'];
+          const levels = picked('level').length ? picked('level') : ['Open'];
+          const have = new Set(rows().map((r) => CAT.eventName(r.read()).toLowerCase()));
+          let added = 0;
+          for (const t of types) for (const age of ages) for (const level of levels) {
+            const v = { ...fromType(t), age, level };
+            if (have.has(CAT.eventName(v).toLowerCase())) continue;
+            have.add(CAT.eventName(v).toLowerCase());
+            addRow(v);
+            added++;
+          }
+          for (const i of several.querySelectorAll('input:checked')) i.checked = false;
+          several.open = false;
+          touched();
+          toast(added ? `${added} event${added > 1 ? 's' : ''} added to the list` : 'Those events are already in the list');
+        },
+      }, 'Add these events'));
+
+    const builder = h('fieldset', { class: 'details-set ev-builder' }, h('legend', {}, 'Events'),
+      h('p', { class: 'hint', style: 'margin:0' }, 'One line per event — each gets its own entries and draw. Add the same event for different age groups or levels.'),
+      list, note,
+      h('div', { class: 'actions' },
+        h('button', {
+          type: 'button',
+          class: 'btn btn-small',
+          onclick: () => {
+            const last = rows().at(-1);
+            addRow(last ? last.read() : { discipline: 'singles', gender: 'men', age: 'Open', level: 'Open' });
+            touched();
+          },
+        }, '+ Add event')),
+      several);
+    // The events to create, or an error message.
+    builder.readList = () => {
+      const events = rows().map((r) => r.read());
+      if (!events.length) return { error: 'Add at least one event' };
+      const dup = rows().find((r) => r.classList.contains('dup'));
+      if (dup) return { error: `${CAT.eventName(dup.read())} is in the list twice` };
+      return { events };
+    };
+    for (const v of initial) addRow(v);
+    refresh();
+    return builder;
   }
+  const readEventList = (form) => form.querySelector('.ev-builder').readList();
 
   function syncFormat(form) {
     const fmt = form.querySelector('input[name=format]:checked')?.value;
@@ -789,8 +898,8 @@
         const btn = form.querySelector('button[type=submit]');
         btn.disabled = true;
         try {
-          const events = readQuickAdd(form);
-          if (!events.length) throw new Error('Tick at least one event');
+          const { events, error } = readEventList(form);
+          if (error) throw new Error(error);
           const body = { sport: form.sport.value, ...readTournament(form), ...readFormat(form, sport), events };
           const { id } = await api('POST', '/tournaments', body);
           toast('Tournament created — now add your players');
@@ -810,7 +919,7 @@
       }, s.status === 'live' ? s.name : `${s.name} (coming soon)`))), null,
       h('span', {}, 'More sports are on the way — ', h('a', { href: '#/' }, 'request yours on the home page'), '.'))),
     detailsFields({ country: REGIONS.defaultCountry }),
-    quickAddFields(),
+    eventBuilder([{ discipline: 'singles', gender: 'open', age: 'Open', level: 'Open' }]),
     entryFields({ selfEntry: true }),
     formatFields(sport, { format: 'league_knockout', groupSize: 4, qualifiers: 2, maxEntries: null, lateEntry: false, scoring: sport.defaults }, 'Format (for every event — change any of them later)'),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
@@ -1471,13 +1580,13 @@
       class: 'form',
       onsubmit: (e) => {
         e.preventDefault();
-        const events = readQuickAdd(addForm);
-        if (!events.length) { toast('Tick at least one event', true); return; }
+        const { events, error } = readEventList(addForm);
+        if (error) { toast(error, true); return; }
         saveForm(addForm, async () => { S.t = await api('POST', `${tPath(t)}/events`, { events }, t.id); },
           `${events.length} event${events.length > 1 ? 's' : ''} added`);
       },
     },
-    quickAddFields([]),
+    eventBuilder([{ discipline: 'singles', gender: 'men', age: 'Open', level: 'Open' }]),
     h('p', { class: 'hint', style: 'margin:0' }, 'New events copy the format and scoring of the first event; change them in each event\'s settings.'),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add events')));
     return [

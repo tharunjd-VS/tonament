@@ -177,3 +177,20 @@ test('a tournament that somehow has no event gets one on first view', async () =
   assert.equal(t.events.length, 1);
   assert.deepEqual(t.entries.map((e) => e.name), ['Lone']);
 });
+
+test('creating: the same event type for different age groups and levels; duplicates refused', async () => {
+  const { id } = await svc.createTournament(ORG, {
+    name: 'Levels Cup',
+    events: [
+      { discipline: 'singles', gender: 'men', age: 'U15' },
+      { discipline: 'singles', gender: 'men', age: 'U19' },
+      { discipline: 'doubles', gender: 'women', level: 'Beginner' },
+      { discipline: 'doubles', gender: 'women', level: 'Advanced' },
+    ],
+  });
+  assert.deepEqual((await svc.getTournament(id, ORG)).events.map((e) => e.name),
+    ['Men\'s Singles · U15', 'Men\'s Singles · U19', 'Women\'s Doubles · Beginner', 'Women\'s Doubles · Advanced']);
+  await assert.rejects(svc.createTournament(ORG, {
+    name: 'Twice', events: [{ discipline: 'singles', gender: 'men', age: 'U15' }, { discipline: 'singles', gender: 'men', age: 'u15' }],
+  }), (e) => e.status === 409 && /Men's Singles · U15 is listed twice/.test(e.message));
+});
