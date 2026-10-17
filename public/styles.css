@@ -431,6 +431,12 @@ button.sport-chip:hover { border-color: var(--muted); }
 }
 .check:hover { border-color: var(--accent); }
 .check.on { background: var(--accent); border-color: var(--accent); }
+.check.saving { animation: check-saving 1s ease-in-out infinite; cursor: progress; }
+@keyframes check-saving { 0% { box-shadow: 0 0 0 0 var(--accent); } 100% { box-shadow: 0 0 0 7px transparent; } }
+.entries li.removing { opacity: 0.4; pointer-events: none; transition: opacity 0.15s; }
+.entries li.shake { animation: row-shake 0.4s; }
+@keyframes row-shake { 0%, 100% { transform: none; } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+@media (prefers-reduced-motion: reduce) { .check.saving { animation: none; box-shadow: 0 0 0 3px var(--accent); } .entries li.shake { animation: none; } }
 .entries li.not-here .entry-name, .entries li.out .entry-name { color: var(--muted); }
 .entries li.out .entry-name { text-decoration: line-through; }
 .entries .contact { display: block; font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }

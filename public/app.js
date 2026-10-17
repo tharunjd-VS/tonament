@@ -25,6 +25,10 @@
     offline: false, // scoring requests are waiting for the connection to come back
     draft: '',
     pendingRender: false,
+    pendingCheckIns: new Map(), // entry id -> here, shown at once while the server saves it
+    checkAllBusy: false,
+    removing: new Set(), // entry ids being removed
+    shake: null, // entry id whose check-in just failed
     openPanels: new Set(), // "tournamentId:panel" for Settings / Venue & date panels left open
   };
 
@@ -312,6 +316,10 @@
       return;
     }
     S.pendingRender = false;
+    // Check-ins still being saved win over whatever the server last sent.
+    if (S.t && S.pendingCheckIns.size) {
+      for (const e of S.t.entries) if (S.pendingCheckIns.has(e.id)) e.checkedIn = S.pendingCheckIns.get(e.id);
+    }
     let view;
     if (S.error) view = errorView(S.error, S.errorCode);
     else if (S.route.name === 'new') view = viewNew();
@@ -757,7 +765,8 @@
       h('div', { class: 'card-head' },
         h('h2', {}, editable && usingCheckIn ? `Entries · ${hereCount} of ${t.entries.length} here` : `Entries (${t.entries.length})`),
         editable && t.entries.length ? h('span', { class: 'actions' },
-          h('button', { class: 'btn btn-small btn-ghost', onclick: () => checkInAll(t, !usingCheckIn) }, usingCheckIn ? 'Clear check-in' : 'Check in all'),
+          h('button', { class: 'btn btn-small btn-ghost', disabled: S.checkAllBusy, onclick: () => checkInAll(t, !usingCheckIn) },
+            S.checkAllBusy ? 'Saving…' : usingCheckIn ? 'Clear check-in' : 'Check in all'),
           t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null) : null),
       t.can.manage && t.limits && t.limits.entries
         ? h('p', { class: 'muted small entry-meter' },
@@ -765,13 +774,21 @@
           h('span', { class: 'progress' }, h('span', { style: `width:${Math.min(100, (confirmedCount / t.limits.entries) * 100)}%` })))
         : null,
       t.entries.length
-        ? h('ol', { class: 'entries' }, t.entries.map((e, i) => h('li', { class: `${!setup && (e.withdrawn || !e.inDraw) ? 'out' : ''}${usingCheckIn && !e.checkedIn ? ' not-here' : ''}` },
+        ? h('ol', { class: 'entries' }, t.entries.map((e, i) => h('li', {
+          class: [
+            !setup && (e.withdrawn || !e.inDraw) ? 'out' : '',
+            usingCheckIn && !e.checkedIn ? 'not-here' : '',
+            S.removing.has(e.id) ? 'removing' : '',
+            S.shake === e.id ? 'shake' : '',
+          ].filter(Boolean).join(' '),
+        },
           editable
             ? h('button', {
-              class: `check${e.checkedIn ? ' on' : ''}`,
+              class: `check${e.checkedIn ? ' on' : ''}${S.pendingCheckIns.has(e.id) ? ' saving' : ''}`,
               'aria-pressed': String(e.checkedIn),
+              'aria-busy': S.pendingCheckIns.has(e.id) ? 'true' : null,
               'aria-label': `${e.name} ${e.checkedIn ? 'is checked in' : 'is not checked in'}`,
-              title: e.checkedIn ? 'Checked in — tap to undo' : 'Tap when they arrive',
+              title: S.pendingCheckIns.has(e.id) ? 'Saving…' : e.checkedIn ? 'Checked in — tap to undo' : 'Tap when they arrive',
               onclick: () => checkIn(t, e, !e.checkedIn),
             }, e.checkedIn ? '✓' : '')
             : null,
@@ -922,11 +939,41 @@
         how || 'The knockout has started — late entries could only join during the group stage.'));
   }
 
-  function checkIn(t, e, here) {
-    act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/check-in`, { here }, t.id); });
+  // Check-in shows straight away; the server catches up in the background.
+  async function checkIn(t, e, here) {
+    S.pendingCheckIns.set(e.id, here);
+    render();
+    try {
+      const data = await api('POST', `${tPath(t)}/entries/${e.id}/check-in`, { here }, t.id);
+      S.pendingCheckIns.delete(e.id);
+      if (S.t && S.t.id === data.id) S.t = data;
+    } catch (err) {
+      S.pendingCheckIns.delete(e.id);
+      const row = S.t && S.t.entries.find((x) => x.id === e.id);
+      if (row) row.checkedIn = !here;
+      S.shake = e.id;
+      setTimeout(() => { if (S.shake === e.id) S.shake = null; }, 700);
+      toast(`Couldn't save check-in for ${e.name} — ${err.message}`, true);
+    }
+    render();
   }
-  function checkInAll(t, here) {
-    act(async () => { S.t = await api('POST', `${tPath(t)}/check-in-all`, { here }, t.id); }, here ? 'Everyone checked in' : 'Check-in cleared');
+  async function checkInAll(t, here) {
+    const n = t.entries.filter((e) => e.checkedIn).length;
+    if (!here && !confirm(`Clear check-in for all ${n} checked-in ${n === 1 ? 'entry' : 'entries'}?`)) return;
+    const before = new Map(t.entries.map((e) => [e.id, e.checkedIn]));
+    S.checkAllBusy = true;
+    for (const e of S.t.entries) e.checkedIn = here;
+    render();
+    try {
+      S.t = await api('POST', `${tPath(t)}/check-in-all`, { here }, t.id);
+      toast(here ? 'Everyone checked in' : 'Check-in cleared');
+    } catch (err) {
+      for (const e of S.t.entries) if (before.has(e.id)) e.checkedIn = before.get(e.id);
+      toast(err.message, true);
+    } finally {
+      S.checkAllBusy = false;
+      render();
+    }
   }
   function withdrawEntry(t, e) {
     if (!confirm(`Withdraw ${e.name}? Their remaining matches become walkovers. This can't be undone.`)) return;
@@ -952,8 +999,20 @@
   function confirmEntry(t, e) {
     act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/confirm`, {}, t.id); }, `${e.name} confirmed`);
   }
-  function removeEntry(t, e) {
-    act(async () => { S.t = await api('DELETE', `${tPath(t)}/entries/${e.id}`, undefined, t.id); }, `Removed ${e.name}`);
+  async function removeEntry(t, e) {
+    const self = e.source === 'self' ? '\n\nThey entered themselves online and won\'t be told.' : '';
+    if (!confirm(`Remove ${e.name} from the entries? This can't be undone.${self}`)) return;
+    S.removing.add(e.id);
+    render();
+    try {
+      S.t = await api('DELETE', `${tPath(t)}/entries/${e.id}`, undefined, t.id);
+      toast(`Removed ${e.name}`);
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      S.removing.delete(e.id);
+      render();
+    }
   }
 
   function planText(t, n) {
