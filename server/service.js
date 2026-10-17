@@ -713,13 +713,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // ---------- tournament page: about, links, images, branding
 
-  const brandingAllowed = (t) => !billingConfig().enabled || t.plan !== 'free' || Boolean(t.official);
+  // Any paid plan gets the bigger photo gallery; organiser branding and
+  // sponsors come with Open and above (and the original Event Pass).
+  const BRANDING_PLANS = ['open', 'championship', 'pass'];
+  const paidPlan = (t) => !billingConfig().enabled || t.plan !== 'free' || Boolean(t.official);
+  const brandingAllowed = (t) => !billingConfig().enabled || BRANDING_PLANS.includes(t.plan) || Boolean(t.official);
+  const BRANDING_UPSELL = 'Your logo, colours and sponsors come with the Open plan or above';
 
   // What the public page shows (and, for organisers, everything uploaded).
   function pageContent(t, media, access) {
     const paid = brandingAllowed(t);
     const of = (kind) => media.filter((m) => m.kind === kind);
-    const photoLimit = paid ? PHOTO_LIMITS.paid : PHOTO_LIMITS.free;
+    const photoLimit = paidPlan(t) ? PHOTO_LIMITS.paid : PHOTO_LIMITS.free;
     const logo = of('logo')[0];
     const cover = of('cover')[0];
     const photo = (m, i) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption, ...(access.can.manage && { hidden: i >= photoLimit }) });
@@ -736,6 +741,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       sponsors: paid ? of('sponsor').map((m) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption })) : [],
       ...(access.can.manage && {
         brandingAllowed: paid,
+        brandingPlan: 'open',
         brandingSettings: { orgName: branding.orgName || '', accent: branding.accent || '', logo: logo ? mediaUrl(logo.id) : null, logoId: logo?.id ?? null },
         coverId: cover?.id ?? null,
         allSponsors: of('sponsor').map((m) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption })),
@@ -755,8 +761,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (!mime) fail(400, 'Upload a JPEG, PNG or WebP image');
     const caption = text(input.caption, 'Caption', { max: 120, optional: true });
     return mutate(id, actor, async (q, t) => {
-      const paid = brandingAllowed(t);
-      if ((kind === 'logo' || kind === 'sponsor') && !paid) fail(402, 'Your logo and sponsors come with a paid plan', 'upgrade');
+      const paid = paidPlan(t);
+      if ((kind === 'logo' || kind === 'sponsor') && !brandingAllowed(t)) fail(402, BRANDING_UPSELL, 'upgrade');
       const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
       if (kind === 'photo' && n >= (paid ? PHOTO_LIMITS.paid : PHOTO_LIMITS.free)) {
         fail(402, paid ? `You can add up to ${PHOTO_LIMITS.paid} photos` : `The free plan includes ${PHOTO_LIMITS.free} photos — a paid plan allows up to ${PHOTO_LIMITS.paid}`, paid ? undefined : 'upgrade');
@@ -983,7 +989,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         const orgName = text(b.orgName, 'Organiser name', { max: 60, optional: true });
         const accent = b.accent ? String(b.accent).trim() : null;
         if (accent && !HEX_COLOUR.test(accent)) fail(400, 'Brand colour must be a hex colour like #F97316');
-        if ((orgName || accent) && !brandingAllowed(t)) fail(402, 'Your logo and colours come with a paid plan', 'upgrade');
+        if ((orgName || accent) && !brandingAllowed(t)) fail(402, BRANDING_UPSELL, 'upgrade');
         await q('UPDATE tournaments SET branding = $1::jsonb WHERE id = $2', [JSON.stringify({ orgName, accent: accent && accent.toUpperCase() }), t.id]);
       }
       const config = { ...t.config };

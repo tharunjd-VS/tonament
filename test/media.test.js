@@ -83,9 +83,25 @@ test('uploads are checked: real image types only, size limit, organisers only', 
   assert.equal((await svc.deleteMedia(id, ADMIN, t.photos[0].id)).photos.length, 0);
 });
 
+test('Club: 30 photos but no branding; Open and above: logo, colours and sponsors', async () => {
+  const id = await cup('Club Cup');
+  await svc.adminSetPlan(id, ADMIN, 'club');
+  for (const n of [1, 2, 3, 4]) await svc.uploadMedia(id, ORG, { kind: 'photo', data: jpeg(`club${n}`) });
+  assert.equal((await svc.getTournament(id)).photos.length, 4);
+  await assert.rejects(svc.uploadMedia(id, ORG, { kind: 'logo', data: PNG }), (e) => e.status === 402 && /Open plan or above/.test(e.message));
+  await assert.rejects(svc.uploadMedia(id, ORG, { kind: 'sponsor', data: PNG }), (e) => e.status === 402);
+  await assert.rejects(svc.updateSettings(id, ORG, { branding: { orgName: 'Club' } }), (e) => e.status === 402);
+  const mine = await svc.getTournament(id, ORG);
+  assert.equal(mine.brandingAllowed, false);
+  // Set by an admin without a payment, so the full price is still due.
+  assert.deepEqual(mine.upgrades.map((u) => [u.id, u.amount]), [['open', 99900], ['championship', 199900]]);
+  await svc.adminSetPlan(id, ADMIN, 'pass'); // the original Event Pass includes branding
+  assert.ok((await svc.uploadMedia(id, ORG, { kind: 'logo', data: PNG })).branding.logo);
+});
+
 test('paid: logo, colours, sponsors and more photos; a downgrade hides them but keeps them', async () => {
   const id = await cup('Branded Cup');
-  await svc.adminSetPlan(id, ADMIN, 'club');
+  await svc.adminSetPlan(id, ADMIN, 'open');
   let t = await svc.updateSettings(id, ORG, { branding: { orgName: 'Smash Club', accent: '#f97316' } });
   await assert.rejects(svc.updateSettings(id, ORG, { branding: { accent: 'orange' } }), /hex colour/);
   t = await svc.uploadMedia(id, ORG, { kind: 'logo', data: PNG });

@@ -2320,7 +2320,7 @@
         : full ? `This tournament is full on the ${t.planName} plan (${t.limits.entries} entries)` : 'Need more entries?'),
       h('p', {}, waiting
         ? 'Move up a plan to include them — everyone waiting is confirmed automatically.'
-        : `Move up a plan for more entries across all events${paidBefore ? '' : ', plus your logo, colours and sponsors on the public pages'} — one-time, for this tournament${paidBefore ? '; you only pay the difference' : ''}.`),
+        : `Move up a plan for more entries across all events${paidBefore ? '' : ' (Open and above also put your logo, colours and sponsors on the public pages)'} — one-time, for this tournament${paidBefore ? '; you only pay the difference' : ''}.`),
       h('div', { class: 'actions' }, upgradeButtons(t), h('a', { class: 'btn btn-ghost', href: '/pricing', target: '_blank', rel: 'noopener' }, 'Compare plans')),
       h('p', { class: 'hint', style: 'margin:10px 0 0' }, 'Secure payment by Razorpay — UPI, cards, netbanking or wallets. Activated instantly.'));
   }
@@ -2389,6 +2389,9 @@
         onclick: () => copy(`${location.origin}/#/t/${t.id}`, t.visibility === 'private' ? 'Link copied — only your team can open it until you publish' : 'Public link copied'),
       }, 'Copy public link'));
   }
+
+  // The cheapest plan that includes branding, with what it would cost now.
+  const brandingOffer = (t) => (t.upgrades || []).find((u) => u.id === (t.brandingPlan || 'open'));
 
   // ----- page & branding (organisers)
   function pageCard(t) {
@@ -2483,12 +2486,12 @@
             h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Delete photo', onclick: () => confirm('Delete this photo?') && mediaAct(p.id, null, 'Photo deleted') }, '✕')))))
         : h('p', { class: 'hint', style: 'margin:0' }, 'Photos from past editions, the venue or the trophies.'),
       h('div', { class: 'actions' }, fileButton('Add photos', 'photo', true, t.photos.length >= limits.photos)),
-      !paid ? h('p', { class: 'hint', style: 'margin:0' }, `Free plan: ${limits.photos} photos. Paid plans: up to 30.`) : null),
+      limits.photos < 30 ? h('p', { class: 'hint', style: 'margin:0' }, `Free plan: ${limits.photos} photos. Paid plans: up to 30.`) : null),
 
     h('fieldset', { class: `details-set${paid ? '' : ' locked'}` }, h('legend', {}, paid ? 'Your branding' : 'Your branding · paid plans'),
       !paid
-        ? [h('p', { class: 'hint', style: 'margin:0' }, 'Put your logo, name and colours on the public pages, add sponsor logos, and show up to 30 photos — with "Powered by TONAMENT" at the bottom. Included with every paid plan.'),
-          (t.upgrades || []).length ? h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn btn-primary btn-small', onclick: () => payPass(t, t.upgrades[0].id) }, `Get ${t.upgrades[0].name} — ${money(t.upgrades[0].amount)}`)) : null]
+        ? [h('p', { class: 'hint', style: 'margin:0' }, 'Put your logo, name and colours on the public pages and add sponsor logos — with "Powered by TONAMENT" at the bottom. Included with the Open and Championship plans.'),
+          brandingOffer(t) ? h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn btn-primary btn-small', onclick: () => payPass(t, brandingOffer(t).id) }, `Get ${brandingOffer(t).name} — ${money(brandingOffer(t).amount)}`)) : null]
         : [
           h('div', { class: 'brand-row' },
             B.logo ? h('img', { class: 'logo-preview', src: B.logo, alt: 'Logo' }) : h('span', { class: 'logo-preview empty' }, 'Logo'),
