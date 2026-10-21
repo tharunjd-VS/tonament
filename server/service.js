@@ -520,7 +520,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // ---------- views
 
-  const scoreOf = (t, m) => t.sportDef.compute(m.rallies, t.config.scoring, m.first_server);
+  // Doubles events tell the rules module so (pickleball's side-out has two servers a side).
+  const scoringOf = (t) => (t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring);
+  const scoreOf = (t, m) => t.sportDef.compute(m.rallies, scoringOf(t), m.first_server);
 
   function matchView(t, m, score, names) {
     const side = (id) => (id == null ? null : { id, name: names.get(id) ?? 'Unknown' });
@@ -1721,7 +1723,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       checkAt(m, at);
 
       const rallies = m.rallies + side;
-      const score = t.sportDef.compute(rallies, t.config.scoring, m.first_server);
+      const score = t.sportDef.compute(rallies, scoringOf(t), m.first_server);
       const winnerId = score.winner ? (score.winner === 'a' ? m.a_id : m.b_id) : null;
       const [row] = await q(
         `UPDATE matches SET rallies = $1, status = $2, winner_id = $3, updated_at = now() WHERE id = $4 RETURNING *`,

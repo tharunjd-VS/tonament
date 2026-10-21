@@ -349,6 +349,7 @@ a.b-match:hover { border-color: var(--accent); }
 .score-btn.side-a { background: var(--side-a); color: var(--on-side-a); }
 .score-btn.side-b { background: var(--side-b); color: var(--on-side-b); }
 .sbtn-plus { font-size: 2.6rem; font-weight: 700; line-height: 1; }
+.sbtn-word { font-size: 1.6rem; }
 .sbtn-name { font-weight: 600; font-size: 1rem; overflow-wrap: anywhere; text-align: center; }
 .scorer-tools { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }

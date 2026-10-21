@@ -571,12 +571,13 @@ test('sport catalogue lists playable and upcoming sports', async () => {
   const badminton = list.find((s) => s.id === 'badminton');
   assert.equal(badminton.status, 'live');
   assert.ok(badminton.fields.length > 0);
-  const tt = list.find((s) => s.id === 'table-tennis');
-  assert.equal(tt.status, 'soon');
-  assert.equal(tt.fields, undefined);
+  assert.deepEqual(list.filter((s) => s.status === 'live').map((s) => s.id), ['badminton', 'pickleball', 'table-tennis', 'squash']);
+  const vb = list.find((s) => s.id === 'volleyball');
+  assert.equal(vb.status, 'soon');
+  assert.equal(vb.fields, undefined);
   assert.equal(list.find((s) => s.id === 'cricket').status, 'later');
-  assert.equal(sports.get('table-tennis'), null); // no rules yet
-  await assert.rejects(svc.createTournament(OWNER, { visibility: 'public', name: 'TT Open', sport: 'table-tennis' }), /Table tennis isn't available yet/);
+  assert.equal(sports.get('volleyball'), null); // no rules yet
+  await assert.rejects(svc.createTournament(OWNER, { visibility: 'public', name: 'VB Open', sport: 'volleyball' }), /Volleyball isn't available yet/);
   await assert.rejects(svc.createTournament(OWNER, { visibility: 'public', name: 'X', sport: 'quidditch' }), /Unknown sport/);
 });
 

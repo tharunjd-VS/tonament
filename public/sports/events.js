@@ -15,6 +15,17 @@
   const GENDERS = ['men', 'women', 'mixed', 'open'];
   const LEVELS = ['Open', 'Beginner', 'Intermediate', 'Advanced'];
   const AGES = ['Open', 'U11', 'U13', 'U15', 'U17', 'U19', '35+', '45+', '55+'];
+  // Sports whose players use other levels and age groups (pickleball: skill ratings).
+  const SPORT_LISTS = {
+    pickleball: {
+      levels: ['Open', 'Beginner', 'Intermediate', 'Advanced', '3.0', '3.5', '4.0', '4.5', '5.0+'],
+      ages: ['Open', 'U19', '35+', '50+', '60+', '65+', '70+'],
+    },
+  };
+  const uniq = (xs) => [...new Set(xs)];
+  // The suggestions for a sport; every sport's when none is given (search).
+  const levelsFor = (sport) => (sport ? (SPORT_LISTS[sport] || {}).levels || LEVELS : uniq([...LEVELS, ...Object.values(SPORT_LISTS).flatMap((l) => l.levels)]));
+  const agesFor = (sport) => (sport ? (SPORT_LISTS[sport] || {}).ages || AGES : uniq([...AGES, ...Object.values(SPORT_LISTS).flatMap((l) => l.ages)]));
 
   // The quick-add choices on the create form.
   const PRESETS = [
@@ -44,6 +55,7 @@
     firstaid: 'First aid / physio on site',
   };
   const placeLabel = (place) => PLACES[place] || place;
+  const perkLabel = (key, sport) => (key === 'shuttles' && sport && sport !== 'badminton' ? 'Balls provided' : PERKS[key]);
 
   const GENDER_WORD = { men: 'Men\'s', women: 'Women\'s', mixed: 'Mixed', open: 'Open' };
   const DISCIPLINE_WORD = { singles: 'Singles', doubles: 'Doubles' };
@@ -63,7 +75,7 @@
     const text = (k, label) => {
       const v = clean(pick(k, 'Open')) || 'Open';
       if (v.length > 30) throw new Error(`${label} must be at most 30 characters`);
-      const standard = (k === 'age' ? AGES : LEVELS).find((x) => x.toLowerCase() === v.toLowerCase());
+      const standard = (k === 'age' ? agesFor() : levelsFor()).find((x) => x.toLowerCase() === v.toLowerCase());
       return standard || v;
     };
     const name = input.name === undefined ? prev.name ?? null : clean(input.name) || null;
@@ -90,5 +102,5 @@
     return [base, e.age !== 'Open' ? e.age : null, level].filter(Boolean).join(' ');
   }
 
-  return { DISCIPLINES, GENDERS, LEVELS, AGES, PRESETS, PLACES, PERKS, placeLabel, normalize, eventName, shortName };
+  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName };
 });

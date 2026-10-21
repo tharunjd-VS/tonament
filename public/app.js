@@ -266,7 +266,7 @@
 
   // ----- prizes, what's included and other details (for players)
   const PRIZE_ICON = { winner: '🥇', runner_up: '🥈', semis: '🥉', third: '🥉' };
-  const perkLabels = (t) => [...((t.perks && t.perks.items) || []).map((k) => CAT.PERKS[k]).filter(Boolean), ...((t.perks && t.perks.other) || [])];
+  const perkLabels = (t) => [...((t.perks && t.perks.items) || []).map((k) => CAT.perkLabel(k, t.sport.id)).filter(Boolean), ...((t.perks && t.perks.other) || [])];
   const prizeMoney = (ev) => (ev.prizes || []).reduce((sum, p) => sum + (p.cash || 0), 0);
 
   function prizesCard(t, events) {
@@ -687,8 +687,8 @@
             select('when', 'When', WHEN.map(([v, l]) => [v === 'upcoming' ? '' : v, l]), { anyLabel: null }),
             select('sport', 'Sport', liveSports().map((s) => [s.id, s.name])),
             select('event', 'Event', CAT.PRESETS.map((p) => [p.key, p.label])),
-            select('age', 'Age group', CAT.AGES),
-            select('level', 'Level', CAT.LEVELS),
+            select('age', 'Age group', CAT.agesFor(f.sport)),
+            select('level', 'Level', CAT.levelsFor(f.sport)),
             select('country', 'Country', countries),
             select('region', 'State / region', regionsHere, { disabled: !f.country || !regionsHere.length }),
             select('city', 'City', cities, { disabled: !f.country || !cities.length }),
@@ -866,13 +866,18 @@
         h('label', { class: 'check-field' },
           h('input', { type: 'checkbox', name: 'lateEntry', checked: Boolean(v.lateEntry) }),
           h('span', {}, h('strong', {}, 'Allow late entries after the start'), h('small', {}, 'Latecomers join the smallest group with catch-up matches, or take a bye in a knockout. You can change this during play.')))),
-      h('fieldset', {}, h('legend', {}, `${sport.name} scoring`),
-        h('div', { class: 'grid-3' }, sport.fields.map((f) => field(f.label,
-          f.type === 'select'
-            ? h('select', { name: `scoring.${f.key}`, value: v.scoring[f.key] }, f.options.map((o) => h('option', { value: o.value }, o.label)))
-            : h('input', { type: 'number', name: `scoring.${f.key}`, min: f.min, max: f.max, value: v.scoring[f.key], required: true }),
-          null, f.hint)))),
+      scoringFields(sport, v.scoring),
     ];
+  }
+
+  // The sport's own scoring settings (from its rules module).
+  function scoringFields(sport, scoring) {
+    return h('fieldset', { class: 'scoring-set' }, h('legend', {}, `${sport.name} scoring`),
+      h('div', { class: 'grid-3' }, sport.fields.map((f) => field(f.label,
+        f.type === 'select'
+          ? h('select', { name: `scoring.${f.key}`, value: scoring[f.key] }, f.options.map((o) => h('option', { value: o.value }, o.label)))
+          : h('input', { type: 'number', name: `scoring.${f.key}`, min: f.min, max: f.max, value: scoring[f.key], required: true }),
+        null, f.hint))));
   }
 
   // A select of standard values with "Custom…" revealing a text box.
@@ -889,7 +894,7 @@
   const readChoice = (fd, name) => (fd.get(`${name}Choice`) === '__custom' ? (fd.get(`${name}Custom`) || '').trim() || 'Open' : fd.get(`${name}Choice`));
 
   // What an event is: type, age group, level, optional name.
-  function categoryFields(v) {
+  function categoryFields(v, sport) {
     const type = v.discipline === 'any' ? 'any' : `${v.gender}-${v.discipline}`;
     const types = [
       ...CAT.PRESETS.map((p) => [`${p.gender}-${p.discipline}`, p.label]),
@@ -899,7 +904,7 @@
       h('div', { class: 'grid-2' },
         field('Type', h('select', { name: 'type', value: type }, types.map(([value, label]) => h('option', { value }, label)))),
         field('Name (optional)', h('input', { name: 'eventName', maxlength: 60, value: v.customName || '', placeholder: 'Generated from the type' }))),
-      h('div', { class: 'grid-2' }, choiceField('Age group', 'age', CAT.AGES, v.age), choiceField('Level', 'level', CAT.LEVELS, v.level)));
+      h('div', { class: 'grid-2' }, choiceField('Age group', 'age', CAT.agesFor(sport), v.age), choiceField('Level', 'level', CAT.levelsFor(sport), v.level)));
   }
 
   function readCategory(form) {
@@ -939,7 +944,7 @@
     return wrap;
   }
 
-  function eventBuilder(initial = []) {
+  function eventBuilder(initial = [], sport) {
     const list = h('div', { class: 'ev-rows' });
     const note = h('p', { class: 'ev-note', hidden: true });
     const touched = () => list.closest('form')?.setAttribute('data-dirty', ''); // keep live redraws away
@@ -962,8 +967,8 @@
       const row = h('div', { class: 'ev-row' });
       const type = h('select', { 'aria-label': 'Event type', value: typeOf(v), onchange: refresh },
         EVENT_TYPES.map(([value, label]) => h('option', { value }, label)));
-      const age = pickControl('Age group', CAT.AGES, v.age, refresh);
-      const level = pickControl('Level', CAT.LEVELS, v.level, refresh);
+      const age = pickControl('Age group', CAT.agesFor(sport), v.age, refresh);
+      const level = pickControl('Level', CAT.levelsFor(sport), v.level, refresh);
       row.read = () => ({ ...fromType(type.value), age: age.read(), level: level.read() });
       row.preview = h('div', { class: 'ev-preview', 'aria-live': 'polite' });
       row.append(
@@ -983,8 +988,8 @@
       h('summary', {}, 'Add several at once'),
       h('p', { class: 'hint' }, 'Tick event types, age groups and levels — one event is added for every combination.'),
       h('strong', {}, 'Events'), ticks(CAT.PRESETS.map((p) => [`${p.gender}-${p.discipline}`, p.label]), 'type'),
-      h('strong', {}, 'Age groups'), ticks(CAT.AGES.map((a) => [a, a]), 'age'),
-      h('strong', {}, 'Levels'), ticks(CAT.LEVELS.map((l) => [l, l]), 'level'),
+      h('strong', {}, 'Age groups'), ticks(CAT.agesFor(sport).map((a) => [a, a]), 'age'),
+      h('strong', {}, 'Levels'), ticks(CAT.levelsFor(sport).map((l) => [l, l]), 'level'),
       h('button', {
         type: 'button',
         class: 'btn btn-small',
@@ -1057,7 +1062,10 @@
   function readFormat(form, sport) {
     const fd = new FormData(form);
     const scoring = {};
-    for (const f of sport.fields) scoring[f.key] = Number(fd.get(`scoring.${f.key}`));
+    for (const f of sport.fields) {
+      const v = fd.get(`scoring.${f.key}`);
+      scoring[f.key] = f.type === 'select' && typeof f.options[0].value === 'string' ? v : Number(v);
+    }
     return {
       format: fd.get('format'),
       groupSize: Number(fd.get('groupSize')),
@@ -1081,7 +1089,8 @@
         try {
           const { events, error } = readEventList(form);
           if (error) throw new Error(error);
-          const body = { sport: form.sport.value, ...readTournament(form), ...readFormat(form, sport), events };
+          const chosen = S.sports.find((s) => s.id === form.sport.value);
+          const body = { sport: chosen.id, ...readTournament(form), ...readFormat(form, chosen), events };
           const { id } = await api('POST', '/tournaments', body);
           toast('Tournament created — now add your players');
           location.hash = `#/t/${id}`;
@@ -1094,13 +1103,23 @@
     h('h1', {}, 'New tournament'),
     field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, placeholder: 'e.g. Club Championship 2026', autocomplete: 'off' })),
     h('div', {},
-      field('Sport', h('select', { name: 'sport' }, S.sports.map((s) => h('option', {
+      field('Sport', h('select', {
+        name: 'sport',
+        // Each sport has its own scoring settings and category lists.
+        onchange: (e) => {
+          const next = S.sports.find((s) => s.id === e.target.value);
+          const builder = form.querySelector('.ev-builder');
+          const { events } = builder.readList();
+          builder.replaceWith(eventBuilder(events || [], next.id));
+          form.querySelector('.scoring-set').replaceWith(scoringFields(next, next.defaults));
+        },
+      }, S.sports.map((s) => h('option', {
         value: s.id,
         disabled: s.status !== 'live',
       }, s.status === 'live' ? s.name : `${s.name} (coming soon)`))), null,
       h('span', {}, 'More sports are on the way — ', h('a', { href: '#/' }, 'request yours on the home page'), '.'))),
     detailsFields({ country: REGIONS.defaultCountry }),
-    eventBuilder([{ discipline: 'singles', gender: 'open', age: 'Open', level: 'Open' }]),
+    eventBuilder([{ discipline: 'singles', gender: 'open', age: 'Open', level: 'Open' }], sport.id),
     entryFields({ selfEntry: true }),
     formatFields(sport, { format: 'league_knockout', groupSize: 4, qualifiers: 2, maxEntries: null, lateEntry: false, scoring: sport.defaults }, 'Format (for every event — change any of them later)'),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
@@ -1728,7 +1747,7 @@
         }, 'Event settings saved');
       },
     },
-    categoryFields(t.event),
+    categoryFields(t.event, t.sport.id),
     t.event.discipline === 'doubles'
       ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'Partners'),
         h('label', { class: 'check-field' },
@@ -1836,7 +1855,7 @@
           `${events.length} event${events.length > 1 ? 's' : ''} added`);
       },
     },
-    eventBuilder([{ discipline: 'singles', gender: 'men', age: 'Open', level: 'Open' }]),
+    eventBuilder([{ discipline: 'singles', gender: 'men', age: 'Open', level: 'Open' }], t.sport.id),
     h('p', { class: 'hint', style: 'margin:0' }, 'New events copy the format and scoring of the first event; change them in each event\'s settings.'),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add events')));
     return [
@@ -2110,17 +2129,19 @@
     };
     return h('div', { class: 'scoreboard' }, row('a'), row('b'),
       live && sc.server
-        ? h('div', { class: 'sb-foot' }, `Game ${sc.games.length} · ${nameOf(m[sc.server])} to serve from the ${sc.serveCourt} court`)
+        ? h('div', { class: 'sb-foot' }, `Game ${sc.games.length} · ${nameOf(m[sc.server])} to serve${sc.serveCourt ? ` from the ${sc.serveCourt} court` : ''}${sc.note ? ` · ${sc.note}` : ''}`)
         : m.status === 'done' ? h('div', { class: 'sb-foot' }, m.summary) : null);
   }
 
   function scorer(t, m) {
     const fresh = m.rallies === 0;
+    // Side-out sports: winning the rally while receiving wins the serve, not a point.
+    const tap = (s) => (m.score.tap && m.score.tap[s]) || '+1';
     const btn = (s) => h('button', {
       class: `score-btn side-${s}`,
       onclick: () => rally(t, m, s),
-      'aria-label': `Point to ${m[s].name}`,
-    }, h('span', { class: 'sbtn-plus' }, '+1'), h('span', { class: 'sbtn-name' }, m[s].name));
+      'aria-label': tap(s) === '+1' ? `Point to ${m[s].name}` : `${m[s].name} won the rally: ${tap(s)}`,
+    }, h('span', { class: `sbtn-plus${tap(s) === '+1' ? '' : ' sbtn-word'}` }, tap(s)), h('span', { class: 'sbtn-name' }, m[s].name));
 
     const courtInput = h('input', { name: 'court', maxlength: 20, placeholder: 'e.g. 3', value: m.court || '', 'aria-label': 'Court' });
     return h('div', { class: 'scorer' },
@@ -2179,7 +2200,8 @@
     if (!ops.length || !sport) return m;
     let log = m.log;
     for (const op of ops) log = op.type === 'rally' ? log + op.side : log.slice(0, -1);
-    const score = sport.compute(log, t.config.scoring, m.firstServer);
+    const scoring = t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring;
+    const score = sport.compute(log, scoring, m.firstServer);
     return {
       ...m,
       log,
@@ -2574,10 +2596,10 @@
 
     h('fieldset', { class: 'details-set' }, h('legend', {}, 'What\'s included'),
       h('p', { class: 'hint', style: 'margin:0' }, 'What players get with their entry. Prizes are set per event, on the Players tab.'),
-      h('div', { class: 'quick-grid perk-grid' }, Object.entries(CAT.PERKS).map(([k, label]) => h('label', { class: 'check-field' },
-        h('input', { type: 'checkbox', name: 'perk', value: k, checked: perks.includes(k) }), h('span', {}, label)))),
+      h('div', { class: 'quick-grid perk-grid' }, Object.keys(CAT.PERKS).map((k) => h('label', { class: 'check-field' },
+        h('input', { type: 'checkbox', name: 'perk', value: k, checked: perks.includes(k) }), h('span', {}, CAT.perkLabel(k, t.sport.id))))),
       field('Anything else', h('input', { name: 'perksOther', maxlength: 220, value: perksOther, placeholder: 'e.g. Free physio, Photo booth' }), null, 'Separate items with commas (up to 5).')),
-    field('Other details', h('textarea', { name: 'notes', rows: 4, maxlength: 2000, value: notes, placeholder: 'Reporting time, dress code, shuttles used, rules, contact person…' }), null, 'Shown to players with the prizes. Links become clickable.'),
+    field('Other details', h('textarea', { name: 'notes', rows: 4, maxlength: 2000, value: notes, placeholder: 'Reporting time, dress code, shuttles or balls used, rules, contact person…' }), null, 'Shown to players with the prizes. Links become clickable.'),
 
     h('fieldset', { class: 'details-set' }, h('legend', {}, 'Cover image'),
       t.cover ? h('img', { class: 'cover-preview', src: t.cover, alt: 'Cover' }) : h('p', { class: 'hint', style: 'margin:0' }, 'A poster or a photo — shown at the top of the page and on search results.'),
@@ -2612,7 +2634,7 @@
             h('div', { class: 'actions' },
               fileButton(B.logo ? 'Replace logo' : 'Upload logo', 'logo'),
               B.logo ? h('button', { type: 'button', class: 'btn btn-small btn-ghost', onclick: () => mediaAct(B.logoId, null, 'Logo removed') }, 'Remove') : null)),
-          field('Organiser name', h('input', { name: 'orgName', maxlength: 60, value: B.orgName || '', placeholder: 'e.g. Smash Badminton Club' })),
+          field('Organiser name', h('input', { name: 'orgName', maxlength: 60, value: B.orgName || '', placeholder: 'e.g. Smash Sports Club' })),
           h('label', { class: 'check-field' },
             h('input', { type: 'checkbox', name: 'accentOn', checked: Boolean(B.accent) }),
             h('span', {}, h('strong', {}, 'Use our brand colour'), h('small', {}, 'For buttons, tabs and highlights on your public pages.'))),

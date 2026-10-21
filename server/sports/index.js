@@ -7,16 +7,17 @@
 // listed so people can see what's coming and vote for it; when a sport's
 // module ships, register it in MODULES and flip its status to 'live'.
 
-const badminton = require('./badminton');
-
-const MODULES = new Map([[badminton.id, badminton]]);
+const MODULES = new Map(['badminton', 'pickleball', 'table-tennis', 'squash'].map((id) => {
+  const mod = require(`./${id}`);
+  return [mod.id, mod];
+}));
 
 // status: live (playable) | soon (next up) | later (planned, further out)
 const CATALOGUE = [
   { id: 'badminton', name: 'Badminton', family: 'rally', status: 'live' },
-  { id: 'table-tennis', name: 'Table tennis', family: 'rally', status: 'soon' },
-  { id: 'squash', name: 'Squash', family: 'rally', status: 'soon' },
-  { id: 'pickleball', name: 'Pickleball', family: 'rally', status: 'soon' },
+  { id: 'pickleball', name: 'Pickleball', family: 'rally', status: 'live' },
+  { id: 'table-tennis', name: 'Table tennis', family: 'rally', status: 'live' },
+  { id: 'squash', name: 'Squash', family: 'rally', status: 'live' },
   { id: 'volleyball', name: 'Volleyball', family: 'rally', status: 'soon' },
   { id: 'throwball', name: 'Throwball', family: 'rally', status: 'soon' },
   { id: 'football', name: 'Football', family: 'goals', status: 'soon' },

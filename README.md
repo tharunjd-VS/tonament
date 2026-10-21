@@ -1,6 +1,6 @@
 # Tonament
 
-Tournament management with live scoring for **tonament.com**. Starts with badminton, and new sports can be added as plug-in modules.
+Tournament management with live scoring for **tonament.com**. Badminton, pickleball, table tennis and squash today; new sports are plug-in modules.
 
 ## Features
 
@@ -10,6 +10,9 @@ Tournament management with live scoring for **tonament.com**. Starts with badmin
 - **Knockout bracket:** standard seeding. Byes go to the top seeds, and two players from the same group don't meet in the first round. Winners move to the next round automatically.
 - **Live scoring:** the umpire taps the side that won each rally, on a phone or with the keyboard. Spectators' screens update within about 2 seconds.
 - **Badminton rules:** BWF rally scoring to 21, win by 2, capped at 30. The app tracks the server and which court they serve from, and flags game point and match point. Match length (1, 3 or 5 games), points per game and the cap can be changed for club formats.
+- **Pickleball rules:** traditional side-out scoring by default — only the serving side scores; in doubles both partners serve before a side-out (the first serving team starts on "0-0-2") and the scoreboard shows the score call ("4-2-1"). Organisers can switch an event to rally scoring. Games to 11 (or 15/21), win by 2, single game or best of 3/5. Level and age suggestions use skill ratings (3.0–5.0+) and 50+/60+/65+.
+- **Table tennis rules:** games to 11, win by 2, best of 5 (1/3/7 too); the serve changes every 2 points and every point from 10-10.
+- **Squash rules:** PAR scoring to 11 (or 15), win by 2, best of 5 (or 3); the rally winner serves.
 - **Undo:** works on any point, including the one that won a match. It's blocked once the next match has started.
 - **Entries and the event day:**
   - Players can enter themselves on the public page (name, partner, phone or email, no account needed) until a closing date/time or the draw.
@@ -112,7 +115,7 @@ How it works on Vercel:
 - Links in emails use `APP_URL` (or the project's production domain on Vercel), never the request's Host header.
 
 ### Speed
-- **Scoring feels instant.** The umpire's screen applies each tap straight away, using the same rules file as the server (`public/sports/badminton.js`), then saves it in the background. Each request says which rally count it applies to (`at`), so retries can't double-count and two devices can't overwrite each other. If the connection drops, points are kept and sent automatically when it returns.
+- **Scoring feels instant.** The umpire's screen applies each tap straight away, using the same rules file as the server (`public/sports/<sport>.js`), then saves it in the background. Each request says which rally count it applies to (`at`), so retries can't double-count and two devices can't overwrite each other. If the connection drops, points are kept and sent automatically when it returns.
 - **Put the server next to the database.** Each saved point is one request that makes about 8 database round trips, so the Vercel function region should match the Neon region. Check it in Vercel under *Settings → Functions → Function Region*, and in Neon on the project dashboard. To pin the function region, add `"regions": ["sin1"]` (for example) to `vercel.json`. For players in India, Singapore is a good region for both (`sin1` on Vercel, `aws-ap-southeast-1` on Neon).
 - **Server-Timing.** Every API response includes a `Server-Timing: app;dur=…` header. In DevTools (Network → Timing), a large gap between that number and the total request time means the time is going on the network, not on the server.
 - **Neon's free plan pauses an idle database** after about 5 minutes, so the first request after a quiet spell takes about a second longer.
@@ -130,7 +133,7 @@ server/
   billing.js          Razorpay orders, signature checks, billing settings
   formats.js          round-robin, snake groups, bracket seeding, standings (works for any sport)
   db.js               Postgres (pg) or embedded PGlite, plus the schema
-  sports/badminton.js re-exports public/sports/badminton.js (the scoring rules, shared with the browser)
+  sports/<sport>.js   re-exports public/sports/<sport>.js (the scoring rules, shared with the browser)
   sports/index.js     sport registry
 public/               single-page front end (plain JS, no build step)
   brand/              logos, app icons, email logo, link-preview image
@@ -142,11 +145,11 @@ vercel.json           Vercel config: static output and API rewrite
 ```
 
 ### Sports roadmap
-Badminton is playable today. `server/sports/index.js` also lists the sports on the way, shown on the home page as "Soon"/"Later" chips that signed-in users can tap to request. Site admins see the totals on the admin page. Planned order: table tennis, squash, pickleball, volleyball, throwball (same rally-scoring engine as badminton), then football, futsal, hockey, kabaddi and basketball (goal/point scoring with draws). Tennis, padel and cricket come later.
+Badminton, pickleball, table tennis and squash are playable today. `server/sports/index.js` also lists the sports on the way, shown on the home page as "Soon"/"Later" chips that signed-in users can tap to request. Site admins see the totals on the admin page. Next: volleyball and throwball (rally scoring with teams), then football, futsal, hockey, kabaddi and basketball (goal/point scoring with draws). Tennis, padel and cricket come later.
 
 ### Adding a sport
 
-Create `public/sports/<sport>.js` with the same exports as `badminton.js` (`id`, `name`, `defaults`, `fields`, `normalizeConfig`, `compute(rallies, config, firstServer)` and `summary`), wrapped the same way so both the server and the browser can load it. Then add it to `MODULES` in `server/sports/index.js`, set its catalogue status to `live`, and add its `<script>` tag to `public/index.html`. Rally-scored sports such as table tennis, volleyball, squash and pickleball fit the same model directly.
+Create `public/sports/<sport>.js` with the same exports as `badminton.js` (`id`, `name`, `defaults`, `fields`, `normalizeConfig`, `compute(rallies, config, firstServer)` and `summary`), wrapped the same way so both the server and the browser can load it. Rally-scored sports can use `public/sports/rally.js`, which runs games, win-by-2 and best-of: the sport supplies only whether a rally scores and how the serve moves (see `squash.js`, the smallest). Add a one-line `server/sports/<sport>.js` re-export, add the id to `MODULES` in `server/sports/index.js`, set its catalogue status to `live`, and add its `<script>` tag to `public/index.html` (after `rally.js`).
 
 ## API
 
