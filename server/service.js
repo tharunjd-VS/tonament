@@ -9,7 +9,7 @@ const schedule = require('../public/schedule');
 const pages = require('./pages');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
-const { inviteEmail, receiptEmail, entryReceiptEmail, waitingEmail } = require('./email');
+const { inviteEmail, receiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
 const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
 
 const FORMATS = {
@@ -43,7 +43,8 @@ function prizesOf(list) {
 // Tournament page images. Free tournaments get a cover and a few photos;
 // paid ones also get their logo, colours and sponsors, and more photos.
 // 'preview' is the cover cropped to 1200×630 for link previews (made by the browser).
-const MEDIA_KINDS = ['logo', 'cover', 'photo', 'sponsor', 'preview'];
+// 'qr' is the organiser's UPI QR code, for players paying entry fees.
+const MEDIA_KINDS = ['logo', 'cover', 'photo', 'sponsor', 'preview', 'qr'];
 const MAX_PREVIEW_BYTES = 600 * 1024; // WhatsApp skips bigger preview images
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const PHOTO_LIMITS = { free: 3, paid: 30 };
@@ -209,18 +210,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return { ...row, sportDef: sports.get(row.sport) };
   }
 
-  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into, players, user_id, phone';
+  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into, players, user_id, phone, pay_ref, pay_sent_at, hold_until';
 
   // Entries and matches of one event (`ev` is an event context, see eventFor).
   // Solo players already paired up play as their pair entry, so they're left out.
   const entriesOf = (q, ev) =>
     q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE event_id = $1 AND paired_into IS NULL ORDER BY seed, id`, [ev.eventId]);
 
-  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null, solo = false, side = null, players = null, userId = null, phone = null }) =>
+  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null, solo = false, side = null, players = null, userId = null, phone = null, holdUntil = null }) =>
     q(
-      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount, solo, solo_side, players, user_id, phone)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16) RETURNING id`,
-      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount, solo, side, players && JSON.stringify(players), userId, phone],
+      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount, solo, solo_side, players, user_id, phone, hold_until)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17) RETURNING id`,
+      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount, solo, side, players && JSON.stringify(players), userId, phone, holdUntil],
     );
 
   // A team's players (optional): one name per line, or a list.
@@ -236,9 +237,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // A paid self-entry is saved as 'pending' and holds its place for
   // PENDING_MINUTES while the player pays; abandoned ones are cleared.
   const PENDING_MINUTES = 30;
+  const DEFAULT_HOLD_HOURS = 48;
   const MAX_FEE = 5000000; // paise (₹50,000)
-  const feeOf = (ev) => (ev.official && ev.config.fee > 0 ? ev.config.fee : 0);
-  const HOLDS_PLACE = `(confirmed OR (fee_status = 'pending' AND created_at > now() - interval '${PENDING_MINUTES} minutes'))`;
+  // An event's entry fee. Tournaments organised by Tonament take it online
+  // (Razorpay); everyone else's players pay the organiser directly (UPI or
+  // cash) and the organiser confirms it: 'due' -> 'sent' (the player says
+  // they've paid) -> 'received' (or 'cash' / 'waived').
+  const feeOf = (ev) => (ev.config.fee > 0 ? ev.config.fee : 0);
+  const PAY_ONLINE = (ev) => Boolean(ev.official);
+  const DIRECT_PAID = ['received', 'cash', 'waived'];
+  // An unpaid direct-fee entry holds its place until hold_until (null: until the draw).
+  const HOLDS_PLACE = `(confirmed OR (fee_status = 'pending' AND created_at > now() - interval '${PENDING_MINUTES} minutes')
+    OR (fee_status IN ('due', 'sent') AND (hold_until IS NULL OR hold_until > now())))`;
   const TAKES_PLACE = `paired_into IS NULL AND ${HOLDS_PLACE}`; // a pair counts once, not its two solos
   const clearExpiredPending = (q, ev) =>
     q(`DELETE FROM entries WHERE event_id = $1 AND fee_status = 'pending' AND NOT ${HOLDS_PLACE}`, [ev.eventId]);
@@ -521,7 +531,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     let total = await confirmedCount(q, t);
     const limit = planLimit(t.plan);
     const waiting = await q(
-      `SELECT id, event_id FROM entries WHERE tournament_id = $1 AND NOT confirmed AND fee_status IS DISTINCT FROM 'pending' ORDER BY id`,
+      // Never entries still paying, or owing the organiser their fee.
+      `SELECT id, event_id FROM entries WHERE tournament_id = $1 AND NOT confirmed AND (fee_status IS NULL OR fee_status NOT IN ('pending', 'due', 'sent')) ORDER BY id`,
       [t.id],
     );
     let confirmed = 0;
@@ -647,9 +658,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
       // Only the organiser's own maximum is shown publicly, never the plan limit.
       placesLeft: t.config.maxEntries ? Math.max(0, t.config.maxEntries - confirmed) : null,
       fee: feeOf(t),
+      feeOnline: feeOf(t) > 0 && PAY_ONLINE(t),
       prizes: t.config.prizes || [],
       ...(access.can.manage && feeOf(t) && {
-        feeTotal: visible.filter((e) => e.fee_status === 'paid' || e.fee_status === 'cash').reduce((sum, e) => sum + (e.fee_amount || 0), 0),
+        feeTotal: visible.filter((e) => ['paid', 'cash', 'received'].includes(e.fee_status)).reduce((sum, e) => sum + (e.fee_amount || 0), 0),
       }),
       entries: entries.map((e) => ({
         id: e.id,
@@ -671,7 +683,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
             ...(access.can.manage && { contact: m.contact, feeStatus: m.fee_status, feeAmount: m.fee_amount }),
           })),
         }),
-        ...(access.can.manage && { contact: e.contact, phone: e.phone, feeStatus: e.fee_status, feeAmount: e.fee_amount, players: e.players || null }), // organisers only
+        ...(access.can.manage && {
+          contact: e.contact, phone: e.phone, feeStatus: e.fee_status, feeAmount: e.fee_amount, players: e.players || null,
+          payRef: e.pay_ref, paySentAt: e.pay_sent_at, holdUntil: e.hold_until,
+        }), // organisers only
       })),
       groups,
       matches,
@@ -750,6 +765,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
         name: e.name,
         confirmed: e.confirmed,
         feeStatus: e.fee_status,
+        feeAmount: e.fee_amount,
+        payRef: e.pay_ref,
+        holdUntil: e.hold_until,
         solo: e.solo,
         paired: e.paired_into != null,
         inDraw: e.in_draw,
@@ -797,10 +815,13 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const photoLimit = paidPlan(t) ? PHOTO_LIMITS.paid : PHOTO_LIMITS.free;
     const logo = of('logo')[0];
     const cover = of('cover')[0];
+    const qr = of('qr')[0];
     const photo = (m, i) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption, ...(access.can.manage && { hidden: i >= photoLimit }) });
     const branding = t.branding || {};
     return {
       about: t.about,
+      // How players pay the organiser (when an event has an entry fee).
+      payment: { ...(t.payment || {}), holdHours: (t.payment && t.payment.holdHours) ?? DEFAULT_HOLD_HOURS, qr: qr ? mediaUrl(qr.id) : null, qrId: qr ? qr.id : null },
       perks: t.perks || { items: [], other: [] },
       notes: t.notes,
       pageLinks: t.links || {}, // website / Instagram / WhatsApp (not the share links)
@@ -842,7 +863,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       }
       if (kind === 'sponsor' && n >= SPONSOR_LIMIT) fail(409, `You can add up to ${SPONSOR_LIMIT} sponsor logos`);
       // One logo, cover and preview: a new upload replaces the old one (a new cover, its preview too).
-      if (kind === 'logo' || kind === 'cover' || kind === 'preview') await q('DELETE FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
+      if (['logo', 'cover', 'preview', 'qr'].includes(kind)) await q('DELETE FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
       if (kind === 'cover') await q(`DELETE FROM media WHERE tournament_id = $1 AND kind = 'preview'`, [t.id]);
       const mediaId = crypto.createHash('sha256').update(`${t.id}:${kind}:`).update(bytes).digest('hex').slice(0, 32);
       const [{ next }] = await q('SELECT COALESCE(MAX(position), -1)::int + 1 AS next FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
@@ -1090,6 +1111,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
         if (about.length > 2000) fail(400, 'About must be at most 2,000 characters');
         await q('UPDATE tournaments SET about = $1 WHERE id = $2', [about || null, t.id]);
       }
+      if (input.payment !== undefined) {
+        await q('UPDATE tournaments SET payment = $1::jsonb WHERE id = $2', [JSON.stringify(paymentSettings(input.payment)), t.id]);
+      }
       if (input.courts !== undefined) {
         await q('UPDATE tournaments SET courts = $1::jsonb WHERE id = $2', [JSON.stringify(courtSettings(input.courts, t)), t.id]);
       }
@@ -1157,7 +1181,6 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (input.prizes !== undefined) config.prizes = prizesOf(input.prizes);
     if (input.fee !== undefined) {
       const fee = int(input.fee === '' || input.fee === null ? 0 : input.fee, 0, MAX_FEE, 0, 'Entry fee (in paise)');
-      if (fee && !ev.official) fail(403, 'Entry fees are only available for tournaments organised by Tonament');
       config.fee = fee;
     }
     const f = eventFields(input, ev.event, ev.sport);
@@ -1311,7 +1334,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (solo && t.event.gender === 'mixed' && !['man', 'woman'].includes(side)) fail(400, 'Mixed doubles: say whether you\'re playing as a man or a woman');
       // A solo player pays half the pair fee.
       const fee = solo ? Math.ceil(feeOf(t) / 2) : feeOf(t);
-      if (fee) {
+      const online = fee > 0 && PAY_ONLINE(t);
+      if (online) {
         if (!billingConfig().enabled) fail(503, 'Online payment isn\'t available right now — contact the organiser');
         await clearExpiredPending(q, t);
         // Starting again replaces your own unfinished payment.
@@ -1332,7 +1356,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (existing.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(409, `"${name}" is already entered`);
       const seed = existing.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
       const room = await hasRoom(q, t);
-      if (fee) {
+      if (online) {
         // Paid events never take a payment for a place that isn't there.
         if (!room) fail(409, `${eventLabel(t)} is full`);
         const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee, solo, side, players, userId, phone });
@@ -1342,6 +1366,13 @@ function createService(db, { mailer, fetchImpl } = {}) {
           [t.id, t.name, contact, fee, billingConfig().currency, entryId, t.eventId, eventLabel(t), name],
         );
         return { t, name, entryId, paymentId: pay.id, fee, player, contact, solo };
+      }
+      if (fee) {
+        // Paid to the organiser: the place is held for a while (if there is
+        // one) and confirmed when the organiser has the money.
+        const holdUntil = room ? holdTime(t) : new Date(); // no room: straight to the waitlist
+        await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'due', feeAmount: fee, solo, side, players, userId, phone, holdUntil });
+        return { t, name, confirmed: false, owners: [], eventId: t.eventId, solo, due: fee, holding: room };
       }
       const confirmed = room;
       await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side, players, userId, phone });
@@ -1363,7 +1394,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         console.error('Waiting-entries email failed:', err.message);
       }
     }
-    return { ok: true, name: entered, confirmed, event: eventId, ...(result.solo && { solo: true }) };
+    return { ok: true, name: entered, confirmed, event: eventId, ...(result.solo && { solo: true }), ...(result.due && { due: result.due, holding: result.holding }) };
   }
 
   // ---------- pairing solo doubles players
@@ -1485,11 +1516,62 @@ function createService(db, { mailer, fetchImpl } = {}) {
     };
   }
 
-  // Organisers record fees taken in person (cash/UPI) or waive them.
-  async function setEntryFee(id, actor, entryId, status) {
-    if (![null, 'cash', 'waived'].includes(status ?? null)) fail(400, 'status must be "cash", "waived" or null');
-    return mutateEntry(id, actor, entryId, async (q, t) => {
+  // When an unpaid entry stops holding its place: the tournament's hold time
+  // (24 or 48 hours, or until entries close), or null (held until the draw).
+  function holdTime(t) {
+    const hours = (t.payment && t.payment.holdHours) ?? DEFAULT_HOLD_HOURS;
+    if (hours) return new Date(Date.now() + hours * 3600000);
+    return t.config.entriesCloseAt ? new Date(t.config.entriesCloseAt) : null;
+  }
+
+  // The player says they've paid the organiser (optionally with the UPI reference).
+  async function markFeeSent(id, actor, entryId, ref) {
+    if (!actor.user) fail(401, 'Sign in to do that');
+    const payRef = given(ref) ? String(ref).replace(/\s+/g, '') : null;
+    if (payRef && !/^\d{12}$/.test(payRef)) fail(400, 'The UPI reference is the 12-digit number in your payment details');
+    return db.tx(async (q) => {
+      const row = await load(q, id, { lock: true });
+      const [e] = await q('SELECT * FROM entries WHERE id = $1 AND tournament_id = $2', [Number(entryId) || 0, row.id]);
+      if (!e || e.user_id !== actor.user.id) fail(404, 'Entry not found');
+      if (e.fee_status !== 'due' && e.fee_status !== 'sent') fail(409, 'There\'s nothing to pay for this entry');
+      // A place held when they paid stays held until the organiser checks.
+      const holding = e.hold_until === null || e.hold_until > new Date();
+      await q(`UPDATE entries SET fee_status = 'sent', pay_ref = COALESCE($1, pay_ref), pay_sent_at = now(), hold_until = $2 WHERE id = $3`, [
+        payRef, holding ? null : e.hold_until, e.id,
+      ]);
+      return view(q, await load(q, id), actor);
+    });
+  }
+
+  // Organisers record entry fees. Paid to them directly: 'received' (by UPI),
+  // 'cash' or 'waived' confirm the place; 'missing' asks the player to check
+  // (back to 'due', with a fresh hold). Tonament's own (online) events: 'cash',
+  // 'waived', or null to undo.
+  async function setEntryFee(id, actor, entryId, status, { baseUrl } = {}) {
+    let mail = null;
+    const result = await mutateEntry(id, actor, entryId, async (q, t) => {
       if (!feeOf(t)) fail(409, 'This event has no entry fee');
+      if (!PAY_ONLINE(t)) {
+        if (!['received', 'cash', 'waived', 'missing'].includes(status)) fail(400, 'status must be "received", "cash", "waived" or "missing"');
+        requireSetup(t);
+        const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+        if (DIRECT_PAID.includes(e.fee_status) && e.confirmed) fail(409, 'This entry is already paid and confirmed');
+        if (status === 'missing') {
+          if (e.fee_status !== 'sent') fail(409, 'The player hasn\'t said they paid yet');
+          await q(`UPDATE entries SET fee_status = 'due', hold_until = $1 WHERE id = $2`, [holdTime(t), e.id]);
+          mail = { kind: 'missing', to: e.user_id ? e.contact : null, t };
+          return;
+        }
+        const holding = ['due', 'sent'].includes(e.fee_status) && (e.hold_until === null || e.hold_until > new Date());
+        if (!holding && !(await hasRoom(q, t))) fail(409, `${eventLabel(t)} is full — raise its maximum or remove someone first`);
+        await checkEntryLimit(q, t, 1);
+        await q('UPDATE entries SET fee_status = $1, fee_amount = $2, confirmed = true, hold_until = NULL WHERE id = $3', [
+          status, status === 'waived' ? null : e.fee_amount || feeOf(t), e.id,
+        ]);
+        mail = { kind: 'received', to: e.user_id ? e.contact : null, t, player: e.name };
+        return;
+      }
+      if (![null, 'cash', 'waived'].includes(status ?? null)) fail(400, 'status must be "cash", "waived" or null');
       const [e] = await q('SELECT fee_status FROM entries WHERE id = $1', [Number(entryId)]);
       if (e.fee_status === 'paid') fail(409, 'Paid online — refunds are made in the Razorpay dashboard');
       if (e.fee_status === 'pending') fail(409, 'This player is paying online right now');
@@ -1497,9 +1579,24 @@ function createService(db, { mailer, fetchImpl } = {}) {
         status ?? null, status === 'cash' ? feeOf(t) : null, Number(entryId),
       ]);
     });
+    if (mail && mail.to && mailer?.enabled && baseUrl) {
+      const event = (await eventsOf(db.query, mail.t.id)).length > 1 ? eventLabel(mail.t) : null;
+      const url = `${baseUrl}/t/${mail.t.id}/entries${event ? `?e=${mail.t.eventId}` : ''}`;
+      try {
+        await mailer.send({
+          to: mail.to,
+          ...(mail.kind === 'received'
+            ? feeReceivedEmail({ tournament: mail.t.name, event, player: mail.player, url })
+            : feeMissingEmail({ tournament: mail.t.name, event, url })),
+        });
+      } catch (err) {
+        console.error('Entry fee email failed:', err.message);
+      }
+    }
+    return result;
   }
 
-  // Site admins mark tournaments that Tonament itself runs; only those can charge entry fees.
+  // Site admins mark tournaments that Tonament itself runs; only those take entry fees online.
   async function setOfficial(id, actor, official) {
     requireSiteAdmin(actor);
     return mutate(id, actor, async (q, t) => {
@@ -1515,6 +1612,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (!e) fail(404, 'Entry not found');
       if (e.confirmed) return;
       if (e.fee_status === 'pending') fail(409, 'This player is still paying their entry fee');
+      if (e.fee_status === 'due' || e.fee_status === 'sent') fail(409, 'Record their entry fee first: received, paid in cash, or waived');
       await checkEntryLimit(q, t, 1);
       await q('UPDATE entries SET confirmed = true WHERE id = $1', [Number(entryId)]);
     });
@@ -1565,7 +1663,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (!e || e.user_id !== actor.user.id) fail(404, 'Entry not found');
       const t = await eventFor(q, row, e.event_id);
       if (t.status !== 'setup') fail(409, 'The draw has been made — ask the organiser to withdraw you');
-      if (e.fee_status === 'paid') fail(409, 'Contact the organiser to withdraw — refunds are handled by them');
+      if (e.fee_status === 'paid' || e.fee_status === 'received' || e.fee_status === 'cash') fail(409, 'Contact the organiser to withdraw — refunds are handled by them');
       if (e.paired_into) {
         const [pair] = await q('SELECT name FROM entries WHERE id = $1', [e.paired_into]);
         const partner = pair ? pair.name.split(' / ').find((n) => n !== e.name) : null;
@@ -1599,6 +1697,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
         // entered | waiting | payment | looking (for a partner) | playing | withdrawn
         status: withdrawn ? 'withdrawn'
           : feeStatus === 'pending' ? 'payment'
+            : feeStatus === 'due' ? 'due'
+              : feeStatus === 'sent' ? 'sent'
             : eventStatus !== 'setup' ? 'playing'
               : solo && !paired ? 'looking'
                 : confirmed ? 'entered' : 'waiting',
@@ -1929,6 +2029,21 @@ function createService(db, { mailer, fetchImpl } = {}) {
   }
 
   // ---------- courts and the order of play
+
+  // How players pay the organiser: { upi, payee, note, holdHours }.
+  function paymentSettings(input) {
+    const p = input || {};
+    const upi = text(p.upi, 'UPI ID', { max: 100, optional: true });
+    if (upi && !/^[\w.\-]{2,256}@[a-zA-Z][a-zA-Z0-9.\-]{1,63}$/.test(upi)) fail(400, 'Enter a UPI ID like name@okhdfcbank');
+    const holdHours = p.holdHours === undefined ? DEFAULT_HOLD_HOURS : Number(p.holdHours);
+    if (![0, 24, 48].includes(holdHours)) fail(400, 'Hold places for 24 or 48 hours, or until entries close');
+    return {
+      upi: upi ? upi.toLowerCase() : null,
+      payee: text(p.payee, 'Name to pay', { max: 60, optional: true }),
+      note: text(p.note, 'Payment note', { max: 200, optional: true }),
+      holdHours,
+    };
+  }
 
   // { names, minutes, auto } or null when no courts are set up.
   function courtsOf(t) {
@@ -2404,6 +2519,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     unpair,
     updateEvent,
     callMatch,
+    markFeeSent,
     leave,
     myEntries,
     sharePreview,

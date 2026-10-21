@@ -176,4 +176,37 @@ function waitingEmail({ tournament, player, url }) {
   };
 }
 
-module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, entryReceiptEmail, waitingEmail };
+// To a player, when the organiser confirms their entry fee arrived.
+function feeReceivedEmail({ tournament, event, player, url }) {
+  const what = event ? `${tournament} (${event})` : tournament;
+  return {
+    subject: `You're in: ${tournament}`,
+    html: layout({
+      heading: 'Payment received — you\'re in',
+      body: [`The organiser has confirmed your entry fee for <strong>${esc(what)}</strong>. <strong>${esc(player)}</strong> is on the entry list. See you on the day!`],
+      button: 'See the tournament',
+      url,
+    }),
+    text: `The organiser has confirmed your entry fee for ${what}. ${player} is on the entry list. See you on the day!\n\n${url}`,
+  };
+}
+
+// To a player, when the organiser couldn't find their payment.
+function feeMissingEmail({ tournament, event, url }) {
+  const what = event ? `${tournament} (${event})` : tournament;
+  return {
+    subject: `Please check your payment for ${tournament}`,
+    html: layout({
+      heading: 'We couldn\'t find your payment',
+      body: [
+        `The organiser of <strong>${esc(what)}</strong> hasn't received your entry fee yet.`,
+        'Please check the payment in your UPI app (the amount and the UPI ID), then open the tournament to pay again or add the UPI reference. Questions? Contact the organiser.',
+      ],
+      button: 'Open the tournament',
+      url,
+    }),
+    text: `The organiser of ${what} hasn't received your entry fee yet. Please check the payment in your UPI app, then open the tournament to pay again or add the UPI reference: ${url}`,
+  };
+}
+
+module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail };

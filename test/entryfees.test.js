@@ -72,15 +72,17 @@ async function officialCup(name = 'Tonament Open') {
   return { id, ms: ms.id, xd: xd.id };
 }
 
-test('only site admins mark tournaments as organised by Tonament; only those take fees', async () => {
+test('only site admins mark tournaments as organised by Tonament; only those take fees online', async () => {
   const { id } = await svc.createTournament(ORG, { name: 'Club Cup', format: 'knockout' });
   const { eventId } = await svc.getTournament(id, ORG);
-  await assert.rejects(svc.updateEvent(id, ORG, eventId, { fee: 30000 }), (e) => e.status === 403 && /organised by Tonament/.test(e.message));
+  // Any tournament can set a fee; it's paid to the organiser directly.
+  let after = await svc.updateEvent(id, ORG, eventId, { fee: 30000 });
+  assert.deepEqual([after.events[0].fee, after.events[0].feeOnline], [30000, false]);
   await assert.rejects(svc.setOfficial(id, ORG, true), (e) => e.status === 403);
   const t = await svc.setOfficial(id, ADMIN, true);
   assert.equal(t.official, true);
-  const after = await svc.updateEvent(id, ORG, eventId, { fee: 30000 });
-  assert.equal(after.events[0].fee, 30000);
+  after = await svc.getTournament(id, ORG);
+  assert.deepEqual([after.events[0].fee, after.events[0].feeOnline], [30000, true]);
   await assert.rejects(svc.updateEvent(id, ORG, eventId, { fee: -5 }), /Entry fee/);
 });
 

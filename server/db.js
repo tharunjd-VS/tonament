@@ -239,11 +239,20 @@ ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS end_time TEXT;
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS user_id INTEGER;
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS phone TEXT;
 CREATE INDEX IF NOT EXISTS entries_user ON entries(user_id);
+
+-- Entry fees paid to the organiser directly (UPI or cash), confirmed by them:
+-- the tournament's payment details { upi, payee, note, holdHours }, and per
+-- entry the player's UPI reference, when they said they paid, and how long an
+-- unpaid entry's place is held.
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS payment JSONB;
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS pay_ref TEXT;
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS pay_sent_at TIMESTAMPTZ;
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS hold_until TIMESTAMPTZ;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 20;
 
 async function migrate(db) {
   try {

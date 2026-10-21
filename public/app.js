@@ -673,6 +673,8 @@
     entered: ['done', 'Entered ✓'],
     waiting: ['waiting', 'On the waitlist'],
     payment: ['waiting', 'Payment not finished'],
+    due: ['waiting', 'Payment due'],
+    sent: ['waiting', 'Payment sent'],
     looking: ['waiting', 'Looking for a partner'],
     playing: ['live', 'In the draw'],
     withdrawn: ['', 'Withdrawn'],
@@ -1359,7 +1361,7 @@
               ? h('small', { class: 'contact' }, e.members.map((m) => `${m.name}: ${m.contact}`).join(' · '))
               : null,
             h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group)),
-            editable && !e.confirmed && e.feeStatus !== 'pending'
+            editable && !e.confirmed && !['pending', 'due', 'sent'].includes(e.feeStatus)
               ? h('button', { class: 'btn btn-small btn-primary confirm-btn', onclick: () => confirmEntry(t, e) }, 'Confirm place')
               : null,
             t.event.fee && t.can.manage && !e.members ? feeActions(t, e) : null,
@@ -1394,8 +1396,8 @@
         list,
       ];
     }
-    if (!setup) return [upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, prizeSettingsCard(t), tournamentSettingsCard(t)];
-    return [upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
+    if (!setup) return [paymentsToCheck(t), upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, prizeSettingsCard(t), tournamentSettingsCard(t)];
+    return [paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
   }
 
   function addEntriesForm(t, walkIn) {
@@ -1446,7 +1448,15 @@
         if (!confirm(`Withdraw ${mine.name} from ${multiEvent(t) ? t.event.name : t.name}?`)) return;
         act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${mine.id}/leave`, {}, t.id); }, 'Your entry has been withdrawn');
       };
-      const canLeave = !mine.paired && mine.feeStatus !== 'paid';
+      const canLeave = !mine.paired && !['paid', 'received', 'cash'].includes(mine.feeStatus);
+      if (mine.feeStatus === 'due') return payCard(t, mine, leave);
+      if (mine.feeStatus === 'sent') {
+        return h('div', { class: 'card entry-card' },
+          h('h2', {}, 'Payment sent — waiting for the organiser'),
+          h('p', {}, h('strong', {}, mine.name), ` — ${(t.payment && t.payment.payee) || 'The organiser'} will check the payment${mine.payRef ? ` (UPI ref ${mine.payRef})` : ''} and confirm your place. This page updates once they do, and we'll email you.`),
+          h('p', { class: 'muted small', style: 'margin:0' }, `Your reference is TN${mine.id}. ${closes}`),
+          h('div', { class: 'actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: leave }, 'Withdraw my entry')));
+      }
       const card = (title, body, foot) => h('div', { class: 'card entry-card' },
         h('h2', {}, title), h('p', {}, body),
         h('p', { class: 'muted small', style: 'margin:0' }, `${foot} ${closes}`),
@@ -1465,15 +1475,20 @@
       if (!mine.confirmed) {
         return card('Entry received', [h('strong', {}, mine.name), ' — the organiser will confirm your place. This page updates once they do.'], 'Questions? Contact the organiser.');
       }
-      return card('You\'re entered ✓', [h('strong', {}, mine.name), ' is on the entry list. See you on the day!'], mine.feeStatus === 'paid' ? 'Paid ✓ — to withdraw, contact the organiser.' : 'Something wrong? Contact the organiser.');
+      return card('You\'re entered ✓', [h('strong', {}, mine.name), ' is on the entry list. See you on the day!'], ['paid', 'received', 'cash'].includes(mine.feeStatus) ? 'Paid ✓ — to withdraw, contact the organiser.' : 'Something wrong? Contact the organiser.');
     }
     const full = t.placesLeft === 0;
     const fee = t.event.fee || 0;
+    const online = fee > 0 && t.event.feeOnline;
     const drawn = t.event.discipline === 'doubles' && t.config.partners === 'drawn';
     const team = t.event.discipline === 'team';
-    const feeLine = fee ? `Entry fee ${money(fee)}${t.event.discipline === 'doubles' ? ' per pair' : team ? ' per team' : ''}, paid online when you enter. ` : '';
-    // Paid events have no waitlist: nobody pays for a place that isn't there.
-    if (fee && full) {
+    const per = t.event.discipline === 'doubles' ? ' per pair' : team ? ' per team' : '';
+    const payee = (t.payment && t.payment.payee) || 'the organiser';
+    const feeLine = !fee ? ''
+      : online ? `Entry fee ${money(fee)}${per}, paid online when you enter. `
+        : `Entry fee ${money(fee)}${per}: after entering, pay ${payee} by UPI${full ? ' once a place opens' : ''}. `;
+    // Online-paid events have no waitlist: nobody pays for a place that isn't there.
+    if (online && full) {
       return h('div', { class: 'card entry-card' },
         h('h2', {}, `${multiEvent(t) ? t.event.name : 'This tournament'} is full`),
         h('p', { class: 'muted small', style: 'margin:0' }, 'All places have been taken. Questions? Contact the organiser.'));
@@ -1496,7 +1511,8 @@
             }
           }
           toast(res.payment ? 'Payment received — you\'re entered ✓ Your receipt is on its way.'
-            : res.confirmed === false ? 'Entry received — the organiser will confirm your place' : 'You\'re entered — see you there!');
+            : res.due ? `Entry received — now pay ${money(res.due)} to confirm your place`
+              : res.confirmed === false ? 'Entry received — the organiser will confirm your place' : 'You\'re entered — see you there!');
           refresh();
           render();
         } catch (err) {
@@ -1536,9 +1552,50 @@
         : `The organisers can reach you at ${S.me.email}${team ? ' (the captain)' : ''}, or this number. Only they see your details.`),
     // honeypot: hidden from people, filled in by bots
     h('label', { class: 'hp', 'aria-hidden': 'true' }, 'Website', h('input', { name: 'website', tabindex: '-1', autocomplete: 'off' })),
-    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, full ? 'Join waitlist' : fee ? `Pay ${money(fee)} and enter` : 'Enter')),
-    fee ? h('p', { class: 'hint', style: 'margin:0' }, 'Secure payment by Razorpay — UPI, cards, netbanking or wallets. ', h('a', { href: '/refunds', target: '_blank', rel: 'noopener' }, 'Refund policy')) : null);
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, full ? 'Join waitlist' : online ? `Pay ${money(fee)} and enter` : 'Enter')),
+    online ? h('p', { class: 'hint', style: 'margin:0' }, 'Secure payment by Razorpay — UPI, cards, netbanking or wallets. ', h('a', { href: '/refunds', target: '_blank', rel: 'noopener' }, 'Refund policy')) : null);
     return form;
+  }
+
+  // A player's entry with the fee still to pay: how to pay the organiser, then "I've paid".
+  function payCard(t, mine, leave) {
+    const p = t.payment || {};
+    const amount = mine.feeAmount || t.event.fee || 0;
+    const ref = `TN${mine.id}`;
+    const payee = p.payee || 'the organiser';
+    // UPI apps open with the payee, amount and a note that names the entry.
+    const upiLink = p.upi
+      ? `upi://pay?pa=${encodeURIComponent(p.upi)}${p.payee ? `&pn=${encodeURIComponent(p.payee)}` : ''}&am=${(amount / 100).toFixed(2)}&cu=INR&tn=${encodeURIComponent(`${ref} ${t.name}`.slice(0, 50))}`
+      : null;
+    const touch = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    const held = heldNow(mine);
+    const holdLine = held === null ? 'Your place is held until the draw.'
+      : held ? `Your place is held until ${fmtWhen(mine.holdUntil)}.`
+        : 'Your place isn\'t held any more — pay now and the organiser can still confirm you if there\'s room.';
+    const refInput = h('input', { name: 'ref', inputmode: 'numeric', maxlength: 16, placeholder: '12-digit UPI reference', autocomplete: 'off' });
+    const form = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${mine.id}/paid`, { ref: refInput.value }, t.id); }, 'Thanks — the organiser will confirm your payment');
+      },
+    },
+    field('UPI reference (optional)', refInput, null, 'The 12-digit number in your payment details — it helps the organiser find your payment.'),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'I\'ve paid')));
+    return h('div', { class: 'card entry-card pay-card' },
+      h('h2', {}, `Pay ${money(amount)} to ${payee}`),
+      h('p', {}, h('strong', {}, mine.name), ` is entered — your place is confirmed once ${payee === 'the organiser' ? 'they' : payee} receive${payee === 'the organiser' ? '' : 's'} your payment. ${holdLine}`),
+      upiLink && touch ? h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary btn-lg', href: upiLink }, `Pay ${money(amount)} with UPI`)) : null,
+      p.qr ? h('img', { class: 'qr-pay', src: p.qr, alt: `UPI QR code for ${payee}` }) : null,
+      p.upi
+        ? h('div', { class: 'pay-upi' },
+          h('span', {}, 'UPI ID ', h('strong', {}, p.upi)),
+          h('button', { type: 'button', class: 'btn btn-small btn-ghost', onclick: () => copy(p.upi, 'UPI ID copied') }, 'Copy'))
+        : null,
+      h('p', { class: 'muted small' }, `Add `, h('strong', {}, ref), ' to the payment note so the organiser can match it.', p.note ? ` ${p.note}` : ''),
+      !p.upi && !p.qr ? h('p', { class: 'muted small' }, 'The organiser hasn\'t added UPI details — pay them as they\'ve asked (e.g. cash at the desk).') : null,
+      form,
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: leave }, 'Withdraw my entry')));
   }
 
   function lateEntryCard(t) {
@@ -1677,13 +1734,28 @@
   // Entry fees (tournaments organised by Tonament).
   function feePill(e) {
     if (e.feeStatus === 'paid') return pill('done', `Paid ${money(e.feeAmount || 0)}`);
+    if (e.feeStatus === 'received') return pill('done', `Paid ${money(e.feeAmount || 0)} ✓`);
+    if (e.feeStatus === 'sent') return pill('waiting', 'Payment sent — check');
+    if (e.feeStatus === 'due') return pill('waiting', heldNow(e) ? `Payment due · held until ${fmtWhen(e.holdUntil)}` : heldNow(e) === null ? 'Payment due' : 'Payment due · not held');
     if (e.feeStatus === 'cash') return pill('done', 'Paid in person');
     if (e.feeStatus === 'waived') return pill('', 'Fee waived');
     if (e.feeStatus === 'pending') return pill('waiting', 'Paying…');
     return pill('waiting', 'Unpaid');
   }
+  // Is an unpaid entry's place still held? (null: held until the draw)
+  const heldNow = (e) => (e.holdUntil == null ? null : Date.parse(e.holdUntil) > Date.now());
   function feeActions(t, e) {
     const set = (status, msg) => act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/fee`, { status }, t.id); }, msg);
+    if (!t.event.feeOnline) {
+      // Paid to the organiser: settle it here (the "Payments to check" list has the same buttons).
+      if (e.feeStatus !== 'due' && e.feeStatus !== 'sent') return null;
+      return h('span', { class: 'fee-actions' },
+        e.feeStatus === 'sent'
+          ? h('button', { class: 'btn btn-small btn-primary', onclick: () => set('received', `${e.name}: payment received`) }, 'Received ✓')
+          : null,
+        h('button', { class: 'btn btn-small btn-ghost', onclick: () => set('cash', `${e.name}: paid in cash`) }, 'Paid in cash'),
+        h('button', { class: 'btn btn-small btn-ghost', onclick: () => set('waived', `${e.name}: fee waived`) }, 'Waive'));
+    }
     if (e.feeStatus === 'cash' || e.feeStatus === 'waived') {
       return h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => set(null, 'Marked unpaid') }, 'Undo'));
     }
@@ -1691,6 +1763,29 @@
     return h('span', { class: 'fee-actions' },
       h('button', { class: 'btn btn-small btn-ghost', onclick: () => set('cash', `${e.name}: paid in person`) }, 'Paid in person'),
       h('button', { class: 'btn btn-small btn-ghost', onclick: () => set('waived', `${e.name}: fee waived`) }, 'Waive'));
+  }
+
+  // Organisers: payments players say they've made, across all events, oldest first.
+  function paymentsToCheck(t) {
+    if (!t.can.manage) return null;
+    const sent = t.events.flatMap((ev) => ev.entries.filter((e) => e.feeStatus === 'sent' && !ev.feeOnline).map((e) => ({ e, ev })))
+      .sort((x, y) => String(x.e.paySentAt).localeCompare(String(y.e.paySentAt)));
+    if (!sent.length) return null;
+    const set = (e, status, msg) => act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/fee`, { status }, t.id); }, msg);
+    return h('div', { class: 'card payments-card' },
+      h('h2', {}, `Payments to check (${sent.length})`),
+      h('p', { class: 'muted small' }, 'These players say they\'ve paid you. Check your UPI app or bank messages (the payment note has their TN number), then confirm.'),
+      h('ul', { class: 'pay-list' }, sent.map(({ e, ev }) => h('li', {},
+        h('div', { class: 'pay-who' },
+          h('strong', {}, e.name),
+          h('small', { class: 'muted' }, [multiEvent(t) ? ev.name : null, money(e.feeAmount || 0), `TN${e.id}`, e.payRef ? `UPI ref ${e.payRef}` : 'no reference', e.paySentAt ? `paid ${fmtWhen(e.paySentAt)}` : null].filter(Boolean).join(' · '))),
+        h('div', { class: 'fee-actions' },
+          h('button', { class: 'btn btn-small btn-primary', onclick: () => set(e, 'received', `${e.name}: payment received — they're in`) }, 'Received ✓'),
+          h('button', {
+            class: 'btn btn-small btn-ghost',
+            onclick: () => confirm(`Tell ${e.name} you haven't received their payment? Their entry goes back to unpaid.`) && set(e, 'missing', `${e.name} has been asked to check their payment`),
+          }, 'Not received'),
+          h('button', { class: 'btn btn-small btn-ghost', onclick: () => set(e, 'cash', `${e.name}: paid in cash`) }, 'Cash'))))));
   }
 
   function confirmEntry(t, e) {
@@ -1826,15 +1921,60 @@
       class: 'form',
       onsubmit: (e) => {
         e.preventDefault();
-        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), { ...readTournament(form), courts: readCourts(form) }, t.id); }, 'Tournament settings saved');
+        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), { ...readTournament(form), courts: readCourts(form), payment: readPayment(form) }, t.id); }, 'Tournament settings saved');
       },
     },
     field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: t.name })),
     detailsFields(detailValues(t)),
     entryFields(t.config),
     courtFields(t),
+    paymentFields(t),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
     return panel(t, 'settings', 'Tournament settings · venue, dates, entries, courts', form);
+  }
+
+  // How players pay entry fees to the organiser (UPI or cash, confirmed by hand).
+  function paymentFields(t) {
+    if (t.official) return null; // Tonament's own tournaments take fees online
+    const p = t.payment || {};
+    const uploadQr = async (e) => {
+      const [file] = e.target.files;
+      e.target.value = '';
+      if (!file) return;
+      try {
+        const data = await prepareImage(file, 'logo');
+        S.t = await api('POST', `${tPath(t)}/media`, { kind: 'qr', data }, t.id);
+        toast('QR code saved ✓');
+        render();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    };
+    return h('fieldset', { class: 'details-set' }, h('legend', {}, 'Entry fees'),
+      h('p', { class: 'hint', style: 'margin:0' }, 'For events with an entry fee: players pay you directly — by UPI or cash — and you confirm each payment on the Players tab. Tonament never handles the money.'),
+      h('div', { class: 'grid-2' },
+        field('Your UPI ID', h('input', { name: 'upi', maxlength: 100, value: p.upi || '', placeholder: 'e.g. kavya@okhdfcbank', autocomplete: 'off', inputmode: 'email' })),
+        field('Name to pay', h('input', { name: 'payee', maxlength: 60, value: p.payee || '', placeholder: 'As shown in UPI apps' }))),
+      field('Note for players (optional)', h('input', { name: 'payNote', maxlength: 200, value: p.note || '', placeholder: 'e.g. Cash is also fine at the desk' })),
+      field('Hold a place while unpaid', h('select', { name: 'holdHours', value: String(p.holdHours ?? 48) },
+        h('option', { value: '24' }, '24 hours'), h('option', { value: '48' }, '48 hours'), h('option', { value: '0' }, 'Until entries close')), null,
+      'After that, an unpaid entry goes to the waitlist (you can still confirm it if there\'s room).'),
+      h('div', { class: 'qr-row' },
+        p.qr ? h('img', { class: 'qr-preview', src: p.qr, alt: 'Your UPI QR code' }) : null,
+        h('div', {},
+          h('label', { class: 'btn btn-small' }, p.qr ? 'Replace QR code' : 'Upload your UPI QR code',
+            h('input', { type: 'file', accept: 'image/*', hidden: true, onchange: uploadQr })),
+          h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'Players on a computer scan it. Save it from your UPI app (Profile → QR code).'),
+          p.qrId ? h('button', {
+            type: 'button', class: 'btn btn-small btn-ghost',
+            onclick: () => act(async () => { S.t = await api('DELETE', `${tPath(t)}/media/${p.qrId}`, undefined, t.id); }, 'QR code removed'),
+          }, 'Remove') : null)));
+  }
+
+  function readPayment(form) {
+    if (!form.upi) return undefined;
+    const fd = new FormData(form);
+    return { upi: fd.get('upi') || '', payee: fd.get('payee') || '', note: fd.get('payNote') || '', holdHours: Number(fd.get('holdHours')) };
   }
 
   // Courts for the order of play (shared by every event).
@@ -1895,12 +2035,14 @@
           h('input', { type: 'checkbox', name: 'balancePairs', checked: Boolean(t.config.balancePairs) }),
           h('span', {}, h('strong', {}, 'Balance drawn pairs'), h('small', {}, 'Pair the top seeds with the lowest, by the order of the entry list.'))))
       : null,
-    t.official
-      ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'Entry fee'),
-        field(`Entry fee (₹)${t.event.discipline === 'doubles' ? ' per pair' : t.event.discipline === 'team' ? ' per team' : ''}`, h('input', {
-          type: 'number', name: 'fee', min: 0, max: 50000, step: 1, value: t.event.fee ? t.event.fee / 100 : '', placeholder: 'Free',
-        }), null, 'Players pay online when they enter (Organised by Tonament only).'))
-      : null,
+    h('fieldset', { class: 'details-set' }, h('legend', {}, 'Entry fee'),
+      field(`Entry fee (₹)${t.event.discipline === 'doubles' ? ' per pair' : t.event.discipline === 'team' ? ' per team' : ''}`, h('input', {
+        type: 'number', name: 'fee', min: 0, max: 50000, step: 1, value: t.event.fee ? t.event.fee / 100 : '', placeholder: 'Free',
+      }), null, t.official
+        ? 'Players pay online when they enter (Organised by Tonament).'
+        : t.payment && t.payment.upi
+          ? `Players pay you directly (UPI ${t.payment.upi}) and you confirm each payment.`
+          : 'Players pay you directly and you confirm each payment. Add your UPI ID under Tournament settings → Entry fees.')),
     formatFields(sport, { format: t.format, ...t.config }),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
     syncFormat(form);
