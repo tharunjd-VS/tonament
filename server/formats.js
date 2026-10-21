@@ -87,15 +87,20 @@ function roundName(round, totalRounds) {
   return `Round of ${2 ** (fromEnd + 1)}`;
 }
 
-// results: [{ a, b, winner, gamesA, gamesB, pointsA, pointsB }]
-// Ranking (BWF style): matches won; two-way tie -> head-to-head;
-// otherwise game difference, then point difference.
+// League points: a win is 2, a draw 1 (2-game league matches), a loss 0.
+// With no draws this ranks exactly as matches won.
+const WIN_POINTS = 2;
+const DRAW_POINTS = 1;
+
+// results: [{ a, b, winner, draw, gamesA, gamesB, pointsA, pointsB }]
+// Ranking (BWF style): league points; two-way tie -> head-to-head (unless
+// they drew); otherwise game difference, then point difference.
 function standings(memberIds, results) {
   const order = new Map(memberIds.map((id, i) => [id, i]));
   const rows = new Map(
     memberIds.map((id) => [
       id,
-      { id, played: 0, won: 0, lost: 0, gamesFor: 0, gamesAgainst: 0, pointsFor: 0, pointsAgainst: 0 },
+      { id, played: 0, won: 0, drawn: 0, lost: 0, leaguePoints: 0, gamesFor: 0, gamesAgainst: 0, pointsFor: 0, pointsAgainst: 0 },
     ]),
   );
   for (const r of results) {
@@ -104,12 +109,14 @@ function standings(memberIds, results) {
     if (!a || !b) continue;
     a.played++;
     b.played++;
-    if (r.winner === r.a) { a.won++; b.lost++; } else { b.won++; a.lost++; }
+    if (r.draw) { a.drawn++; b.drawn++; } else if (r.winner === r.a) { a.won++; b.lost++; } else { b.won++; a.lost++; }
     a.gamesFor += r.gamesA; a.gamesAgainst += r.gamesB;
     b.gamesFor += r.gamesB; b.gamesAgainst += r.gamesA;
     a.pointsFor += r.pointsA; a.pointsAgainst += r.pointsB;
     b.pointsFor += r.pointsB; b.pointsAgainst += r.pointsA;
   }
+
+  for (const row of rows.values()) row.leaguePoints = row.won * WIN_POINTS + row.drawn * DRAW_POINTS;
 
   const byStats = (x, y) =>
     y.gamesFor - y.gamesAgainst - (x.gamesFor - x.gamesAgainst) ||
@@ -120,20 +127,20 @@ function standings(memberIds, results) {
     if (tied.length === 2) {
       const [x, y] = tied;
       const h2h = results.find((r) => (r.a === x.id && r.b === y.id) || (r.a === y.id && r.b === x.id));
-      if (h2h) return h2h.winner === x.id ? [x, y] : [y, x];
+      if (h2h && !h2h.draw) return h2h.winner === x.id ? [x, y] : [y, x];
     }
     return tied.sort(byStats);
   };
 
-  const list = [...rows.values()].sort((x, y) => y.won - x.won);
+  const list = [...rows.values()].sort((x, y) => y.leaguePoints - x.leaguePoints);
   const ranked = [];
   for (let i = 0; i < list.length; ) {
     let j = i + 1;
-    while (j < list.length && list[j].won === list[i].won) j++;
+    while (j < list.length && list[j].leaguePoints === list[i].leaguePoints) j++;
     ranked.push(...breakTie(list.slice(i, j)));
     i = j;
   }
   return ranked.map((r, i) => ({ rank: i + 1, ...r }));
 }
 
-module.exports = { groupCount, snakeGroups, roundRobin, bracketSize, seedOrder, knockoutSlots, roundName, standings };
+module.exports = { WIN_POINTS, DRAW_POINTS, groupCount, snakeGroups, roundRobin, bracketSize, seedOrder, knockoutSlots, roundName, standings };

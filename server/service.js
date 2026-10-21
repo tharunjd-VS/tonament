@@ -6,6 +6,7 @@ const formats = require('./formats');
 const regions = require('../public/regions');
 const catalog = require('../public/sports/events');
 const schedule = require('../public/schedule');
+const league = require('../public/sports/league');
 const pages = require('./pages');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
@@ -22,7 +23,7 @@ const VISIBILITY = ['private', 'link', 'public'];
 // Settings that belong to the tournament as a whole; everything else in a
 // config (format details, scoring, caps) belongs to each event.
 const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
-const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'discipline', 'gender', 'age', 'level'];
+const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level'];
 // Event settings that can still change once the event has started.
 const LIVE_EVENT_KEYS = ['lateEntry', 'prizes'];
 const MAX_PRIZE = 10000000; // ₹1 crore
@@ -462,6 +463,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       lateEntry: input.lateEntry !== undefined ? Boolean(input.lateEntry) : prev.lateEntry ?? false,
       // The organiser's own cap on self-entries (blank = no cap).
       maxEntries: input.maxEntries !== undefined ? int(input.maxEntries, 2, MAX_ENTRIES, null, 'Maximum entries') : prev.maxEntries ?? null,
+      // League matches are exactly 2 games, and 1-1 is a draw (knockout matches keep their best-of).
+      leagueDraws: input.leagueDraws !== undefined ? Boolean(input.leagueDraws) : prev.leagueDraws ?? false,
     };
   }
 
@@ -557,7 +560,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // Doubles events tell the rules module so (pickleball's side-out has two servers a side).
   const scoringOf = (t) => (t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring);
-  const scoreOf = (t, m) => t.sportDef.compute(m.rallies, scoringOf(t), m.first_server);
+  const drawsIn = (t, m) => m.stage === 'league' && Boolean(t.config.leagueDraws);
+  const scoreOf = (t, m, rallies = m.rallies) => league.score(t.sportDef, rallies, scoringOf(t), m.first_server, { draws: drawsIn(t, m) });
 
   function matchView(t, m, score, names) {
     const side = (id) => (id == null ? null : { id, name: names.get(id) ?? 'Unknown' });
@@ -577,6 +581,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       rallies: m.rallies.length,
       log: m.rallies, // rally winners in order, e.g. "abba" — lets the scorer's screen update instantly
       winner: m.winner_id,
+      draw: m.status === 'done' && Boolean(score.draw),
       walkover: m.walkover,
       catchUp: m.catch_up,
       queuePos: m.queue_pos,
@@ -594,6 +599,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       a: m.a_id,
       b: m.b_id,
       winner: m.winner_id,
+      draw: !w && Boolean(score.draw),
       gamesA: w ? 0 : score.gamesWon.a,
       gamesB: w ? 0 : score.gamesWon.b,
       pointsA: w ? 0 : score.totals.a,
@@ -1970,13 +1976,14 @@ function createService(db, { mailer, fetchImpl } = {}) {
       checkAt(m, at);
 
       const rallies = m.rallies + side;
-      const score = t.sportDef.compute(rallies, scoringOf(t), m.first_server);
+      const score = scoreOf(t, m, rallies);
       const winnerId = score.winner ? (score.winner === 'a' ? m.a_id : m.b_id) : null;
+      const over = league.finished(score); // won, or drawn in a 2-game league match
       const [row] = await q(
         `UPDATE matches SET rallies = $1, status = $2, winner_id = $3, updated_at = now() WHERE id = $4 RETURNING *`,
-        [rallies, winnerId ? 'done' : 'live', winnerId, m.id],
+        [rallies, over ? 'done' : 'live', winnerId, m.id],
       );
-      if (winnerId) {
+      if (over) {
         if (m.stage === 'knockout') {
           if (m.round === t.config.knockoutRounds) await setStatus(q, t, 'completed');
           else await advance(q, t, m, winnerId);

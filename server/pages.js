@@ -129,6 +129,7 @@ function tournamentBody(t) {
     .sort((x, y) => String(y.m.updatedAt || '').localeCompare(String(x.m.updatedAt || '')))
     .slice(0, 12)
     .map(({ m, e }) => {
+      if (m.draw) return `${t.events.length > 1 ? `${esc(e.name)}: ` : ''}<strong>${esc(m.a.name)}</strong> drew with <strong>${esc(m.b.name)}</strong> ${esc(m.summary || '')}`;
       const winner = m.winner === m.a.id ? m.a : m.b;
       const loser = winner === m.a ? m.b : m.a;
       return `${t.events.length > 1 ? `${esc(e.name)}: ` : ''}<strong>${esc(winner.name)}</strong> beat ${esc(loser.name)} ${esc(m.summary || '')}`;

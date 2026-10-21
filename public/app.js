@@ -968,18 +968,24 @@
         h('label', { class: 'check-field' },
           h('input', { type: 'checkbox', name: 'lateEntry', checked: Boolean(v.lateEntry) }),
           h('span', {}, h('strong', {}, 'Allow late entries after the start'), h('small', {}, 'Latecomers join the smallest group with catch-up matches, or take a bye in a knockout. You can change this during play.')))),
-      scoringFields(sport, v.scoring),
+      scoringFields(sport, v.scoring, v.leagueDraws),
     ];
   }
 
   // The sport's own scoring settings (from its rules module).
-  function scoringFields(sport, scoring) {
+  // League matches can instead be exactly 2 games, where 1-1 is a draw.
+  function scoringFields(sport, scoring, leagueDraws = false) {
+    const unit = sportUnit(sport.id).toLowerCase();
     return h('fieldset', { class: 'scoring-set' }, h('legend', {}, `${sport.name} scoring`),
       h('div', { class: 'grid-3' }, sport.fields.map((f) => field(f.label,
         f.type === 'select'
           ? h('select', { name: `scoring.${f.key}`, value: scoring[f.key] }, f.options.map((o) => h('option', { value: o.value }, o.label)))
           : h('input', { type: 'number', name: `scoring.${f.key}`, min: f.min, max: f.max, value: scoring[f.key], required: true }),
-        null, f.hint))));
+        null, f.hint))),
+      field('League matches', h('select', { name: 'leagueDraws', value: leagueDraws ? '1' : '' },
+        h('option', { value: '' }, 'Same as above (always a winner)'),
+        h('option', { value: '1' }, `2 ${unit}s — draws allowed`)), 'league-field',
+      `With draws, ${unit} 1 each is a draw. Group tables then rank on points: win 2, draw 1, loss 0. Knockout matches keep the length above.`));
   }
 
   // A select of standard values with "Custom…" revealing a text box.
@@ -1154,6 +1160,8 @@
     const fmt = form.querySelector('input[name=format]:checked')?.value;
     form.querySelector('.groups-field').hidden = fmt === 'knockout';
     form.querySelector('.qualifiers-field').hidden = fmt !== 'league_knockout';
+    const league = form.querySelector('.league-field');
+    if (league) league.hidden = fmt === 'knockout';
   }
 
   function readTournament(form) {
@@ -1180,6 +1188,7 @@
       maxEntries: fd.get('maxEntries') ? Number(fd.get('maxEntries')) : '',
       lateEntry: fd.get('lateEntry') === 'on',
       scoring,
+      leagueDraws: fd.get('leagueDraws') === '1',
     };
   }
 
@@ -2382,6 +2391,7 @@
       .sort((x, y) => String(y.m.updatedAt || '').localeCompare(String(x.m.updatedAt || ''))).slice(0, 6);
     if (results.length) {
       panels.push(['Latest results', h('ul', { class: 'dc-list' }, results.map(({ m, ev }) => {
+        if (m.draw) return h('li', {}, h('span', {}, h('strong', {}, m.a.name), ' drew with ', h('strong', {}, m.b.name), evLabel(ev) ? h('small', {}, ev.name) : null), h('span', { class: 'dc-score' }, m.summary));
         const w = m.winner === m.a.id ? m.a : m.b;
         const l = w === m.a ? m.b : m.a;
         // The winner's score first: "21-15, 21-18".
@@ -2391,10 +2401,14 @@
     }
     for (const ev of t.events) {
       if (ev.status === 'league' || (ev.status !== 'setup' && ev.groups.length && ev.status !== 'knockout')) {
+        // With draws: drawn and league points columns too.
+        const draws = Boolean(ev.config && ev.config.leagueDraws);
+        const cols = ['#', 'Name', 'P', 'W', ...(draws ? ['D'] : []), 'L', ...(draws ? ['Pts'] : [])];
         for (const g of ev.groups) {
           panels.push([`${named ? `${ev.name} · ` : ''}${g.name}`, h('table', { class: 'dc-table' },
-            h('thead', {}, h('tr', {}, ['#', 'Name', 'P', 'W', 'L'].map((c, i) => h('th', { class: i === 1 ? '' : 'num' }, c)))),
-            h('tbody', {}, g.standings.map((r) => h('tr', {}, h('td', { class: 'num' }, r.rank), h('td', {}, r.name), h('td', { class: 'num' }, r.played), h('td', { class: 'num' }, r.won), h('td', { class: 'num' }, r.lost)))))]);
+            h('thead', {}, h('tr', {}, cols.map((c, i) => h('th', { class: i === 1 ? '' : 'num' }, c)))),
+            h('tbody', {}, g.standings.map((r) => h('tr', {}, h('td', { class: 'num' }, r.rank), h('td', {}, r.name), h('td', { class: 'num' }, r.played), h('td', { class: 'num' }, r.won),
+              draws ? h('td', { class: 'num' }, r.drawn) : null, h('td', { class: 'num' }, r.lost), draws ? h('td', { class: 'num' }, h('strong', {}, r.leaguePoints)) : null))))]);
         }
       }
       const ko = ev.matches.filter((m) => m.stage === 'knockout' && m.status !== 'bye');
@@ -2529,7 +2543,7 @@
   function statusTag(m) {
     if (m.status === 'live') return pill('live', 'Live');
     if (m.walkover) return pill('done', 'Walkover');
-    if (m.status === 'done') return pill('done', 'Final');
+    if (m.status === 'done') return pill('done', m.draw ? 'Draw' : 'Final');
     if (m.status === 'bye') return pill('', 'Bye');
     return pill('', m.a && m.b ? 'Upcoming' : 'Waiting');
   }
@@ -2562,22 +2576,32 @@
     if (!t.groups.length) return empty('Groups appear once the tournament starts.');
     const q = t.format === 'league_knockout' ? t.config.qualifiers : 1;
     const signed = (n) => (n > 0 ? `+${n}` : String(n));
+    const draws = Boolean(t.config.leagueDraws);
+    const diffLabel = tennisLike(t) ? 'Gms' : draws ? '±' : 'Pts';
+    const cols = ['#', t.event.discipline === 'team' ? 'Team' : 'Player', 'P', 'W', ...(draws ? ['D'] : []), 'L', unitOf(t) === 'Set' ? 'Sets' : 'Games', diffLabel, ...(draws ? ['Pts'] : [])];
+    const titles = { [diffLabel]: tennisLike(t) ? 'Game difference' : 'Point difference', ...(draws ? { D: 'Drawn', Pts: 'League points: win 2, draw 1' } : {}) };
+    const ranking = draws
+      ? 'Ranking: league points (win 2, draw 1, loss 0), then head-to-head, game difference, point difference.'
+      : 'Ranking: matches won, then head-to-head, game difference, point difference.';
     return [
-      t.format === 'league_knockout' ? h('p', { class: 'muted small' }, `Top ${q} in each group qualify for the knockout (highlighted). Ranking: matches won, then head-to-head, game difference, point difference.`) : null,
+      t.format === 'league_knockout' ? h('p', { class: 'muted small' }, `Top ${q} in each group qualify for the knockout (highlighted). ${ranking}`)
+        : draws ? h('p', { class: 'muted small' }, `League matches are 2 ${unitOf(t).toLowerCase()}s; 1 each is a draw. ${ranking}`) : null,
       h('div', { class: 'groups-grid' }, t.groups.map((g) => {
         const fixtures = t.matches.filter((m) => m.stage === 'league' && m.group === g.no).sort(byOrder);
         return h('div', { class: 'card' },
           h('h2', {}, g.name),
           h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ['#', t.event.discipline === 'team' ? 'Team' : 'Player', 'P', 'W', 'L', unitOf(t) === 'Set' ? 'Sets' : 'Games', tennisLike(t) ? 'Gms' : 'Pts'].map((c, i) => h('th', { class: i === 1 ? '' : 'num', title: c === 'Pts' ? 'Point difference' : c === 'Gms' ? 'Game difference' : null }, c)))),
+            h('thead', {}, h('tr', {}, cols.map((c, i) => h('th', { class: i === 1 ? '' : 'num', title: titles[c] || null }, c)))),
             h('tbody', {}, g.standings.map((r) => h('tr', { class: qualifying(g, q).has(r.id) ? 'q' : r.withdrawn ? 'out' : '' },
               h('td', { class: 'num' }, r.rank),
               h('td', { class: 'name' }, r.name, r.withdrawn ? [' ', pill('withdrawn', 'Withdrew')] : null),
               h('td', { class: 'num' }, r.played),
               h('td', { class: 'num' }, r.won),
+              draws ? h('td', { class: 'num' }, r.drawn) : null,
               h('td', { class: 'num' }, r.lost),
               h('td', { class: 'num' }, `${r.gamesFor}–${r.gamesAgainst}`),
-              h('td', { class: 'num' }, signed(r.pointsFor - r.pointsAgainst))))))),
+              h('td', { class: 'num' }, signed(r.pointsFor - r.pointsAgainst)),
+              draws ? h('td', { class: 'num' }, h('strong', {}, r.leaguePoints)) : null))))),
           h('details', { open: fixtures.some((m) => m.status !== 'done') },
             h('summary', {}, `Fixtures (${fixtures.filter((m) => m.status === 'done').length}/${fixtures.length} played)`),
             h('div', { class: 'match-list', style: 'grid-template-columns:1fr' }, fixtures.map((m) => matchCard(t, m)))));
@@ -2679,7 +2703,7 @@
     return h('div', { class: 'scoreboard' }, row('a'), row('b'),
       live && sc.server
         ? h('div', { class: 'sb-foot' }, `${sc.unit || 'Game'} ${sc.games.length} · ${nameOf(m[sc.server])} to serve${sc.serveCourt ? ` from the ${sc.serveCourt} court` : ''}${sc.note ? ` · ${sc.note}` : ''}`)
-        : m.status === 'done' ? h('div', { class: 'sb-foot' }, m.summary) : null);
+        : m.status === 'done' ? h('div', { class: 'sb-foot' }, m.draw ? `Match drawn · ${m.summary}` : m.summary) : null);
   }
 
   function scorer(t, m) {
@@ -2746,10 +2770,11 @@
   const tennisLike = (t) => ['tennis', 'padel'].includes(t.sport.id);
 
   // "Game" or "Set", from the sport's rules.
-  function unitOf(t) {
-    const sport = window.TonamentSports && window.TonamentSports[t.sport.id];
+  function sportUnit(id) {
+    const sport = window.TonamentSports && window.TonamentSports[id];
     return (sport && sport.compute('', {}).unit) || 'Game';
   }
+  const unitOf = (t) => sportUnit(t.sport.id);
 
   // The match as the umpire should see it: confirmed state plus queued taps.
   function withPending(t, m) {
@@ -2759,15 +2784,16 @@
     let log = m.log;
     for (const op of ops) log = op.type === 'rally' ? log + op.side : log.slice(0, -1);
     const scoring = t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring;
-    const score = sport.compute(log, scoring, m.firstServer);
+    const score = TonamentLeague.score(sport, log, scoring, m.firstServer, { draws: m.stage === 'league' && Boolean(t.config.leagueDraws) });
     return {
       ...m,
       log,
       rallies: log.length,
       score,
       summary: sport.summary(score),
-      status: score.winner ? 'done' : 'live',
+      status: TonamentLeague.finished(score) ? 'done' : 'live',
       winner: score.winner ? m[score.winner].id : null,
+      draw: Boolean(score.draw),
       pending: ops.length,
     };
   }
@@ -2784,7 +2810,7 @@
     if (navigator.vibrate) navigator.vibrate(12);
     enqueue(t, m.id, { type: 'rally', side });
     const after = withPending(t, confirmedMatch(m.id) || m);
-    if (after.status === 'done') toast(`🏸 ${after[side].name} wins ${after.summary}`);
+    if (after.status === 'done') toast(after.draw ? `🤝 Match drawn ${after.summary}` : `🏸 ${after[side].name} wins ${after.summary}`);
   }
 
   function undo(t, m) {
