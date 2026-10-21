@@ -2420,20 +2420,27 @@
         h('p', {}, 'Live scores, your matches and the order of play:'),
         h('p', { class: 'dc-url' }, `${location.host}/t/${t.id}`))]);
     }
-    const panel = panels.length ? panels[(S.displayPanel || 0) % panels.length] : null;
+    // And one for Tonament itself: everyone in the hall is a possible organiser.
+    panels.push(['Run your own tournament', h('div', { class: 'dc-promo' },
+      h('img', { src: '/brand/logo-white.svg', alt: 'Tonament', width: 190, height: 26 }),
+      h('p', {}, 'Entries, draws, courts and live scores like these — on everyone\'s phone.'),
+      h('p', { class: 'dc-url' }, 'tonament.com'),
+      h('p', { class: 'dc-promo-small' }, `Free for up to 16 entries · ${liveSports().length || 10} sports`))]);
+    const panel = panels[(S.displayPanel || 0) % panels.length];
 
     const fullscreen = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {});
     return h('div', { class: 'display' },
       h('header', { class: 'dc-head' },
-        b && b.logo ? h('img', { class: 'dc-logo', src: b.logo, alt: '' }) : null,
+        h('img', { class: 'dc-brand', src: '/brand/logo-white.svg', alt: 'Tonament', width: 190, height: 26 }),
         h('div', { class: 'dc-title' }, h('h1', {}, t.name),
           h('p', {}, [b && b.orgName, fmtSchedule(t), placeLine(t.venue, t.location.city)].filter(Boolean).join(' · '))),
+        b && b.logo ? h('img', { class: 'dc-logo', src: b.logo, alt: b.orgName || '' }) : null,
         h('div', { class: 'dc-clock' },
           h('strong', {}, new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })),
           h('span', { class: `conn ${S.connected ? 'on' : ''}` }, S.connected ? 'Live' : 'Reconnecting…')),
         h('button', { class: 'btn btn-small btn-ghost dc-fs', onclick: fullscreen, title: 'Full screen (F11)' }, '⛶')),
       !started
-        ? h('div', { class: 'dc-wait' }, h('h2', {}, 'Starting soon'), h('p', {}, fmtSchedule(t) || 'Play starts once the draw is made.'))
+        ? h('div', { class: 'dc-wait' }, h('img', { src: '/brand/logo-stacked-white.svg', alt: 'Tonament' }), h('h2', {}, 'Starting soon'), h('p', {}, fmtSchedule(t) || 'Play starts once the draw is made.'))
         : h('div', { class: 'dc-body' },
           h('section', { class: 'dc-courts' },
             h('h2', {}, plan ? 'Courts' : 'On court now'),
@@ -2445,12 +2452,16 @@
                 h('span', { class: 'dc-match' }, h('strong', {}, vsName(m)), evLabel(ev) || waiting ? h('small', {}, [evLabel(ev), waiting].filter(Boolean).join(' · ')) : null),
                 h('span', { class: 'dc-when' }, when))))
               : h('p', { class: 'dc-empty' }, 'Nothing waiting.')),
-          panel ? h('section', { class: 'dc-panel' }, h('h2', {}, panel[0]), panel[1],
-            panels.length > 1 ? h('div', { class: 'dc-dots' }, panels.map((_, i) => h('span', { class: i === (S.displayPanel || 0) % panels.length ? 'on' : '' }))) : null) : null),
-      t.sponsors && t.sponsors.length
-        ? h('footer', { class: 'dc-sponsors' }, t.sponsors.map((sp) => h('img', { src: sp.url, alt: sp.caption || 'Sponsor' })))
-        : null,
-      h('p', { class: 'dc-powered' }, 'Powered by Tonament'));
+          h('section', { class: 'dc-panel' }, h('h2', {}, panel[0]), panel[1],
+            panels.length > 1 ? h('div', { class: 'dc-dots' }, panels.map((_, i) => h('span', { class: i === (S.displayPanel || 0) % panels.length ? 'on' : '' }))) : null)),
+      h('footer', { class: 'dc-foot' },
+        h('div', { class: 'dc-foot-brand' },
+          h('img', { src: '/brand/mark-white.svg', alt: '', width: 31, height: 22 }),
+          h('div', {}, h('strong', {}, 'tonament.com'), h('span', { class: 'eyebrow' }, 'One platform. Every sport. ', h('b', {}, 'Every tournament.')))),
+        t.sponsors && t.sponsors.length
+          ? h('div', { class: 'dc-sponsors' }, t.sponsors.map((sp) => h('img', { src: sp.url, alt: sp.caption || 'Sponsor' })))
+          : null,
+        h('div', { class: 'dc-foot-cta' }, h('span', {}, 'Run your own tournament — free'), 'Entries, draws and live scores')));
   }
 
   // Redo the draw (e.g. more players arrived) until the first point is played.

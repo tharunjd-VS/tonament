@@ -576,7 +576,8 @@ body.display-mode.display-idle, body.display-mode.display-idle * { cursor: none;
 .display { height: 100vh; overflow: hidden; display: flex; flex-direction: column; gap: 1.2vw; padding: 1.6vw 2vw; color: var(--text); font-size: clamp(16px, 1.25vw, 30px); }
 .display h2 { font-size: 1.15em; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.6em; }
 .dc-head { display: flex; align-items: center; gap: 1.2vw; border-bottom: 2px solid var(--accent); padding-bottom: 0.8vw; }
-.dc-logo { height: 3.2em; width: auto; border-radius: 8px; }
+.dc-brand { height: 2.4em; width: auto; flex: none; padding-right: 1.2vw; margin-right: 0.2vw; border-right: 1px solid var(--border); }
+.dc-logo { height: 3.2em; width: auto; max-width: 12em; object-fit: contain; border-radius: 8px; flex: none; }
 .dc-title { flex: 1; min-width: 0; }
 .dc-title h1 { font-size: 2.2em; margin: 0; line-height: 1.1; }
 .dc-title p { margin: 0.2em 0 0; color: var(--muted); }
@@ -623,10 +624,23 @@ body.display-mode.display-idle .dc-fs { visibility: hidden; }
 .dc-dots span.on { background: var(--accent); }
 .dc-wait { flex: 1; display: grid; place-content: center; text-align: center; }
 .dc-wait h2 { font-size: 3em; color: var(--text); }
+.dc-wait img { height: 9em; width: auto; justify-self: center; margin-bottom: 3em; }
 .dc-empty { color: var(--muted); }
-.dc-sponsors { display: flex; gap: 2vw; justify-content: center; align-items: center; flex-wrap: wrap; padding-top: 0.6vw; border-top: 1px solid var(--border); }
-.dc-sponsors img { height: 3em; width: auto; max-width: 10em; object-fit: contain; }
-.dc-powered { margin: 0; text-align: right; color: var(--muted); font-size: 0.8em; }
+.dc-foot { display: flex; align-items: center; justify-content: space-between; gap: 2vw; padding-top: 0.8vw; border-top: 2px solid var(--accent); }
+.dc-foot-brand { display: flex; align-items: center; gap: 0.8em; }
+.dc-foot-brand img { height: 2.2em; width: auto; }
+.dc-foot-brand strong { display: block; font-size: 1.3em; }
+.dc-foot-brand .eyebrow { font-size: 0.75em; }
+.dc-foot-brand .eyebrow b { color: var(--accent-text); font-weight: 600; }
+.dc-sponsors { display: flex; gap: 2vw; justify-content: center; align-items: center; flex-wrap: wrap; flex: 1; }
+.dc-sponsors img { height: 2.6em; width: auto; max-width: 10em; object-fit: contain; }
+.dc-foot-cta { text-align: right; color: var(--muted); display: grid; }
+.dc-foot-cta span { color: var(--accent-text); font-weight: 600; }
+.dc-promo { display: grid; gap: 0.5em; align-content: start; }
+.dc-promo img { height: 2.6em; width: auto; justify-self: start; }
+.dc-promo p { margin: 0; }
+.dc-promo .dc-url { font-size: 1.6em; font-weight: 700; }
+.dc-promo-small { color: var(--muted); }
 @media (max-aspect-ratio: 1/1) {
   .dc-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "courts" "next" "panel"; }
 }
