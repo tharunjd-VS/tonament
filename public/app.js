@@ -120,7 +120,7 @@
 
   const tPath = (t) => `/tournaments/${encodeURIComponent(t.id)}`;
   // The link to share: /t/<id> shows the tournament's name, details and
-  // image in WhatsApp and other link previews (then opens #/t/<id>).
+  // image in WhatsApp and other link previews.
   const shareUrl = (t) => `${location.origin}/t/${t.id}`;
   const whatsappUrl = (t) => `https://wa.me/?text=${encodeURIComponent(`${t.name} — ${shareUrl(t)}`)}`;
   // The phone's share sheet where there is one; otherwise copy the link.
@@ -388,7 +388,7 @@
   const currentEvent = (t) => t.events.find((e) => e.id === S.route.eventId) || t.events[0];
   const eventOfMatch = (t, mid) => t.events.find((e) => e.matches.some((m) => m.id === mid));
   // A tab link that keeps the selected event.
-  const tabHref = (t, tab) => `#/t/${t.id}/${tab}${t.events && t.events.length > 1 && t.eventId ? `?e=${t.eventId}` : ''}`;
+  const tabHref = (t, tab) => `/t/${t.id}/${tab}${t.events && t.events.length > 1 && t.eventId ? `?e=${t.eventId}` : ''}`;
   // Event-scoped request bodies name the event.
   const withEv = (t, body = {}) => ({ ...body, event: t.eventId });
   async function ensurePlaces() {
@@ -406,10 +406,8 @@
 
   // ---------- routing
   async function route() {
-    const raw = location.hash.replace(/^#/, '') || '/';
-    const [pathPart, qs] = raw.split('?');
-    const parts = pathPart.split('/').filter(Boolean).map(decodeURIComponent);
-    const params = new URLSearchParams(qs || '');
+    const parts = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    const params = new URLSearchParams(location.search);
     const prev = S.route;
     S.error = null;
     S.errorCode = null;
@@ -419,7 +417,7 @@
       const key = params.get('key');
       if (key) {
         keys.set(id, key);
-        history.replaceState(null, '', `#/${parts.map(encodeURIComponent).join('/')}${params.get('e') ? `?e=${params.get('e')}` : ''}`);
+        history.replaceState(null, '', `/${parts.map(encodeURIComponent).join('/')}${params.get('e') ? `?e=${params.get('e')}` : ''}`); // drop the key from the address
       }
       S.route = parts[2] === 'm'
         ? { name: 'match', id, mid: Number(parts[3]) }
@@ -440,7 +438,7 @@
       S.t = null;
       if (parts[0] === 'new') {
         if (!S.me) {
-          location.replace('#/signin?next=/new');
+          navigate('/signin?next=/new', { replace: true });
           return;
         }
         S.route = { name: 'new' };
@@ -450,7 +448,7 @@
         S.route = { name: 'forgot', email: params.get('email') || '', sent: false };
       } else if (parts[0] === 'reset') {
         S.route = { name: 'reset', token: params.get('token') || '' };
-        history.replaceState(null, '', '#/reset'); // keep the token out of history
+        history.replaceState(null, '', '/reset'); // keep the token out of history
       } else if (parts[0] === 'admin') {
         S.route = { name: 'admin', users: null };
         render();
@@ -464,7 +462,7 @@
         S.list = null;
         S.filters = readFilters(params);
         const qs = filterQuery(S.filters);
-        if (qs && !params.toString()) history.replaceState(null, '', `#/?${qs}`); // remembered search
+        if (qs && !params.toString()) history.replaceState(null, '', `/?${qs}`); // remembered search
         render();
         [S.list, S.mine, S.interest, S.places] = await Promise.all([
           api('GET', `/tournaments?${filterQuery(S.filters, true)}`).catch((e) => { S.error = e.message; return []; }),
@@ -531,7 +529,7 @@
       }
       if (/not found/i.test(e.message)) {
         toast('This tournament was deleted');
-        location.hash = '#/';
+        navigate('/');
         return;
       }
       S.connected = false;
@@ -557,6 +555,12 @@
       return;
     }
     S.pendingRender = false;
+    // A tournament page arrives already rendered by the server: keep that on
+    // screen (rather than a spinner) until the live data has loaded.
+    if (['tournament', 'match'].includes(S.route.name) && !S.t && !S.error && app.querySelector(':scope > .prerender')) {
+      renderNav();
+      return;
+    }
     // Check-ins still being saved win over whatever the server last sent.
     if (S.t && S.pendingCheckIns.size) {
       for (const e of allEntries(S.t)) if (S.pendingCheckIns.has(e.id)) e.checkedIn = S.pendingCheckIns.get(e.id);
@@ -594,13 +598,13 @@
         h('h2', {}, '🔒 This tournament isn\'t public'),
         h('p', { class: 'muted' }, 'Only the organisers can see it right now. Ask them for access, or check back once it\'s published.'),
         h('div', { class: 'actions', style: 'justify-content:center' },
-          S.me ? null : h('a', { class: 'btn btn-primary', href: `#/signin?next=${encodeURIComponent(location.hash.slice(1))}` }, 'Sign in'),
-          h('a', { class: 'btn', href: '#/' }, 'Back to home')));
+          S.me ? null : h('a', { class: 'btn btn-primary', href: `/signin?next=${encodeURIComponent(location.pathname + location.search)}` }, 'Sign in'),
+          h('a', { class: 'btn', href: '/' }, 'Back to home')));
     }
     return h('div', { class: 'card center' },
       h('h2', {}, 'Something went wrong'),
       h('p', { class: 'muted' }, message),
-      h('a', { class: 'btn', href: '#/' }, 'Back to home'));
+      h('a', { class: 'btn', href: '/' }, 'Back to home'));
   }
 
   // ---------- home
@@ -619,9 +623,9 @@
           ['League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'].map((x) => h('li', {}, x))),
         h('div', { class: 'actions' },
           S.me
-            ? h('a', { class: 'btn btn-primary btn-lg', href: '#/new' }, 'Create tournament')
-            : h('a', { class: 'btn btn-primary btn-lg', href: '#/signup' }, 'Get started — it\'s free'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '#/', onclick: explore }, 'Explore tournaments'))),
+            ? h('a', { class: 'btn btn-primary btn-lg', href: '/new' }, 'Create tournament')
+            : h('a', { class: 'btn btn-primary btn-lg', href: '/signup' }, 'Get started — it\'s free'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'))),
       S.me ? h('section', { class: 'section' },
         h('h2', {}, 'My tournaments'),
         S.mine == null ? loading()
@@ -657,7 +661,7 @@
   async function search() {
     const seq = ++searchSeq;
     const qs = filterQuery(S.filters);
-    history.replaceState(null, '', qs ? `#/?${qs}` : '#/');
+    history.replaceState(null, '', qs ? `/?${qs}` : '/');
     try { localStorage.setItem(FILTERS_KEY, JSON.stringify(S.filters)); } catch { /* fine */ }
     const list = await api('GET', `/tournaments?${filterQuery(S.filters, true)}`).catch(() => null);
     if (seq !== searchSeq || S.route.name !== 'home') return;
@@ -763,12 +767,12 @@
       h('p', { class: 'hint', style: 'margin:10px 0 0' },
         S.me
           ? 'Tap a sport to request it. The most requested sports get built first.'
-          : [h('a', { href: '#/signin?next=/' }, 'Sign in'), ' to request a sport. The most requested sports get built first.']));
+          : [h('a', { href: '/signin?next=/' }, 'Sign in'), ' to request a sport. The most requested sports get built first.']));
   }
 
   async function requestSport(s, want) {
     if (!S.me) {
-      location.hash = '#/signin?next=/';
+      navigate('/signin?next=/');
       return;
     }
     try {
@@ -782,7 +786,7 @@
 
   function tournamentCard(t, roleName) {
     const sport = S.sports.find((s) => s.id === t.sport);
-    return h('a', { class: `card t-card${t.cover ? ' has-cover' : ''}`, href: `#/t/${t.id}` },
+    return h('a', { class: `card t-card${t.cover ? ' has-cover' : ''}`, href: `/t/${t.id}` },
       t.cover ? h('img', { class: 't-card-cover', src: t.cover, alt: '', loading: 'lazy' }) : null,
       h('div', { class: 'card-head' },
         h('h3', {}, t.name),
@@ -1128,7 +1132,7 @@
           const body = { sport: chosen.id, ...readTournament(form), ...readFormat(form, chosen), events };
           const { id } = await api('POST', '/tournaments', body);
           toast('Tournament created — now add your players');
-          location.hash = `#/t/${id}`;
+          navigate(`/t/${id}`);
         } catch (err) {
           toast(err.message, true);
           btn.disabled = false;
@@ -1152,7 +1156,7 @@
         value: s.id,
         disabled: s.status !== 'live',
       }, s.status === 'live' ? s.name : `${s.name} (coming soon)`))), null,
-      h('span', {}, 'More sports are on the way — ', h('a', { href: '#/' }, 'request yours on the home page'), '.'))),
+      h('span', {}, 'More sports are on the way — ', h('a', { href: '/' }, 'request yours on the home page'), '.'))),
     detailsFields({ country: REGIONS.defaultCountry }),
     eventBuilder([{ discipline: 'singles', gender: 'open', age: 'Open', level: 'Open' }], sport.id),
     entryFields({ selfEntry: true }),
@@ -1186,7 +1190,7 @@
     return h('nav', { class: 'event-picker', 'aria-label': 'Events' },
       t.events.map((ev) => h('a', {
         class: `event-chip${ev.id === current.id ? ' active' : ''}`,
-        href: `#/t/${t.id}/${S.route.tab && !['events', 'team', 'courts', 'about'].includes(S.route.tab) ? S.route.tab : 'entries'}?e=${ev.id}`,
+        href: `/t/${t.id}/${S.route.tab && !['events', 'team', 'courts', 'about'].includes(S.route.tab) ? S.route.tab : 'entries'}?e=${ev.id}`,
         'aria-current': ev.id === current.id ? 'true' : null,
       },
       h('span', { class: `dot ${ev.status}`, 'aria-hidden': 'true' }),
@@ -1698,7 +1702,7 @@
           if (waiting) msg += `\n\n${waitingText} will be left out of the draw.`;
           if (alone) msg += `\n\n${alone} without a partner will be left out.`;
           if (!confirm(msg)) return;
-          act(async () => { S.t = await api('POST', `${tPath(t)}/start`, withEv(t, { skipUnconfirmed: waiting > 0 || alone > 0 || drawnEvent }), t.id); location.hash = tabHref(t, 'live'); }, multiEvent(t) ? `${t.event.name} started — good luck!` : 'Tournament started — good luck!');
+          act(async () => { S.t = await api('POST', `${tPath(t)}/start`, withEv(t, { skipUnconfirmed: waiting > 0 || alone > 0 || drawnEvent }), t.id); navigate(tabHref(t, 'live')); }, multiEvent(t) ? `${t.event.name} started — good luck!` : 'Tournament started — good luck!');
         },
       }, 'Start tournament'));
   }
@@ -1936,7 +1940,7 @@
         h('ol', { class: 'entries events-list' }, t.events.map((ev, i) => h('li', {},
           h('span', { class: 'seed' }, i + 1),
           h('span', { class: 'name' },
-            h('a', { class: 'entry-name', href: `#/t/${t.id}/entries?e=${ev.id}` }, ev.name),
+            h('a', { class: 'entry-name', href: `/t/${t.id}/entries?e=${ev.id}` }, ev.name),
             h('small', { class: 'contact' }, [ev.formatName, `${ev.entries.length} ${ev.entries.length === 1 ? 'entry' : 'entries'}`, STATUS[ev.status]].join(' · '))),
           h('span', { class: 'row-actions' },
             h('button', { class: 'icon-btn', 'aria-label': `Move ${ev.name} up`, disabled: i === 0, onclick: () => move(i, -1) }, '↑'),
@@ -1961,7 +1965,7 @@
           act(async () => {
             await api('DELETE', tPath(t), undefined, t.id);
             keys.remove(t.id);
-            location.hash = '#/';
+            navigate('/');
           }, 'Tournament deleted');
         },
       }, 'Delete tournament'));
@@ -2034,7 +2038,7 @@
       return h('div', { class: `card court-card${mine(m) ? '' : ' dim'}` },
         h('div', { class: 'court-head' }, h('strong', {}, court.name),
           m.rallies ? pill('live', 'Playing') : pill('waiting', 'Called')),
-        h('a', { class: 'court-match', href: `#/t/${t.id}/m/${m.id}` },
+        h('a', { class: 'court-match', href: `/t/${t.id}/m/${m.id}` },
           evName(ev) ? h('small', { class: 'muted' }, ev.name) : null,
           h('span', {}, vsName(m)),
           h('small', { class: 'muted' }, m.rallies ? m.summary || 'In progress' : `Called at ${clock(Date.parse(m.calledAt || Date.now()))}`)),
@@ -2086,7 +2090,7 @@
         class: 'btn btn-small',
         onclick: () => {
           if (!confirm('Redo the draw? All fixtures are removed and you go back to the entry list to add players and start again.')) return;
-          act(async () => { S.t = await api('POST', `${tPath(t)}/redraw`, withEv(t), t.id); location.hash = tabHref(t, 'entries'); }, 'Draw undone — add players and start again');
+          act(async () => { S.t = await api('POST', `${tPath(t)}/redraw`, withEv(t), t.id); navigate(tabHref(t, 'entries')); }, 'Draw undone — add players and start again');
         },
       }, 'Redraw'));
   }
@@ -2112,7 +2116,7 @@
             class: 'btn btn-primary',
             onclick: () => act(async () => {
               S.t = await api('POST', `${tPath(t)}/knockout`, withEv(t), t.id);
-              location.hash = tabHref(t, 'bracket');
+              navigate(tabHref(t, 'bracket'));
             }, 'Knockout bracket drawn'),
           }, 'Draw knockout bracket')
           : h('span', { class: 'muted' }, 'Waiting for the organiser to draw the bracket.'));
@@ -2162,7 +2166,7 @@
           return h('span', { class: current ? 'cur' : g.winner === s ? 'gw' : '' }, g[s]);
         })));
     };
-    return h('a', { class: `match-card ${m.status}`, href: `#/t/${t.id}/m/${m.id}` },
+    return h('a', { class: `match-card ${m.status}`, href: `/t/${t.id}/m/${m.id}` },
       h('div', { class: 'mc-meta' }, h('span', {}, matchLabel(m)), statusTag(m)),
       side('a'), side('b'));
   }
@@ -2229,7 +2233,7 @@
     };
     const attrs = { class: `b-match ${m.status}` };
     if (m.status === 'bye') return h('div', attrs, line('a'), line('b'));
-    return h('a', { ...attrs, href: `#/t/${t.id}/m/${m.id}` }, line('a'), line('b'), m.status === 'live' ? h('span', { class: 'b-live' }, 'LIVE') : null);
+    return h('a', { ...attrs, href: `/t/${t.id}/m/${m.id}` }, line('a'), line('b'), m.status === 'live' ? h('span', { class: 'b-live' }, 'LIVE') : null);
   }
 
   // ---------- match page (scoreboard + umpire controls)
@@ -2672,7 +2676,7 @@
     }[t.role];
     return h('div', { class: 'admin-bar' },
       h('span', {}, `🔑 ${label}`,
-        !S.me ? h('span', { class: 'muted' }, ' (via a share link — ', h('a', { href: `#/signin?next=${encodeURIComponent(`/t/${t.id}`)}` }, 'sign in'), ' to keep it in your account)') : null),
+        !S.me ? h('span', { class: 'muted' }, ' (via a share link — ', h('a', { href: `/signin?next=${encodeURIComponent(`/t/${t.id}`)}` }, 'sign in'), ' to keep it in your account)') : null),
       h('button', {
         class: 'btn btn-small btn-ghost',
         onclick: () => copy(shareUrl(t), t.visibility === 'private' ? 'Link copied — only your team can open it until you publish' : 'Public link copied'),
@@ -2991,19 +2995,19 @@
     const initials = (name) => name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
     nav.replaceChildren(...(S.me
       ? [
-        h('a', { class: 'btn btn-small btn-primary', href: '#/new' }, 'New tournament'),
+        h('a', { class: 'btn btn-small btn-primary', href: '/new' }, 'New tournament'),
         h('details', { class: 'menu' },
           h('summary', { class: 'avatar', title: S.me.email, 'aria-label': 'Account menu' }, initials(S.me.name)),
           h('div', { class: 'menu-panel' },
             h('div', { class: 'menu-head' }, h('strong', {}, S.me.name), h('div', { class: 'muted small' }, S.me.email)),
-            h('a', { href: '#/', onclick: closeMenu }, 'My tournaments'),
-            S.me.isAdmin ? h('a', { href: '#/admin', onclick: closeMenu }, 'Admin · users') : null,
+            h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
+            S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin · users') : null,
             h('button', { onclick: signOut }, 'Sign out'),
             h('div', { class: 'menu-theme' }, 'Theme', themeSwitch()))),
       ]
       : [
-        h('a', { class: 'nav-link', href: '#/signin' }, 'Sign in'),
-        h('a', { class: 'btn btn-small btn-primary', href: '#/signup' }, 'Sign up'),
+        h('a', { class: 'nav-link', href: '/signin' }, 'Sign in'),
+        h('a', { class: 'btn btn-small btn-primary', href: '/signup' }, 'Sign up'),
       ]).filter(Boolean));
   }
 
@@ -3017,8 +3021,7 @@
     S.t = null;
     S.members = null;
     toast('Signed out');
-    if (location.hash === '#/' || location.hash === '') route();
-    else location.hash = '#/';
+    navigate('/');
   }
 
   const safeNext = (next) => (typeof next === 'string' && next.startsWith('/') && !next.startsWith('//') ? next : '/');
@@ -3028,7 +3031,7 @@
     document.title = `${signup ? 'Sign up' : 'Sign in'} · Tonament`;
     const next = safeNext(S.route.next);
     if (S.me) {
-      setTimeout(() => { location.hash = `#${next}`; });
+      setTimeout(() => { navigate(next); });
       return loading();
     }
     const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, signup ? 'Create account' : 'Sign in');
@@ -3043,7 +3046,7 @@
           S.me = user;
           S.t = null; // reload tournaments with this user's access
           toast(signup ? `Welcome, ${user.name}!` : `Signed in as ${user.name}`);
-          location.hash = `#${next}`;
+          navigate(next);
         } catch (err) {
           toast(err.message, true);
           btn.disabled = false;
@@ -3062,17 +3065,17 @@
     }), null, signup ? 'At least 8 characters.' : null),
     signup ? null : h('p', { class: 'small', style: 'margin:-6px 0 0' },
       h('a', {
-        href: '#/forgot',
+        href: '/forgot',
         onclick: (e) => {
           e.preventDefault();
           const email = form.querySelector('input[name=email]').value;
-          location.hash = `#/forgot${email ? `?email=${encodeURIComponent(email)}` : ''}`;
+          navigate(`/forgot${email ? `?email=${encodeURIComponent(email)}` : ''}`);
         },
       }, 'Forgot password?')),
     btn,
     h('p', { class: 'center small', style: 'margin:0' },
       signup ? 'Already have an account? ' : 'New to Tonament? ',
-      h('a', { href: `#/${signup ? 'signin' : 'signup'}?next=${encodeURIComponent(next)}` }, signup ? 'Sign in' : 'Create an account')));
+      h('a', { href: `/${signup ? 'signin' : 'signup'}?next=${encodeURIComponent(next)}` }, signup ? 'Sign in' : 'Create an account')));
     return form;
   }
 
@@ -3082,14 +3085,14 @@
       return h('div', { class: 'card auth-card' },
         h('h1', {}, 'Forgot your password?'),
         h('p', { class: 'muted' }, 'Password reset by email isn\'t set up on this site yet. Please contact the site admin.'),
-        h('a', { class: 'btn', href: '#/signin' }, 'Back to sign in'));
+        h('a', { class: 'btn', href: '/signin' }, 'Back to sign in'));
     }
     if (S.route.sent) {
       return h('div', { class: 'card auth-card' },
         h('h1', {}, 'Check your email'),
         h('p', {}, 'If an account exists for ', h('strong', {}, S.route.email), ', we\'ve sent a link to reset its password. It works once and expires in 1 hour.'),
         h('p', { class: 'muted small' }, 'Nothing there? Check your spam folder, or try again in a minute.'),
-        h('a', { class: 'btn', href: '#/signin' }, 'Back to sign in'));
+        h('a', { class: 'btn', href: '/signin' }, 'Back to sign in'));
     }
     const input = h('input', { name: 'email', type: 'email', required: true, autocomplete: 'email', value: S.route.email || null });
     const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Send reset link');
@@ -3113,7 +3116,7 @@
     h('p', { class: 'muted' }, 'Enter your email and we\'ll send you a link to choose a new one.'),
     field('Email', input),
     btn,
-    h('p', { class: 'center small', style: 'margin:0' }, h('a', { href: '#/signin' }, 'Back to sign in')));
+    h('p', { class: 'center small', style: 'margin:0' }, h('a', { href: '/signin' }, 'Back to sign in')));
   }
 
   function viewReset() {
@@ -3122,7 +3125,7 @@
       return h('div', { class: 'card auth-card' },
         h('h1', {}, 'Link not valid'),
         h('p', { class: 'muted' }, 'This reset link is incomplete. Open the link from your email again, or request a new one.'),
-        h('a', { class: 'btn', href: '#/forgot' }, 'Request a new link'));
+        h('a', { class: 'btn', href: '/forgot' }, 'Request a new link'));
     }
     const pw = h('input', { name: 'password', type: 'password', required: true, minlength: 8, autocomplete: 'new-password' });
     const confirmPw = h('input', { name: 'confirm', type: 'password', required: true, minlength: 8, autocomplete: 'new-password' });
@@ -3141,7 +3144,7 @@
           S.me = user;
           S.t = null;
           toast('Password changed — you\'re signed in');
-          location.hash = '#/';
+          navigate('/');
         } catch (err) {
           toast(err.message, true);
           btn.disabled = false;
@@ -3175,7 +3178,7 @@
             h('thead', {}, h('tr', {}, ['Date', 'Tournament', 'Paid by', 'For', 'Amount', 'Status', 'Payment ID'].map((c, i) => h('th', { class: i === 4 ? 'num' : '' }, c)))),
             h('tbody', {}, pay.payments.map((p) => h('tr', {},
               h('td', {}, new Date(p.paidAt || p.createdAt).toLocaleDateString()),
-              h('td', { class: 'name' }, p.tournamentId ? h('a', { href: `#/t/${p.tournamentId}/team` }, p.tournamentName) : p.tournamentName),
+              h('td', { class: 'name' }, p.tournamentId ? h('a', { href: `/t/${p.tournamentId}/team` }, p.tournamentName) : p.tournamentName),
               h('td', {}, p.email || '—'),
               h('td', {}, p.kind === 'entry' ? `Entry · ${p.eventName || ''}${p.player ? ` (${p.player})` : ''}` : PLAN_LABELS[p.tier || 'pass'] || p.tier),
               h('td', { class: 'num' }, money(p.amount)),
@@ -3202,8 +3205,29 @@
       users ? h('p', { class: 'muted small', style: 'margin:8px 0 0' }, `${users.length} user${users.length === 1 ? '' : 's'}`) : null)];
   }
 
+  // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
+  // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
+  const APP_PATH = /^\/(?:$|t\/|new$|signin$|signup$|forgot$|reset$|admin$)/;
+  function navigate(url, { replace = false } = {}) {
+    const same = url === location.pathname + location.search;
+    history[replace || same ? 'replaceState' : 'pushState'](null, '', url);
+    route();
+  }
+  document.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest('a[href]');
+    if (!a || a.target || a.hasAttribute('download')) return;
+    const url = new URL(a.href, location.href);
+    if (url.origin !== location.origin || !APP_PATH.test(url.pathname) || url.hash) return;
+    e.preventDefault();
+    navigate(url.pathname + url.search);
+  });
+  window.addEventListener('popstate', route);
+
   // ---------- boot
-  window.addEventListener('hashchange', route);
+  // Old links (#/t/<id>, and share-key and password-reset links, which keep
+  // their secret in the # part so it never reaches the server) become paths.
+  if (location.hash.startsWith('#/')) history.replaceState(null, '', location.hash.slice(1));
   Promise.all([
     api('GET', '/sports').catch(() => []),
     api('GET', '/auth/me').catch(() => ({ user: null })),

@@ -145,7 +145,7 @@ test('over the free limit, players can still enter: unconfirmed until the organi
     assert.equal(notes.length, 1);
     assert.equal(notes[0].to, 'org@club.test');
     assert.match(notes[0].text, /Late Lee/);
-    assert.match(notes[0].text, /#\/t\/waiting-cup-[0-9a-f]+\/entries/);
+    assert.match(notes[0].text, /\.example\/t\/waiting-cup-[0-9a-f]+\/entries/);
 
     // Players never see the plan limit; they see who is awaiting confirmation.
     let pub = await svc.getTournament(id);

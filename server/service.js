@@ -6,6 +6,7 @@ const formats = require('./formats');
 const regions = require('../public/regions');
 const catalog = require('../public/sports/events');
 const schedule = require('../public/schedule');
+const pages = require('./pages');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
 const { inviteEmail, receiptEmail, entryReceiptEmail, waitingEmail } = require('./email');
@@ -869,51 +870,43 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return { mime: m.mime, bytes: Buffer.from(m.bytes), public: m.visibility !== 'private' };
   }
 
-  // ---------- link previews (WhatsApp, Instagram, …)
+  // ---------- tournament pages, link previews (WhatsApp, Instagram, …), sitemap
 
-  // "Sat 2 – Sun 3 Nov 2030" (spelled out here: server locales differ).
-  function dateRange(from, to) {
-    const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const parts = (iso) => {
-      const d = new Date(`${iso}T00:00:00Z`);
-      return { wd: WD[d.getUTCDay()], day: d.getUTCDate(), mon: MON[d.getUTCMonth()], year: d.getUTCFullYear() };
-    };
-    const a = parts(from);
-    const full = (p) => `${p.wd} ${p.day} ${p.mon} ${p.year}`;
-    if (!to) return full(a);
-    const b = parts(to);
-    if (a.year === b.year && a.mon === b.mon) return `${a.wd} ${a.day} – ${full(b)}`;
-    if (a.year === b.year) return `${a.wd} ${a.day} ${a.mon} – ${full(b)}`;
-    return `${full(a)} – ${full(b)}`;
-  }
-
-  // What a shared tournament link shows: name, a one-line summary and an
-  // image. Private (or unknown) tournaments give null: the generic card.
-  async function sharePreview(id) {
+  // A tournament page's data: the public view and its preview (name, one-line
+  // summary, image). { private: true } for private ones; null if unknown.
+  async function tournamentPage(id) {
     let t;
     try {
       t = await getTournament(id);
     } catch (err) {
-      if (err.status === 404) return null;
+      if (err.status === 404) return err.code === 'private' ? { private: true } : null;
       throw err;
     }
     const [preview] = await db.query(`SELECT id FROM media WHERE tournament_id = $1 AND kind = 'preview' LIMIT 1`, [t.id]);
-    const dates = t.startsOn ? dateRange(t.startsOn, t.endsOn) : null;
-    const place = [t.venue, t.location.city].filter(Boolean).join(', ');
-    const names = t.events.map((e) => e.name);
-    const events = names.length > 1 || names[0] !== 'Open'
-      ? `${t.sport.name}: ${names.slice(0, 4).join(', ')}${names.length > 4 ? ` +${names.length - 4} more` : ''}`
-      : t.sport.name;
-    const prize = t.events.reduce((sum, e) => sum + (e.prizes || []).reduce((s, p) => s + (p.cash || 0), 0), 0);
-    const status = t.entriesOpen ? 'Entries open' : t.status === 'completed' ? 'Results' : t.status === 'setup' ? null : 'Live scores';
     return {
-      id: t.id,
-      title: t.name,
-      description: [dates, place, events, prize ? `🏆 ₹${prize.toLocaleString('en-IN')} in prizes` : null, status].filter(Boolean).join(' · '),
-      // The 1200×630 preview, else the cover itself.
-      image: preview ? { path: mediaUrl(preview.id), width: 1200, height: 630 } : t.cover ? { path: t.cover } : null,
+      t,
+      preview: {
+        id: t.id,
+        title: t.name,
+        description: pages.summary(t),
+        // The 1200×630 preview, else the cover itself.
+        image: preview ? { path: mediaUrl(preview.id), width: 1200, height: 630 } : t.cover ? { path: t.cover } : null,
+      },
     };
+  }
+
+  async function sharePreview(id) {
+    const page = await tournamentPage(id);
+    return page && page.t ? page.preview : null;
+  }
+
+  // Public tournaments for the sitemap, most recently active first.
+  async function sitemapTournaments() {
+    const rows = await db.query(
+      `SELECT t.id, GREATEST(t.created_at, (SELECT MAX(m.updated_at) FROM matches m WHERE m.tournament_id = t.id)) AS lastmod
+       FROM tournaments t WHERE t.visibility = 'public' ORDER BY lastmod DESC LIMIT 45000`,
+    );
+    return rows.map((r) => ({ path: `/t/${r.id}`, lastmod: new Date(r.lastmod).toISOString().slice(0, 10) }));
   }
 
   // ---------- tournaments
@@ -1336,7 +1329,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (owners.length && mailer?.enabled && baseUrl) {
       try {
         for (const to of owners) {
-          await mailer.send({ to, ...waitingEmail({ tournament: t.name, player: entered, url: `${baseUrl}/#/t/${t.id}/entries` }) });
+          await mailer.send({ to, ...waitingEmail({ tournament: t.name, player: entered, url: `${baseUrl}/t/${t.id}/entries` }) });
         }
       } catch (err) {
         console.error('Waiting-entries email failed:', err.message);
@@ -2073,7 +2066,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
             currency: payment.currency,
             paymentId: payment.payment_id,
             paidAt: payment.paid_at,
-            url: `${baseUrl}/#/t/${payment.tournament_id}/entries?e=${payment.event_id}`,
+            url: `${baseUrl}/t/${payment.tournament_id}/entries?e=${payment.event_id}`,
           }),
         });
       } catch (err) {
@@ -2093,7 +2086,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
           currency: payment.currency,
           paymentId: payment.payment_id,
           paidAt: payment.paid_at,
-          url: `${baseUrl}/#/t/${payment.tournament_id}`,
+          url: `${baseUrl}/t/${payment.tournament_id}`,
         }),
       });
     } catch (err) {
@@ -2256,8 +2249,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (changed && mailer?.enabled && baseUrl && email !== actor.user?.email) {
       const next = `/t/${t.id}`;
       const url = hasAccount
-        ? `${baseUrl}/#/signin?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`
-        : `${baseUrl}/#/signup?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`;
+        ? `${baseUrl}/signin?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`
+        : `${baseUrl}/signup?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`;
       const roleHint = input.role === 'umpire' ? 'you can score matches' : 'you can manage the tournament';
       try {
         await mailer.send({
@@ -2329,6 +2322,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     updateEvent,
     callMatch,
     sharePreview,
+    tournamentPage,
+    sitemapTournaments,
     queueMatch,
     deleteEvent,
     reorderEvents,

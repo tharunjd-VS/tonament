@@ -160,6 +160,7 @@ function createAuth(db, { mailer } = {}) {
       [tokenHash(token), user.id],
     );
     // The token travels in the URL fragment, so it never reaches server logs.
+    // The token stays after the #, so it's never sent to the server or logged.
     const url = `${baseUrl}/#/reset?token=${token}`;
     try {
       await mailer?.send({ to: user.email, ...passwordResetEmail({ name: user.name, url }) });

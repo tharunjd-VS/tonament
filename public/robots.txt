@@ -1,0 +1,12 @@
+# Tonament: tournaments are at /t/<id>; the app's account pages aren't for search.
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /new
+Disallow: /signin
+Disallow: /signup
+Disallow: /forgot
+Disallow: /reset
+
+Sitemap: https://tonament.com/sitemap.xml

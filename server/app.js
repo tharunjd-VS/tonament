@@ -6,10 +6,13 @@ const sports = require('./sports');
 const { createService } = require('./service');
 const { createAuth } = require('./auth');
 const { HttpError } = require('./errors');
+const pages = require('./pages');
 const { createMailer } = require('./email');
 const { billingConfig, publicBillingConfig } = require('./billing');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+// The app's pages other than tournaments (served the app page; see vercel.json).
+const APP_ROUTES = /^\/(?:new|signin|signup|forgot|reset|admin)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -136,11 +139,9 @@ function baseUrl(req) {
   return `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`;
 }
 
-// ---------- shared links: /t/<id> (and /t/<id>/<tab>)
-// Link previews (WhatsApp, Instagram, …) read the page's meta tags but never
-// run the app or see a #fragment, so a shared tournament link gets a small
-// page with that tournament's name, summary and image, which sends people
-// on to the app (#/t/<id>…).
+// ---------- fallback for /t/<id> if the app page (index.html) can't be read:
+// a small page with the tournament's name, summary and image for link
+// previews, which sends people on to the app.
 const SITE = 'https://tonament.com';
 const GENERIC = {
   title: 'Tonament — One platform. Every sport. Every tournament.',
@@ -278,6 +279,51 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `/api/admin/tournaments/([a-z0-9-]+)/official`, (c, id) => svc.setOfficial(id, c.actor, c.body.official)],
   ].map(([method, pattern, handler, cache = 0]) => ({ method, re: new RegExp(`^${pattern}$`), handler, cache }));
 
+  // The app page, which tournament pages are built on (read once).
+  let shellPromise;
+  const readShell = () => {
+    shellPromise ??= fs.readFile(path.join(PUBLIC_DIR, 'index.html'), 'utf8').catch((err) => {
+      shellPromise = undefined;
+      throw err;
+    });
+    return shellPromise;
+  };
+
+  // /t/<id>[/<tab> | /m/<match>]: the app page with the tournament's details
+  // rendered in, for search engines, link previews and a fast first view.
+  async function tournamentPage(req, res, id, rest, search) {
+    const page = await svc.tournamentPage(id);
+    const base = baseUrl(req) || SITE;
+    let html;
+    try {
+      html = pages.tournamentHtml(await readShell(), { base, id, page: page && page.t ? page : null, match: rest.startsWith('/m/') });
+    } catch (err) {
+      console.error('index.html unavailable for /t/ pages:', err.message);
+      html = sharePage({ base, path: `/t/${id}${rest}${search}`, preview: page && page.t ? page.preview : null });
+    }
+    const visible = Boolean(page && page.t);
+    res.writeHead(page ? 200 : 404, {
+      'Content-Type': 'text/html; charset=utf-8',
+      // Briefly cached at the CDN (the app fetches live data itself); private ones never.
+      'Cache-Control': visible ? 'public, max-age=0, s-maxage=60' : 'no-store',
+      ...(visible && { 'Vercel-CDN-Cache-Control': 'max-age=60, stale-while-revalidate=600' }),
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(req.method === 'HEAD' ? undefined : html);
+  }
+
+  async function sitemapXml(req, res) {
+    const base = baseUrl(req) || SITE;
+    const fixed = ['/', '/pricing', '/contact', '/terms', '/privacy', '/refunds', '/delivery'].map((p) => ({ path: p }));
+    const xml = pages.sitemap(base, [...fixed, ...await svc.sitemapTournaments()]);
+    res.writeHead(200, {
+      'Content-Type': 'application/xml; charset=utf-8',
+      'Cache-Control': 'public, max-age=0, s-maxage=3600',
+      'Vercel-CDN-Cache-Control': 'max-age=3600, stale-while-revalidate=86400',
+    });
+    res.end(req.method === 'HEAD' ? undefined : xml);
+  }
+
   async function serveStatic(req, res, pathname) {
     let rel;
     try {
@@ -289,6 +335,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     let file = path.join(PUBLIC_DIR, path.normalize(rel));
     if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 404, { error: 'Not found' });
     let data;
+    let status = 200;
     try {
       data = await fs.readFile(file);
     } catch {
@@ -297,11 +344,14 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         file = `${file.replace(/[\\/]+$/, '')}.html`; // clean URLs: /pricing -> pricing.html (as Vercel's cleanUrls)
         data = await fs.readFile(file);
       } catch {
-        file = path.join(PUBLIC_DIR, 'index.html'); // SPA fallback
+        // The app's own pages get the app; anything else is a real 404 (as on Vercel).
+        const appPage = APP_ROUTES.test(rel);
+        file = path.join(PUBLIC_DIR, appPage ? 'index.html' : '404.html');
+        status = appPage ? 200 : 404;
         data = await fs.readFile(file);
       }
     }
-    res.writeHead(200, {
+    res.writeHead(status, {
       'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream',
       'Cache-Control': 'no-cache',
       'X-Content-Type-Options': 'nosniff',
@@ -340,20 +390,13 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         });
         return res.end(req.method === 'HEAD' ? undefined : file.bytes);
       }
-      // Shared tournament links (on Vercel, /t/* is rewritten to /api/share/*).
-      const shared = pathname.match(/^\/(?:t|api\/share)\/([a-z0-9-]{1,100})(\/[a-z]*)?\/?$/);
-      if (shared && (req.method === 'GET' || req.method === 'HEAD')) {
-        const preview = await svc.sharePreview(shared[1]);
-        const html = sharePage({ base: baseUrl(req) || SITE, path: `/t/${shared[1]}${shared[2] || ''}${url.search.replace(/[?&]__path=[^&]*/, '').replace(/^&/, '?')}`, preview });
-        res.writeHead(200, {
-          'Content-Type': 'text/html; charset=utf-8',
-          // Previews are cached briefly at the CDN; private ones never.
-          'Cache-Control': preview ? 'public, max-age=0, s-maxage=300' : 'no-store',
-          ...(preview && { 'Vercel-CDN-Cache-Control': 'max-age=300, stale-while-revalidate=3600' }),
-          'X-Content-Type-Options': 'nosniff',
-        });
-        return res.end(req.method === 'HEAD' ? undefined : html);
+      const read = req.method === 'GET' || req.method === 'HEAD';
+      // Tournament pages (on Vercel, /t/* is rewritten to /api/share/*).
+      const shared = pathname.match(/^\/(?:t|api\/share)\/([a-z0-9-]{1,100})((?:\/[a-z]+(?:\/\d+)?)?)\/?$/);
+      if (shared && read) {
+        return await tournamentPage(req, res, shared[1], shared[2], url.search.replace(/[?&]__path=[^&]*/, '').replace(/^&/, '?'));
       }
+      if ((pathname === '/sitemap.xml' || pathname === '/api/sitemap') && read) return await sitemapXml(req, res);
       if (pathname === '/api' || pathname.startsWith('/api/')) {
         let pathMatched = false;
         for (const route of routes) {

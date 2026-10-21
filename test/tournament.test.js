@@ -500,12 +500,12 @@ test('team invites are emailed', async () => {
       let mail = mailer.sent.at(-1);
       assert.equal(mail.to, 'new@x.dev');
       assert.equal(mail.subject, "You've been added to Invite Cup as umpire");
-      assert.match(mail.text, /#\/signup\?next=%2Ft%2Finvite-cup-\w+&email=new%40x\.dev/);
+      assert.match(mail.text, /\.example\/signup\?next=%2Ft%2Finvite-cup-\w+&email=new%40x\.dev/);
       assert.ok(mail.html.includes('Omar &lt;Owner&gt;')); // names are escaped
 
       await owner('POST', `/api/tournaments/${id}/members`, { email: 'has@x.dev', role: 'organiser' });
       mail = mailer.sent.at(-1);
-      assert.match(mail.text, /#\/signin\?next=/);
+      assert.match(mail.text, /\.example\/signin\?next=/);
       assert.match(mail.html, /Open the tournament/);
 
       // Same role again: no email. Role change: email. Adding yourself: no email.

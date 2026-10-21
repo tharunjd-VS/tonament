@@ -9,13 +9,22 @@
       "destination": "/api/index?__path=share/:path*"
     },
     {
+      "source": "/sitemap.xml",
+      "destination": "/api/index?__path=sitemap"
+    },
+    {
+      "source": "/:page(new|signin|signup|forgot|reset|admin)",
+      "destination": "/index.html"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api/index?__path=:path*"
     }
   ],
   "functions": {
     "api/index.js": {
-      "maxDuration": 10
+      "maxDuration": 10,
+      "includeFiles": "public/index.html"
     }
   }
 }
