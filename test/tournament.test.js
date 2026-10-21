@@ -32,6 +32,23 @@ const OWNER = { user: { id: 1, email: 'owner@example.com', name: 'Owner', isAdmi
 
 const names = (n) => Array.from({ length: n }, (_, i) => `Player ${i + 1}`);
 
+test('quick create: name, sport, date and events only; the rest are defaults', async () => {
+  const { id } = await svc.createTournament(OWNER, {
+    name: 'Quick Open', sport: 'pickleball', startsOn: '2030-11-02',
+    events: [{ discipline: 'singles', gender: 'men', age: 'Open', level: 'Open' }, { discipline: 'doubles', gender: 'mixed', age: 'Open', level: 'Open' }],
+  });
+  const t = await svc.getTournament(id, OWNER);
+  assert.deepEqual(t.events.map((e) => e.name), ["Men's Singles", 'Mixed Doubles']);
+  assert.equal(t.startsOn, '2030-11-02');
+  assert.equal(t.venue, null);
+  assert.equal(t.visibility, 'private');
+  const [ev] = t.events;
+  assert.equal(ev.format, 'league_knockout');
+  assert.equal(ev.config.selfEntry, true);
+  assert.equal(ev.config.leagueDraws, false);
+  assert.deepEqual(ev.config.scoring, require('../server/sports/pickleball').defaults);
+});
+
 test('league + knockout: full tournament from draw to champion', async () => {
   const key = OWNER;
   const { id } = await svc.createTournament(OWNER, {

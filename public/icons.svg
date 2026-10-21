@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg">
+  <!-- Line icons for choice buttons. 24x24, drawn in currentColor so they follow the theme. -->
+
+  <!-- Sports -->
+  <symbol id="badminton" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.4 17.2 5.5 4.6M14.6 17.2l3.9-12.6M12 16.5V3.6M5.5 4.6Q12 2 18.5 4.6M7.2 10h9.6"/>
+    <path d="M9 17.2h6v1.3a3 3 0 0 1-6 0z"/></g></symbol>
+  <symbol id="pickleball" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="2.5" width="11" height="12.5" rx="5"/><path d="M9.5 15v6"/>
+    <circle cx="19" cy="18" r="2.6"/></g><circle fill="currentColor" cx="18.3" cy="17.4" r=".55"/><circle fill="currentColor" cx="19.8" cy="18.6" r=".55"/></symbol>
+  <symbol id="table-tennis" viewBox="0 0 24 24">
+    <circle cx="10" cy="9.5" r="6.8" fill="currentColor" opacity=".18"/>
+    <circle cx="10" cy="9.5" r="6.8" fill="none" stroke="currentColor" stroke-width="1.7"/>
+    <path d="m14.2 14.6 4.6 4.8" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/>
+    <circle fill="currentColor" cx="19.6" cy="5.2" r="1.9"/></symbol>
+  <symbol id="squash" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="9.5" cy="8.5" rx="5" ry="6.5" transform="rotate(-35 9.5 8.5)"/><path d="m13.2 13.6 6.3 7"/>
+    <path d="M6.5 6.5l6 4M8.5 4.5l3.5 7"/></g><circle fill="currentColor" cx="19.5" cy="6" r="1.6"/></symbol>
+  <symbol id="tennis" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/><path d="M5.6 5.6c3.4 3.4 3.4 9.4 0 12.8M18.4 5.6c-3.4 3.4-3.4 9.4 0 12.8"/></g></symbol>
+  <symbol id="padel" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10.5 2.5c3.6 0 6 2.6 6 6.3 0 3.5-2.3 6.2-6 6.2s-6-2.7-6-6.2c0-3.7 2.4-6.3 6-6.3z"/><path d="M9.2 15h2.6v6.2H9.2z"/></g>
+    <circle fill="currentColor" cx="8.3" cy="7" r=".8"/><circle fill="currentColor" cx="12.7" cy="7" r=".8"/><circle fill="currentColor" cx="10.5" cy="9.6" r=".8"/><circle fill="currentColor" cx="8.3" cy="12" r=".8"/><circle fill="currentColor" cx="12.7" cy="12" r=".8"/>
+    <circle fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" cx="19.5" cy="18.5" r="2"/></symbol>
+  <symbol id="volleyball" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/><path d="M12 3c.5 4-1 7.5-4.8 9.8M12 12c3.5-.6 6.6.4 8.8 3M12 12c1.6 3.2 1.5 6.3-.4 9"/><path d="M6.2 5.3c3.6.9 6 3.2 7.2 6.7"/></g></symbol>
+  <symbol id="beach-volleyball" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="9.5" r="6.5"/><path d="M12 3c.4 3-.7 5.4-3.4 7M12 9.5c2.5-.4 4.7.3 6.2 2.1M12 9.5c1.1 2.3 1 4.5-.3 6.4"/>
+    <path d="M2.5 20.5c1.6-1.3 3.2-1.3 4.8 0s3.2 1.3 4.8 0 3.2-1.3 4.8 0 3.2 1.3 4.6 0"/></g></symbol>
+  <symbol id="throwball" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="15" cy="10.5" r="6"/><path d="M15 4.5c-2 2.2-2 9.8 0 12M9.4 8.5h11.2M9.4 12.5h11.2"/>
+    <path d="M2.5 8h3.5M2 12h3M3 16h4M6 19.5l3-3"/></g></symbol>
+  <symbol id="sepak-takraw" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/><circle cx="12" cy="7.3" r="1.9"/><circle cx="7.4" cy="11" r="1.9"/><circle cx="16.6" cy="11" r="1.9"/><circle cx="9.2" cy="16.3" r="1.9"/><circle cx="14.8" cy="16.3" r="1.9"/></g></symbol>
+
+  <!-- Event types -->
+  <symbol id="singles" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="7" r="3.2"/><path d="M5.5 20.5c0-4 2.9-6.6 6.5-6.6s6.5 2.6 6.5 6.6"/></g></symbol>
+  <symbol id="doubles" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8" cy="7.5" r="2.7"/><path d="M2.8 19.5c0-3.4 2.3-5.6 5.2-5.6s5.2 2.2 5.2 5.6"/>
+    <circle cx="16" cy="7.5" r="2.7"/><path d="M14.4 14.2c.5-.2 1-.3 1.6-.3 2.9 0 5.2 2.2 5.2 5.6"/></g></symbol>
+  <symbol id="mixed" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="7.5" cy="7.5" r="2.7"/><path d="M2.5 19.5c0-3.4 2.2-5.6 5-5.6s5 2.2 5 5.6"/>
+    <circle cx="16.5" cy="7.5" r="2.7"/><path d="M16.5 11.2 12.4 19.5h8.2z"/></g></symbol>
+  <symbol id="team" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="6.3" r="2.6"/><path d="M7.4 16.5c0-3 2-5 4.6-5s4.6 2 4.6 5"/>
+    <circle cx="5.2" cy="9.3" r="2.1"/><path d="M1.5 19.5c0-2.6 1.6-4.3 3.7-4.3 1 0 1.8.3 2.5.9"/>
+    <circle cx="18.8" cy="9.3" r="2.1"/><path d="M22.5 19.5c0-2.6-1.6-4.3-3.7-4.3-1 0-1.8.3-2.5.9"/></g></symbol>
+
+  <!-- Formats -->
+  <symbol id="league_knockout" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="5" width="8" height="8" rx="1.3"/><path d="M2 9h8M6 5v8"/>
+    <path d="M10 9h2.5M13 5h3.5v8H13M16.5 9H22"/><path d="M2 17h8M2 20h8"/></g></symbol>
+  <symbol id="league" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14.5h18M9 4v16"/></g></symbol>
+  <symbol id="knockout" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2.5 4h5v5h-5M2.5 15h5v5h-5M7.5 6.5h3.5v11H7.5M11 12h4"/><path d="M15 9.5h4.5v5H15z"/><path d="M19.5 12H22"/></g></symbol>
+</svg>

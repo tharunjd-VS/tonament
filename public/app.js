@@ -145,6 +145,27 @@
   const pow2 = (n) => { let s = 2; while (s < n) s *= 2; return s; };
   const field = (label, control, cls, hint) =>
     h('label', { class: `field ${cls || ''}` }, h('span', { class: 'label' }, label), control, hint ? h('small', { class: 'hint' }, hint) : null);
+  // A labelled group of choices (a <label> can't wrap several radios).
+  const groupField = (label, control, cls, hint) =>
+    h('div', { class: `field ${cls || ''}`, role: 'group', 'aria-label': label }, h('span', { class: 'label' }, label), control, hint ? h('small', { class: 'hint' }, hint) : null);
+  // A line icon from /icons.svg, drawn in the text colour.
+  function icon(name) {
+    const el = h('span', { class: 'icon', 'aria-hidden': 'true' });
+    el.innerHTML = `<svg viewBox="0 0 24 24" focusable="false"><use href="/icons.svg#${name}"></use></svg>`;
+    return el;
+  }
+  // Tappable choices instead of a dropdown: radios (or checkboxes) styled as
+  // pills, or as icon tiles, so FormData and form[name].value read them like a
+  // select. options: [{ value, label, icon?, hint?, disabled? }]
+  function choiceGroup({ name, options, value, onchange, tiles = false, multiple = false, label }) {
+    const on = (o) => (multiple ? (value || []).map(String).includes(String(o.value)) : String(o.value) === String(value ?? ''));
+    return h('div', { class: `choice-group${tiles ? ' tiles' : ''}`, role: multiple ? 'group' : 'radiogroup', 'aria-label': label || null },
+      options.map((o) => h('label', { class: `choice${o.disabled ? ' disabled' : ''}` },
+        h('input', { type: multiple ? 'checkbox' : 'radio', name, value: String(o.value), checked: on(o), disabled: o.disabled, onchange }),
+        o.icon ? icon(o.icon) : null,
+        h('span', { class: 'choice-label' }, o.label),
+        o.hint ? h('small', {}, o.hint) : null)));
+  }
   const empty = (text) => h('div', { class: 'empty' }, text);
   const loading = () => h('div', { class: 'loading' }, 'Loading…');
   const pill = (cls, label) => h('span', { class: `pill ${cls}` }, label);
@@ -955,9 +976,11 @@
   function formatFields(sport, v, legend = 'Format') {
     return [
       h('fieldset', { class: 'formats' }, h('legend', {}, legend),
-        FORMATS.map(([value, label, desc]) => h('label', { class: 'format-option' },
-          h('input', { type: 'radio', name: 'format', value, checked: v.format === value, onchange: (e) => syncFormat(e.target.form) }),
-          h('span', {}, h('strong', {}, label), h('small', {}, desc))))),
+        choiceGroup({
+          name: 'format', label: 'Format', value: v.format, tiles: true,
+          options: FORMATS.map(([value, label, desc]) => ({ value, label, icon: value, hint: desc })),
+          onchange: (e) => syncFormat(e.target.form),
+        })),
       h('div', { class: 'grid-2' },
         field('Players per group (about)', h('input', { type: 'number', name: 'groupSize', min: 2, max: 16, value: v.groupSize ?? 4, required: true }), 'groups-field',
           'Groups are made from the final head-count when you start.'),
@@ -977,27 +1000,30 @@
   function scoringFields(sport, scoring, leagueDraws = false) {
     const unit = sportUnit(sport.id).toLowerCase();
     return h('fieldset', { class: 'scoring-set' }, h('legend', {}, `${sport.name} scoring`),
-      h('div', { class: 'grid-3' }, sport.fields.map((f) => field(f.label,
-        f.type === 'select'
-          ? h('select', { name: `scoring.${f.key}`, value: scoring[f.key] }, f.options.map((o) => h('option', { value: o.value }, o.label)))
-          : h('input', { type: 'number', name: `scoring.${f.key}`, min: f.min, max: f.max, value: scoring[f.key], required: true }),
-        null, f.hint))),
-      field('League matches', h('select', { name: 'leagueDraws', value: leagueDraws ? '1' : '' },
-        h('option', { value: '' }, 'Same as above (always a winner)'),
-        h('option', { value: '1' }, `2 ${unit}s — draws allowed`)), 'league-field',
+      h('div', { class: 'scoring-grid' }, sport.fields.map((f) => (f.type === 'select'
+        ? groupField(f.label, choiceGroup({ name: `scoring.${f.key}`, value: scoring[f.key], options: f.options, label: f.label }), null, f.hint)
+        : field(f.label, h('input', { type: 'number', name: `scoring.${f.key}`, min: f.min, max: f.max, value: scoring[f.key], required: true }), null, f.hint)))),
+      groupField('League matches', choiceGroup({
+        name: 'leagueDraws',
+        value: leagueDraws ? '1' : '',
+        label: 'League matches',
+        options: [{ value: '', label: 'Always a winner' }, { value: '1', label: `2 ${unit}s — draws allowed` }],
+      }), 'league-field',
       `With draws, ${unit} 1 each is a draw. Group tables then rank on points: win 2, draw 1, loss 0. Knockout matches keep the length above.`));
   }
 
   // A select of standard values with "Custom…" revealing a text box.
   function choiceField(label, name, options, value) {
     const custom = value && !options.includes(value);
-    const select = h('select', {
+    const box = h('input', { name: `${name}Custom`, maxlength: 30, value: custom ? value : '', placeholder: `Custom ${label.toLowerCase()}`, 'aria-label': `Custom ${label.toLowerCase()}`, hidden: !custom });
+    const pills = choiceGroup({
       name: `${name}Choice`,
+      label,
       value: custom ? '__custom' : value || options[0],
+      options: [...options.map((o) => ({ value: o, label: o })), { value: '__custom', label: 'Custom…' }],
       onchange: (e) => { box.hidden = e.target.value !== '__custom'; if (!box.hidden) box.focus(); },
-    }, options.map((o) => h('option', { value: o }, o)), h('option', { value: '__custom' }, 'Custom…'));
-    const box = h('input', { name: `${name}Custom`, maxlength: 30, value: custom ? value : '', placeholder: `Custom ${label.toLowerCase()}`, hidden: !custom });
-    return field(label, h('div', { class: 'stack' }, select, box));
+    });
+    return groupField(label, h('div', { class: 'stack' }, pills, box));
   }
   const readChoice = (fd, name) => (fd.get(`${name}Choice`) === '__custom' ? (fd.get(`${name}Custom`) || '').trim() || 'Open' : fd.get(`${name}Choice`));
 
@@ -1007,7 +1033,7 @@
     const types = eventTypes(sport);
     return h('fieldset', { class: 'details-set' }, h('legend', {}, 'Event'),
       h('div', { class: 'grid-2' },
-        field('Type', h('select', { name: 'type', value: type }, types.map(([value, label]) => h('option', { value }, label)))),
+        groupField('Type', choiceGroup({ name: 'type', value: type, label: 'Type', options: types.map(([value, label]) => ({ value, label, icon: typeIcon(value) })) })),
         field('Name (optional)', h('input', { name: 'eventName', maxlength: 60, value: v.customName || '', placeholder: 'Generated from the type' }))),
       h('div', { class: 'grid-2' }, choiceField('Age group', 'age', CAT.agesFor(sport), v.age), choiceField('Level', 'level', CAT.levelsFor(sport), v.level)));
   }
@@ -1033,6 +1059,15 @@
     return { gender, discipline };
   };
 
+  // The icon for an event type ("men-singles", "mixed-doubles", "any", …).
+  const typeIcon = (type) => {
+    if (type === 'any') return 'doubles';
+    const [gender, discipline] = type.split('-');
+    return discipline === 'doubles' && gender === 'mixed' ? 'mixed' : discipline;
+  };
+  // Radio names for controls that appear once per row (several rows in one form).
+  let pickId = 0;
+
   // Standard values plus "Custom…", read with .read(); not tied to form field names.
   function pickControl(label, options, value, onchange) {
     const custom = value && !options.includes(value);
@@ -1040,16 +1075,22 @@
       class: 'pick-custom', maxlength: 30, value: custom ? value : '', placeholder: `Custom ${label.toLowerCase()}`,
       'aria-label': `Custom ${label.toLowerCase()}`, hidden: !custom, oninput: onchange,
     });
-    const select = h('select', {
+    const pills = choiceGroup({
+      name: `pick-${++pickId}`,
+      label,
       value: custom ? '__custom' : value || options[0],
+      options: [...options.map((o) => ({ value: o, label: o })), { value: '__custom', label: 'Custom…' }],
       onchange: (e) => {
         box.hidden = e.target.value !== '__custom';
         if (!box.hidden) box.focus();
         onchange();
       },
-    }, options.map((o) => h('option', { value: o }, o)), h('option', { value: '__custom' }, 'Custom…'));
-    const wrap = h('div', { class: 'stack' }, select, box);
-    wrap.read = () => (select.value === '__custom' ? box.value.trim() || 'Open' : select.value);
+    });
+    const wrap = h('div', { class: 'stack' }, pills, box);
+    wrap.read = () => {
+      const v = pills.querySelector('input:checked')?.value || options[0];
+      return v === '__custom' ? box.value.trim() || 'Open' : v;
+    };
     return wrap;
   }
 
@@ -1078,16 +1119,18 @@
     function addRow(v) {
       const row = h('div', { class: 'ev-row' });
       v = fit(v);
-      const type = h('select', { 'aria-label': 'Event type', value: typeOf(v), onchange: refresh },
-        types.map(([value, label]) => h('option', { value }, label)));
+      const type = choiceGroup({
+        name: `type-${++pickId}`, label: 'Event type', value: typeOf(v), onchange: refresh,
+        options: types.map(([value, label]) => ({ value, label, icon: typeIcon(value) })),
+      });
       const age = pickControl('Age group', CAT.agesFor(sport), v.age, refresh);
       const level = pickControl('Level', CAT.levelsFor(sport), v.level, refresh);
-      row.read = () => ({ ...fromType(type.value), age: age.read(), level: level.read() });
+      row.read = () => ({ ...fromType(type.querySelector('input:checked')?.value || types[0][0]), age: age.read(), level: level.read() });
       row.preview = h('div', { class: 'ev-preview', 'aria-live': 'polite' });
       row.append(
-        field('Event', type, 'ev-type'),
-        field('Age group', age, 'ev-age'),
-        field('Level', level, 'ev-level'),
+        groupField('Event', type, 'ev-type'),
+        groupField('Age group', age, 'ev-age'),
+        groupField('Level', level, 'ev-level'),
         h('button', { type: 'button', class: 'icon-btn ev-remove', 'aria-label': 'Remove this event', title: 'Remove', onclick: () => { row.remove(); touched(); refresh(); } }, '✕'),
         row.preview);
       list.append(row);
@@ -1192,54 +1235,116 @@
     };
   }
 
+  // New tournament in three quick steps: sport, events, name and date.
+  // Everything else starts from sensible defaults and is set up afterwards
+  // from the checklist on the tournament page. The draft lives in S so a
+  // redraw never loses it.
   function viewNew() {
     document.title = 'New tournament · Tonament';
-    const sport = liveSports()[0];
-    if (!sport) return loading();
+    const live = liveSports();
+    if (!live.length) return loading();
+    const d = (S.newDraft ||= { step: 1, sport: null, types: null, custom: false, events: null, name: '', startsOn: '', startTime: '' });
+    const sport = live.find((x) => x.id === d.sport);
+    if (!sport) d.step = 1;
+    const go = (step) => { d.step = step; render(); window.scrollTo(0, 0); };
+    const presets = sport ? CAT.presetsFor(sport.id) : [];
+    if (sport && !d.types) d.types = [typeOf(presets[0])];
+    const chosen = () => (d.custom ? d.events || [] : d.types.map((type) => ({ ...fromType(type), age: 'Open', level: 'Open' })));
+
+    const head = h('div', { class: 'new-head' },
+      d.step > 1 ? h('button', { type: 'button', class: 'back-link', onclick: () => go(d.step - 1) }, '← Back') : h('span'),
+      h('span', { class: 'new-progress', 'aria-label': `Step ${d.step} of 3` }, `Step ${d.step} of 3`,
+        h('span', { class: 'dots', 'aria-hidden': 'true' }, [1, 2, 3].map((n) => h('span', { class: n <= d.step ? 'on' : '' })))));
+
+    // 1. Sport: tapping a tile moves on.
+    if (d.step === 1) {
+      const soon = S.sports.filter((x) => x.status !== 'live');
+      return h('div', { class: 'card new-flow' }, head,
+        h('h1', {}, 'New tournament'),
+        h('h2', {}, 'Which sport?'),
+        choiceGroup({
+          name: 'sport', label: 'Sport', value: d.sport, tiles: true,
+          options: live.map((x) => ({ value: x.id, label: x.name, icon: x.id })),
+          onchange: (e) => {
+            if (d.sport !== e.target.value) Object.assign(d, { sport: e.target.value, types: null, custom: false, events: null });
+            go(2);
+          },
+        }),
+        soon.length ? h('p', { class: 'muted small' }, `Coming soon: ${soon.map((x) => x.name).join(', ')}. `, h('a', { href: '/' }, 'Request yours')) : null);
+    }
+
+    // 2. Events: this sport's own list, several at once.
+    if (d.step === 2) {
+      const next = h('button', { type: 'button', class: 'btn btn-primary btn-lg', disabled: !chosen().length }, 'Next');
+      let builder = null;
+      const readBuilder = () => {
+        const { events, error } = builder.readList();
+        if (error) { toast(error, true); return false; }
+        d.events = events;
+        return true;
+      };
+      next.onclick = () => { if (!d.custom || readBuilder()) go(3); };
+      const quick = choiceGroup({
+        name: 'types', label: 'Events', value: d.types, multiple: true, tiles: true,
+        options: presets.map((p) => ({ value: typeOf(p), label: p.label, icon: typeIcon(typeOf(p)) })),
+        onchange: () => {
+          d.types = [...quick.querySelectorAll('input:checked')].map((x) => x.value);
+          next.disabled = !d.types.length;
+        },
+      });
+      if (d.custom) builder = eventBuilder(d.events || chosen(), sport.id);
+      return h('div', { class: 'card new-flow' }, head,
+        h('h2', {}, `Which ${sport.name.toLowerCase()} events?`),
+        d.custom
+          ? [h('p', { class: 'muted small' }, 'Each event gets its own entries and draw.'), builder]
+          : [h('p', { class: 'muted small' }, 'Tap all that apply. Each gets its own entries and draw.'), quick,
+            h('button', {
+              type: 'button', class: 'link-btn',
+              onclick: () => { d.events = chosen(); d.custom = true; render(); },
+            }, 'Age groups, levels or more events…')],
+        h('div', { class: 'actions' }, next));
+    }
+
+    // 3. Name and date, then create.
+    const year = new Date().getFullYear();
     const form = h('form', {
-      class: 'card form',
+      class: 'card new-flow form',
       onsubmit: async (e) => {
         e.preventDefault();
         const btn = form.querySelector('button[type=submit]');
         btn.disabled = true;
+        const fd = new FormData(form);
+        Object.assign(d, { name: fd.get('name'), startsOn: fd.get('startsOn') || '', startTime: fd.get('startTime') || '' });
         try {
-          const { events, error } = readEventList(form);
-          if (error) throw new Error(error);
-          const chosen = S.sports.find((s) => s.id === form.sport.value);
-          const body = { sport: chosen.id, ...readTournament(form), ...readFormat(form, chosen), events };
-          const { id } = await api('POST', '/tournaments', body);
-          toast('Tournament created — now add your players');
+          const { id } = await api('POST', '/tournaments', {
+            sport: sport.id,
+            name: d.name,
+            startsOn: d.startsOn,
+            startTime: d.startTime,
+            country: REGIONS.defaultCountry,
+            format: 'league_knockout',
+            groupSize: 4,
+            qualifiers: 2,
+            scoring: sport.defaults,
+            events: chosen(),
+          });
+          S.newDraft = null;
+          toast('Tournament created — finish setting it up below');
           navigate(`/t/${id}`);
         } catch (err) {
           toast(err.message, true);
           btn.disabled = false;
         }
       },
-    },
-    h('h1', {}, 'New tournament'),
-    field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, placeholder: 'e.g. Club Championship 2026', autocomplete: 'off' })),
-    h('div', {},
-      field('Sport', h('select', {
-        name: 'sport',
-        // Each sport has its own scoring settings and category lists.
-        onchange: (e) => {
-          const next = S.sports.find((s) => s.id === e.target.value);
-          const builder = form.querySelector('.ev-builder');
-          const { events } = builder.readList();
-          builder.replaceWith(eventBuilder(events || [], next.id));
-          form.querySelector('.scoring-set').replaceWith(scoringFields(next, next.defaults));
-        },
-      }, S.sports.map((s) => h('option', {
-        value: s.id,
-        disabled: s.status !== 'live',
-      }, s.status === 'live' ? s.name : `${s.name} (coming soon)`))), null,
-      h('span', {}, 'More sports are on the way — ', h('a', { href: '/' }, 'request yours on the home page'), '.'))),
-    detailsFields({ country: REGIONS.defaultCountry }),
-    eventBuilder([{ discipline: 'singles', gender: 'open', age: 'Open', level: 'Open' }], sport.id),
-    entryFields({ selfEntry: true }),
-    formatFields(sport, { format: 'league_knockout', groupSize: 4, qualifiers: 2, maxEntries: null, lateEntry: false, scoring: sport.defaults }, 'Format (for every event — change any of them later)'),
+    }, head,
+    h('h2', {}, 'Name and date'),
+    h('p', { class: 'muted small' }, `${sport.name} · ${chosen().map((x) => CAT.eventName(x)).join(', ')}`),
+    field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: d.name, placeholder: `e.g. ${sport.name} Open ${year}`, autocomplete: 'off', oninput: (e) => { d.name = e.target.value; } })),
+    h('div', { class: 'grid-2' },
+      field('Date', h('input', { type: 'date', name: 'startsOn', value: d.startsOn, oninput: (e) => { d.startsOn = e.target.value; } }), null, 'Helps players find it. You can change it later.'),
+      field('Start time (optional)', h('input', { type: 'time', name: 'startTime', value: d.startTime, oninput: (e) => { d.startTime = e.target.value; } }))),
+    h('p', { class: 'muted small' }, 'Venue, format, entry fees, prizes and courts come next — on your tournament page, whenever you\'re ready.'),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
-    syncFormat(form);
     return form;
   }
 
@@ -1299,7 +1404,7 @@
           [fmtSchedule(tt), placeLine(tt.venue, tt.location.city), tt.sport.name, multiEvent(tt) ? `${tt.events.length} events` : t.formatName, statusLine]
             .filter(Boolean).join(' · '), '  ', connDot())),
       roleBar(t),
-      tt.visibility === 'private' ? visibilityBanner(t) : null,
+      tt.visibility === 'private' && !(active === 'entries' && checklistOn(t)) ? visibilityBanner(t) : null,
       perEvent ? eventPicker(tt, ev) : null,
       h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: tabHref(t, x.id), class: x.id === active ? 'active' : '' }, x.label))),
       perEvent && multiEvent(tt)
@@ -1319,6 +1424,71 @@
       return t.config.entriesCloseAt ? `Entries open${places} · close ${fmtWhen(t.config.entriesCloseAt)}` : `Entries open${places}`;
     }
     return t.config.selfEntry ? 'Entries closed' : null;
+  }
+
+  // ----- setup checklist: what's left before the tournament is ready.
+  const checklistKey = (t) => `tonament:checklist-hidden:${t.id}`;
+  function checklistOn(t) {
+    if (!t.can.manage || t.tournamentStatus !== 'setup') return false;
+    try { return localStorage.getItem(checklistKey(t)) !== '1'; } catch { return true; }
+  }
+
+  // Opens a settings panel on this tab and scrolls to it (or to one of its sections).
+  function openPanel(t, name, section) {
+    S.openPanels.add(`${t.id}:${name}`);
+    render();
+    const box = document.querySelector(`[data-panel="${name}"]`);
+    if (!box) return;
+    const legend = section && [...box.querySelectorAll('legend')].find((l) => l.textContent === section);
+    (legend || box).scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function setupChecklist(t) {
+    if (!checklistOn(t)) return null;
+    const sport = S.sports.find((x) => x.id === t.sport.id);
+    const entries = allEntries(t).length;
+    const teams = t.events.every((e) => e.discipline === 'team');
+    const length = sport && sport.fields[0] && sport.fields[0].options
+      ? (sport.fields[0].options.find((o) => String(o.value) === String(t.config.scoring[sport.fields[0].key])) || {}).label
+      : null;
+    const court = CAT.courtWord(t.sport.id);
+    const focusAdd = () => {
+      const box = document.querySelector('textarea[name=names]');
+      if (box) { box.scrollIntoView({ behavior: 'smooth', block: 'center' }); box.focus({ preventScroll: true }); }
+    };
+    const items = [
+      { label: 'Events', done: true, state: t.events.map((e) => e.name).join(', '), action: ['Edit', () => navigate(tabHref(t, 'events'))] },
+      { label: 'Date & time', done: Boolean(t.startsOn), state: fmtSchedule(t) || 'Not set', action: [t.startsOn ? 'Edit' : 'Set up', () => openPanel(t, 'settings', 'When')] },
+      { label: 'Venue', done: Boolean(t.venue || t.location.city), state: placeLine(t.venue, t.location.city) || 'Not set', action: [t.venue ? 'Edit' : 'Set up', () => openPanel(t, 'settings', 'Venue')] },
+      { label: teams ? 'Teams' : 'Players', done: entries >= 2, state: entries ? `${entries} ${teams ? (entries === 1 ? 'team' : 'teams') : entries === 1 ? 'entry' : 'entries'} so far` : 'None yet — add them, or share the link so they enter themselves', action: ['Add', focusAdd] },
+      { label: 'Format & scoring', done: true, state: [t.formatName, length].filter(Boolean).join(' · '), action: ['Change', () => openPanel(t, `event-${t.eventId}`)] },
+      { label: 'Entry fee & UPI', optional: true, done: t.events.some((e) => e.fee) || Boolean(t.payment && t.payment.upi), state: t.events.some((e) => e.fee) ? t.events.filter((e) => e.fee).map((e) => `${e.name} ${money(e.fee)}`).join(', ') : 'Free to enter', action: ['Set up', () => openPanel(t, 'settings', 'Entry fees')] },
+      { label: 'Prizes', optional: true, done: t.events.some((e) => (e.prizes || []).length), state: t.events.some((e) => (e.prizes || []).length) ? 'Added' : 'None yet', action: ['Set up', () => openPanel(t, `prizes-${t.eventId}`)] },
+      { label: `${court}s`, optional: true, done: Boolean(t.courts), state: t.courts ? `${t.courts.names.length} ${court.toLowerCase()}${t.courts.names.length === 1 ? '' : 's'}` : `For an order of play on the day`, action: ['Set up', () => openPanel(t, 'settings', `${court}s`)] },
+      { label: 'Publish', done: t.visibility !== 'private', state: t.visibility === 'public' ? 'Public — listed on Tonament' : t.visibility === 'link' ? 'Anyone with the link' : 'Private — only your team can see it', publish: t.visibility === 'private' && t.can.own },
+    ];
+    const required = items.filter((x) => !x.optional);
+    const done = required.filter((x) => x.done).length;
+    const hide = () => {
+      try { localStorage.setItem(checklistKey(t), '1'); } catch { /* private mode: hides until reload */ }
+      render();
+    };
+    return h('div', { class: 'card checklist' },
+      h('div', { class: 'card-head' },
+        h('h2', {}, done === required.length ? 'Ready to go ✓' : 'Get your tournament ready'),
+        h('button', { class: 'btn btn-small btn-ghost', onclick: hide }, 'Hide')),
+      h('p', { class: 'muted small checklist-count' }, `${done} of ${required.length} done`,
+        h('span', { class: 'progress' }, h('span', { style: `width:${(done / required.length) * 100}%` }))),
+      h('ul', {}, items.map((x) => h('li', { class: `check-row${x.done ? ' done' : ''}${x.optional ? ' optional' : ''}` },
+        h('span', { class: 'tick', 'aria-label': x.done ? 'Done' : 'To do' }, x.done ? '✓' : ''),
+        h('div', { class: 'check-text' },
+          h('strong', {}, x.label, x.optional ? h('small', {}, ' (optional)') : null),
+          h('span', { class: 'muted small' }, x.state)),
+        x.publish
+          ? h('span', { class: 'actions' },
+            h('button', { class: 'btn btn-small btn-primary', onclick: () => setVisibility(t, 'public') }, 'Publish'),
+            h('button', { class: 'btn btn-small btn-ghost', onclick: () => setVisibility(t, 'link') }, 'Link only'))
+          : x.action ? h('button', { class: `btn btn-small${x.done ? ' btn-ghost' : ''}`, onclick: x.action[1] }, x.action[0]) : null))));
   }
 
   function panelEntries(t) {
@@ -1416,7 +1586,7 @@
       ];
     }
     if (!setup) return [paymentsToCheck(t), upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, prizeSettingsCard(t), tournamentSettingsCard(t)];
-    return [paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
+    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
   }
 
   function addEntriesForm(t, walkIn) {
@@ -1561,7 +1731,7 @@
       : null,
     drawn ? h('p', { class: 'hint', style: 'margin:0' }, `Partners are drawn when the event starts — enter on your own.${fee ? ` You pay half the pair fee (${money(Math.ceil(fee / 2))}).` : ''}`) : null,
     t.event.gender === 'mixed' && t.event.discipline === 'doubles'
-      ? Object.assign(field('I\'m playing as', h('select', { name: 'side' }, h('option', { value: 'man' }, 'Man'), h('option', { value: 'woman' }, 'Woman')), 'side-field'), { hidden: !drawn })
+      ? Object.assign(groupField('I\'m playing as', choiceGroup({ name: 'side', label: 'I\'m playing as', value: 'man', options: [{ value: 'man', label: 'Man' }, { value: 'woman', label: 'Woman' }] }), 'side-field'), { hidden: !drawn })
       : null,
     team
       ? field('Players (optional)', h('textarea', { name: 'players', rows: 3, maxlength: 1300, placeholder: 'One name per line' }), null, 'Only the organisers see this.')
@@ -1890,7 +2060,7 @@
     return h('div', { class: 'card venue-card' },
       h('div', { class: 'venue-info' },
         dates ? h('div', { class: 'venue-row' }, h('span', { class: 'venue-icon', 'aria-hidden': 'true' }, '📅'), h('strong', {}, dates)) : null,
-        t.venue || lines.length
+        t.venue || L.address || L.city
           ? h('div', { class: 'venue-row' }, h('span', { class: 'venue-icon', 'aria-hidden': 'true' }, '📍'),
             h('div', {}, t.venue ? h('strong', {}, t.venue) : null, lines.map((l) => h('div', { class: 'muted small' }, l))))
           : null),
@@ -1975,8 +2145,10 @@
         field('Your UPI ID', h('input', { name: 'upi', maxlength: 100, value: p.upi || '', placeholder: 'e.g. kavya@okhdfcbank', autocomplete: 'off', inputmode: 'email' })),
         field('Name to pay', h('input', { name: 'payee', maxlength: 60, value: p.payee || '', placeholder: 'As shown in UPI apps' }))),
       field('Note for players (optional)', h('input', { name: 'payNote', maxlength: 200, value: p.note || '', placeholder: 'e.g. Cash is also fine at the desk' })),
-      field('Hold a place while unpaid', h('select', { name: 'holdHours', value: String(p.holdHours ?? 48) },
-        h('option', { value: '24' }, '24 hours'), h('option', { value: '48' }, '48 hours'), h('option', { value: '0' }, 'Until entries close')), null,
+      groupField('Hold a place while unpaid', choiceGroup({
+        name: 'holdHours', label: 'Hold a place while unpaid', value: String(p.holdHours ?? 48),
+        options: [{ value: '24', label: '24 hours' }, { value: '48', label: '48 hours' }, { value: '0', label: 'Until entries close' }],
+      }), null,
       'After that, an unpaid entry goes to the waitlist (you can still confirm it if there\'s room).'),
       h('div', { class: 'qr-row' },
         p.qr ? h('img', { class: 'qr-preview', src: p.qr, alt: 'Your UPI QR code' }) : null,
@@ -2002,7 +2174,7 @@
     const c = t.courts;
     const names = c ? c.names : [];
     const custom = names.some((n, i) => n !== defaultCourtName(i));
-    return h('fieldset', { class: 'details-set' }, h('legend', {}, 'Courts'),
+    return h('fieldset', { class: 'details-set' }, h('legend', {}, `${CAT.courtWord(t.sport.id)}s`),
       h('p', { class: 'hint', style: 'margin:0' }, 'Set your courts to run an order of play: call matches to free courts and show players when they\'re likely on.'),
       h('div', { class: 'grid-2' },
         field('Number of courts', h('input', { type: 'number', name: 'courtCount', min: 0, max: 40, value: names.length || '', placeholder: 'None' })),
@@ -3319,9 +3491,10 @@
     }
     const list = S.members.list;
     const emailInput = h('input', { name: 'email', type: 'email', required: true, placeholder: 'name@example.com', autocomplete: 'off' });
-    const roleSelect = h('select', { name: 'role' },
-      h('option', { value: 'umpire' }, 'Umpire — can score matches'),
-      h('option', { value: 'organiser' }, 'Organiser — can manage everything'));
+    const roleSelect = choiceGroup({
+      name: 'role', label: 'Role', value: 'umpire',
+      options: [{ value: 'umpire', label: 'Umpire', hint: 'Can score matches' }, { value: 'organiser', label: 'Organiser', hint: 'Can manage everything' }],
+    });
     const setMembers = (members) => { S.members = { tid: t.id, list: members }; };
     const linkRow = (label, hint, url, msg) => h('div', { class: 'link-row' },
       h('div', {}, h('strong', {}, label), h('div', { class: 'hint' }, hint)),
@@ -3353,7 +3526,7 @@
             e.preventDefault();
             const email = emailInput.value;
             act(async () => {
-              const { members, emailed } = await api('POST', `${tPath(t)}/members`, { email, role: roleSelect.value }, t.id);
+              const { members, emailed } = await api('POST', `${tPath(t)}/members`, { email, role: roleSelect.querySelector('input:checked').value }, t.id);
               setMembers(members);
               emailInput.value = '';
               toast(emailed ? `${email} added — we've emailed them` : `${email} added`);

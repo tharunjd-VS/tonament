@@ -124,5 +124,8 @@
     return [base, e.age !== 'Open' ? e.age : null, level].filter(Boolean).join(' ');
   }
 
-  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName };
+  // What a playing area is called: table tennis is played on tables.
+  const courtWord = (sport) => (sport === 'table-tennis' ? 'Table' : 'Court');
+
+  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName, courtWord };
 });

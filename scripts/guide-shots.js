@@ -138,19 +138,13 @@ async function main() {
 
     const o = await context(org.cookie);
     // 1. Create
-    await o.goto(`${base}/new`); await o.waitForSelector('.ev-builder');
-    await o.fill('input[name=name]', 'Club Championship 2026');
-    await o.selectOption('.ev-builder .ev-type select', 'men-singles');
-    await o.click('.ev-builder button:has-text("+ Add event")');
-    await o.selectOption('.ev-builder .ev-row >> nth=1 >> .ev-type select', 'mixed-doubles');
-    await o.selectOption('.ev-builder .ev-row >> nth=1 >> .ev-age select', 'U19');
-    await o.fill('input[name=startsOn]', '2026-12-12');
-    await o.fill('input[name=startTime]', '08:00');
-    await o.fill('input[name=venue]', 'Anna Nagar Indoor Arena');
-    await o.selectOption('select[name=region]', 'Tamil Nadu');
-    await o.fill('input[name=city]', 'Chennai');
-    await o.fill('input[name=postcode]', '600040');
-    await snap(o, 'create', { scrollTo: '.ev-builder', top: 330 });
+    await o.goto(`${base}/new`); await o.waitForSelector('.new-flow');
+    await o.evaluate(() => { window.scrollTo(0, 0); });
+    await o.click('label.choice:has-text("Badminton")');
+    await o.waitForSelector('text=Which badminton events?');
+    await o.click('label.choice:has-text("Women\'s Singles")');
+    await o.click('label.choice:has-text("Mixed Doubles")');
+    await snap(o, 'create');
     // 3. Organiser's Players tab (Women's Singles, still open)
     await o.goto(`${base}/t/${id}/entries?e=${ws}`); await o.waitForSelector('.entries');
     await snap(o, 'entries', { scrollTo: '.card:has(h2:text-matches("^Entries"))', top: 70 });

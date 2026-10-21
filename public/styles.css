@@ -167,13 +167,6 @@ legend { font-weight: 700; padding: 0 6px; }
   .grid-3 { grid-template-columns: repeat(3, 1fr); }
 }
 .formats { display: grid; gap: 8px; }
-.format-option {
-  display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
-  border: 1px solid var(--border); border-radius: 10px; cursor: pointer;
-}
-.format-option:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
-.format-option input { width: auto; margin-top: 4px; accent-color: var(--lime); }
-.format-option small { display: block; color: var(--muted); }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .actions.center { justify-content: center; }
 
@@ -690,13 +683,14 @@ body.display-mode.display-idle .dc-fs { visibility: hidden; }
 /* Event list builder */
 .ev-rows { display: grid; gap: 10px; }
 .ev-row {
-  display: grid; gap: 8px 10px; grid-template-columns: 1fr 1fr auto; align-items: end;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; align-items: start;
+  padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
 }
-.ev-row .ev-type { grid-column: 1 / 3; }
-.ev-row .ev-remove { grid-column: 3; grid-row: 1; align-self: start; }
-.ev-row .ev-age { grid-column: 1; }
-.ev-row .ev-level { grid-column: 2; }
+.ev-row .ev-type { grid-column: 1; grid-row: 1; }
+.ev-row .ev-remove { grid-column: 2; grid-row: 1; }
+.ev-row .ev-age, .ev-row .ev-level { grid-column: 1 / -1; }
+.ev-row .choice { min-height: 34px; padding: 5px 11px; font-size: 0.88rem; }
+.ev-row .choice .icon { width: 18px; height: 18px; }
 .ev-preview { grid-column: 1 / -1; font-size: 0.85rem; color: var(--muted); }
 .ev-row.dup { border-color: var(--danger); }
 .ev-row.dup .ev-preview { color: var(--danger); }
@@ -705,14 +699,6 @@ body.display-mode.display-idle .dc-fs { visibility: hidden; }
 .ev-several > summary { font-weight: 600; }
 .ev-several strong { display: block; margin: 8px 0 4px; font-size: 0.9rem; }
 .ev-several .quick-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
-@media (min-width: 720px) {
-  .ev-row { grid-template-columns: 2fr 1fr 1fr auto; }
-  .ev-row .ev-type { grid-column: 1; }
-  .ev-row .ev-age { grid-column: 2; }
-  .ev-row .ev-level { grid-column: 3; }
-  .ev-row .ev-remove { grid-column: 4; grid-row: 1; align-self: end; }
-}
-
 /* Tournament page: cover, about, photos */
 .brand .brand-mark { display: none; }
 body.branded .brand .brand-full { display: none; }
@@ -794,3 +780,53 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .price-tiers > div > span { color: var(--muted); font-size: 0.9rem; }
 .hero-end { margin-top: 32px; }
 .hero-end h2 { color: inherit; font-size: clamp(1.6rem, 5vw, 2.4rem); margin: 0 0 10px; }
+
+/* ---------- choice buttons (instead of dropdowns): pills, or tiles with an icon */
+.icon { display: inline-flex; width: 22px; height: 22px; flex: none; }
+.icon svg { width: 100%; height: 100%; }
+.choice-group { display: flex; flex-wrap: wrap; gap: 8px; }
+.scoring-grid { display: grid; gap: 14px; }
+.choice {
+  position: relative; display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 7px 14px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2); color: var(--text);
+  font-weight: 600; font-size: 0.95rem; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+}
+.choice input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+.choice:hover { border-color: var(--muted); }
+.choice:has(input:checked) { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.choice.disabled { opacity: 0.45; cursor: not-allowed; }
+.choice small { display: block; font-weight: 400; font-size: 0.8rem; color: var(--muted); }
+.choice:has(input:checked) small { color: inherit; opacity: 0.8; }
+.choice-group.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 112px), 1fr)); }
+.choice-group.tiles .choice { flex-direction: column; justify-content: center; text-align: center; border-radius: 14px; padding: 14px 10px; min-height: 96px; }
+.choice-group.tiles .icon { width: 34px; height: 34px; }
+.formats .choice-group.tiles { grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); }
+.formats .choice-group.tiles .choice { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; text-align: left; gap: 2px 12px; min-height: 0; padding: 12px 14px; }
+.formats .choice-group.tiles .icon { grid-row: span 2; width: 30px; height: 30px; }
+
+/* ---------- new tournament, in steps */
+.new-flow { max-width: 680px; margin: 8px auto 24px; display: grid; gap: 14px; }
+.new-flow h1 { margin: 0; font-size: clamp(1.6rem, 5vw, 2.1rem); }
+.new-flow h2 { margin: 0; font-size: 1.25rem; }
+.new-flow p { margin: 0; }
+.new-flow .actions { display: flex; justify-content: flex-end; }
+.new-head { display: flex; justify-content: space-between; align-items: center; min-height: 28px; }
+.new-progress { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.85rem; font-weight: 600; }
+.new-progress .dots { display: inline-flex; gap: 5px; }
+.new-progress .dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+.new-progress .dots span.on { background: var(--accent); }
+.back-link, .link-btn { background: none; border: 0; padding: 4px 0; font: inherit; font-weight: 600; color: var(--link); cursor: pointer; text-align: left; }
+.back-link:hover, .link-btn:hover { text-decoration: underline; }
+
+/* ---------- setup checklist (tournament page, before the start) */
+.checklist ul { list-style: none; margin: 4px 0 0; padding: 0; display: grid; }
+.checklist-count { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+.checklist-count .progress { flex: 1; max-width: 220px; }
+.check-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
+.check-row .tick { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--border); display: grid; place-items: center; font-size: 0.8rem; font-weight: 700; }
+.check-row.done .tick { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.check-row .check-text { display: grid; min-width: 0; }
+.check-row .check-text small { color: var(--muted); font-weight: 400; }
+.check-row.optional:not(.done) .tick { border-style: dashed; }
+.check-row .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
