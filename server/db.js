@@ -223,11 +223,17 @@ ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS notes TEXT;
 
 -- A team's players (team events; optional, organisers only).
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS players JSONB;
+
+-- Courts and the order of play: { names, minutes, auto } on the tournament;
+-- a match's place pinned in the queue ("Play next") and when it was called.
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS courts JSONB;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS queue_pos INTEGER;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS called_at TIMESTAMPTZ;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 
 async function migrate(db) {
   try {

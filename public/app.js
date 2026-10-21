@@ -1144,6 +1144,7 @@
 
   function tabsWithTeam(t) {
     const tabs = tabsFor(t);
+    if (t.courts) tabs.push({ id: 'courts', label: 'Courts' });
     if (hasPage(t)) tabs.push({ id: 'about', label: 'About' });
     if (t.can.manage) tabs.push({ id: 'events', label: 'Events' }, { id: 'team', label: 'Team' });
     return tabs;
@@ -1155,7 +1156,7 @@
     return h('nav', { class: 'event-picker', 'aria-label': 'Events' },
       t.events.map((ev) => h('a', {
         class: `event-chip${ev.id === current.id ? ' active' : ''}`,
-        href: `#/t/${t.id}/${S.route.tab && !['events', 'team'].includes(S.route.tab) ? S.route.tab : 'entries'}?e=${ev.id}`,
+        href: `#/t/${t.id}/${S.route.tab && !['events', 'team', 'courts', 'about'].includes(S.route.tab) ? S.route.tab : 'entries'}?e=${ev.id}`,
         'aria-current': ev.id === current.id ? 'true' : null,
       },
       h('span', { class: `dot ${ev.status}`, 'aria-hidden': 'true' }),
@@ -1170,8 +1171,8 @@
     document.title = `${tt.name} · Tonament`;
     const tabs = tabsWithTeam(t);
     const active = tabs.some((x) => x.id === S.route.tab) ? S.route.tab : tabs[0].id;
-    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, team: panelTeam, events: panelEvents, about: panelAbout };
-    const perEvent = !['team', 'events', 'about'].includes(active);
+    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, team: panelTeam, events: panelEvents, about: panelAbout, courts: () => panelCourts(tt) };
+    const perEvent = !['team', 'events', 'about', 'courts'].includes(active);
     const statusLine = multiEvent(tt) ? (tt.entriesOpen ? 'Entries open' : null) : entryStatusLine(t);
     const b = tt.branding;
     return [
@@ -1731,14 +1732,43 @@
       class: 'form',
       onsubmit: (e) => {
         e.preventDefault();
-        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), readTournament(form), t.id); }, 'Tournament settings saved');
+        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), { ...readTournament(form), courts: readCourts(form) }, t.id); }, 'Tournament settings saved');
       },
     },
     field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: t.name })),
     detailsFields(detailValues(t)),
     entryFields(t.config),
+    courtFields(t),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
-    return panel(t, 'settings', 'Tournament settings · venue, dates, entries', form);
+    return panel(t, 'settings', 'Tournament settings · venue, dates, entries, courts', form);
+  }
+
+  // Courts for the order of play (shared by every event).
+  const defaultCourtName = (i) => `Court ${i + 1}`;
+  function courtFields(t) {
+    const c = t.courts;
+    const names = c ? c.names : [];
+    const custom = names.some((n, i) => n !== defaultCourtName(i));
+    return h('fieldset', { class: 'details-set' }, h('legend', {}, 'Courts'),
+      h('p', { class: 'hint', style: 'margin:0' }, 'Set your courts to run an order of play: call matches to free courts and show players when they\'re likely on.'),
+      h('div', { class: 'grid-2' },
+        field('Number of courts', h('input', { type: 'number', name: 'courtCount', min: 0, max: 40, value: names.length || '', placeholder: 'None' })),
+        field('Typical match (minutes)', h('input', {
+          type: 'number', name: 'courtMinutes', min: 5, max: 240, value: c ? c.minutes : '', placeholder: String(TonamentSchedule.defaultMinutes(t.sport.id)),
+        }), null, 'For estimated start times.')),
+      field('Court names (optional)', h('input', { name: 'courtNames', maxlength: 400, value: custom ? names.join(', ') : '', placeholder: 'e.g. Centre, Court 2, Court 3' }), null,
+        'Separate with commas. Leave blank for Court 1, Court 2, …'),
+      h('label', { class: 'check-field' },
+        h('input', { type: 'checkbox', name: 'courtAuto', checked: Boolean(c && c.auto) }),
+        h('span', {}, h('strong', {}, 'Call the next match automatically'), h('small', {}, 'When a match ends, the next match in the order of play goes to that court.'))));
+  }
+
+  function readCourts(form) {
+    const fd = new FormData(form);
+    const named = (fd.get('courtNames') || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const count = Number(fd.get('courtCount')) || 0;
+    const names = named.length ? named : Array.from({ length: count }, (_, i) => defaultCourtName(i));
+    return names.length ? { names, minutes: fd.get('courtMinutes') || '', auto: fd.get('courtAuto') === 'on' } : null;
   }
 
   // The selected event's type, format and scoring (until it starts).
@@ -1926,6 +1956,91 @@
       upcoming.length || t.status !== 'completed' ? matchSection(t, 'Up next', upcoming, 'Nothing scheduled right now.') : null,
       matchSection(t, 'Latest results', results, 'No results yet.'),
     ];
+  }
+
+  // ----- courts tab: what's on each court, and the order of play across events
+  const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+  function panelCourts(t) {
+    if (!t.events.some((e) => e.status === 'league' || e.status === 'knockout')) {
+      return empty('The order of play appears here once an event starts.');
+    }
+    return [
+      h('div', { class: 'find-bar' },
+        h('input', {
+          type: 'search', class: 'find-q', value: S.courtFind || '', placeholder: 'Find your name', 'aria-label': 'Find your matches',
+          // Typing redraws just the results, so the box keeps focus.
+          oninput: (e) => { S.courtFind = e.target.value; app.querySelector('.court-results').replaceWith(courtResults(t)); },
+        })),
+      courtResults(t),
+    ];
+  }
+
+  function courtResults(t) {
+    const c = t.courts;
+    const plan = TonamentSchedule.orderOfPlay({ events: t.events, courts: c.names, minutes: c.minutes, now: Date.now() });
+    const manage = t.can.score;
+    const find = (S.courtFind || '').trim().toLowerCase();
+    const mine = (m) => !find || [m.a, m.b].some((p) => p && p.name.toLowerCase().includes(find));
+    const evName = (ev) => (multiEvent(t) ? ev.name : null);
+    const call = (m, court) => act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${m.id}/call`, { court }, t.id); }, `${vsName(m)} called to ${court}`);
+    const pin = (m, top) => act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${m.id}/queue`, { top }, t.id); }, top ? 'Moved to the front' : 'Back in the usual order');
+    const offCourt = (m) => patchMatch(t, m, { status: 'scheduled' }, 'Taken off court');
+    const evOf = (m) => t.events.find((e) => e.matches.some((x) => x.id === m.id));
+
+    const courtCard = (court) => {
+      const m = court.match;
+      if (!m) {
+        const { next } = court;
+        return h('div', { class: 'card court-card free' },
+          h('div', { class: 'court-head' }, h('strong', {}, court.name), pill('done', 'Free')),
+          manage && next
+            ? h('button', { class: 'btn btn-primary btn-small court-call', onclick: () => call(next.match, court.name) },
+              `Call ${vsName(next.match)}`)
+            : h('p', { class: 'muted small', style: 'margin:0' }, plan.queue.length ? 'Waiting for players to finish on another court.' : 'Nothing waiting.'));
+      }
+      const ev = evOf(m);
+      return h('div', { class: `card court-card${mine(m) ? '' : ' dim'}` },
+        h('div', { class: 'court-head' }, h('strong', {}, court.name),
+          m.rallies ? pill('live', 'Playing') : pill('waiting', 'Called')),
+        h('a', { class: 'court-match', href: `#/t/${t.id}/m/${m.id}` },
+          evName(ev) ? h('small', { class: 'muted' }, ev.name) : null,
+          h('span', {}, vsName(m)),
+          h('small', { class: 'muted' }, m.rallies ? m.summary || 'In progress' : `Called at ${clock(Date.parse(m.calledAt || Date.now()))}`)),
+        manage && !m.rallies ? h('button', { class: 'btn btn-ghost btn-small', onclick: () => offCourt(m) }, 'Take off court') : null);
+    };
+
+    const queue = plan.queue.filter((x) => mine(x.match));
+    return h('div', { class: 'court-results' },
+      h('div', { class: 'court-grid' }, plan.courts.map(courtCard)),
+      c.auto && manage ? h('p', { class: 'hint' }, 'Auto-call is on: when a match ends, the next match goes to that court.') : null,
+      h('section', { class: 'section' },
+        h('h2', {}, `Up next (${plan.queue.length})`),
+        queue.length
+          ? h('ol', { class: 'entries order-of-play' }, queue.map((x) => h('li', { class: x.waitingFor.length ? 'waiting' : '' },
+            h('span', { class: 'seed', title: 'Place in the order of play' }, plan.queue.indexOf(x) + 1),
+            h('span', { class: 'name' },
+              h('span', { class: 'entry-name' }, vsName(x.match)),
+              h('small', { class: 'contact' }, [
+                evName(x.event), x.match.roundName,
+                x.waitingFor.length ? `Waiting: ${waitingText(x.waitingFor)}` : null,
+              ].filter(Boolean).join(' · '))),
+            h('span', { class: 'oop-time', title: 'Estimated start' }, x.startsAt <= Date.now() + 60000 && !x.waitingFor.length ? 'Next' : `~${clock(x.startsAt)}`),
+            manage
+              ? h('span', { class: 'row-actions' },
+                x.match.queuePos == null
+                  ? h('button', { class: 'icon-btn', title: 'Play next', 'aria-label': `Play ${vsName(x.match)} next`, onclick: () => pin(x.match, true) }, '⤒')
+                  : h('button', { class: 'icon-btn', title: 'Back to the usual order', 'aria-label': 'Unpin', onclick: () => pin(x.match, false) }, '↺'))
+              : null)))
+          : h('p', { class: 'muted' }, find ? 'No matches for that name.' : 'Nothing waiting to be played.'),
+        plan.queue.length ? h('p', { class: 'hint', style: 'margin:8px 0 0' }, `Times are estimates, based on ${c.minutes}-minute matches.`) : null));
+  }
+  const vsName = (m) => `${nameOf(m.a)} v ${nameOf(m.b)}`;
+  // "Hal, Ivy (Court 1); Cy (Court 2)"
+  function waitingText(list) {
+    const byCourt = new Map();
+    for (const w of list) byCourt.set(w.court || '', [...(byCourt.get(w.court || '') || []), w.name]);
+    return [...byCourt].map(([court, names]) => `${names.join(', ')}${court ? ` (${court})` : ''}`).join('; ');
   }
 
   // Redo the draw (e.g. more players arrived) until the first point is played.

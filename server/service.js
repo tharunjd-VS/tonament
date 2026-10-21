@@ -5,6 +5,7 @@ const sports = require('./sports');
 const formats = require('./formats');
 const regions = require('../public/regions');
 const catalog = require('../public/sports/events');
+const schedule = require('../public/schedule');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
 const { inviteEmail, receiptEmail, entryReceiptEmail, waitingEmail } = require('./email');
@@ -553,6 +554,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       winner: m.winner_id,
       walkover: m.walkover,
       catchUp: m.catch_up,
+      queuePos: m.queue_pos,
+      calledAt: m.called_at,
       score,
       summary: m.walkover ? 'Walkover' : t.sportDef.summary(score),
       updatedAt: m.updated_at,
@@ -687,6 +690,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       status: t.status,
       createdAt: t.created_at,
       sport: { id: t.sportDef.id, name: t.sportDef.name },
+      courts: courtsOf(t),
       visibility: t.visibility,
       official: t.official,
       ...pageContent(t, media, access),
@@ -1012,6 +1016,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
         const about = typeof input.about === 'string' ? input.about.trim().replace(/\r\n/g, '\n') : '';
         if (about.length > 2000) fail(400, 'About must be at most 2,000 characters');
         await q('UPDATE tournaments SET about = $1 WHERE id = $2', [about || null, t.id]);
+      }
+      if (input.courts !== undefined) {
+        await q('UPDATE tournaments SET courts = $1::jsonb WHERE id = $2', [JSON.stringify(courtSettings(input.courts, t)), t.id]);
       }
       if (input.perks !== undefined) {
         const p = input.perks || {};
@@ -1748,6 +1755,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         } else if (t.format === 'league' && (await pendingLeague(q, t)) === 0) {
           await setStatus(q, t, 'completed');
         }
+        await autoCall(q, tournament, m.court);
       }
       return viewOfRow(q, t, row);
     });
@@ -1772,9 +1780,17 @@ function createService(db, { mailer, fetchImpl } = {}) {
         if (m.round < t.config.knockoutRounds) {
           const next = await koMatch(q, t, m.round + 1, m.slot >> 1);
           if (next.rallies || next.status === 'done') fail(409, 'The next-round match has already started');
-          await q(`UPDATE matches SET ${nextSlotColumn(m)} = NULL, status = 'scheduled' WHERE id = $1`, [next.id]);
+          await q(`UPDATE matches SET ${nextSlotColumn(m)} = NULL, status = 'scheduled', court = NULL, called_at = NULL WHERE id = $1`, [next.id]);
         }
         if (t.status === 'completed') await setStatus(q, t, 'knockout');
+      }
+      if (m.status === 'done' && m.court) {
+        // The court is in use again: a match called there since goes back in the queue.
+        await q(
+          `UPDATE matches SET status = 'scheduled', court = NULL, called_at = NULL
+           WHERE tournament_id = $1 AND court = $2 AND status = 'live' AND rallies = '' AND id <> $3`,
+          [t.id, m.court, m.id],
+        );
       }
       const [row] = await q(
         `UPDATE matches SET rallies = $1, status = 'live', winner_id = NULL, updated_at = now() WHERE id = $2 RETURNING *`,
@@ -1782,6 +1798,73 @@ function createService(db, { mailer, fetchImpl } = {}) {
       );
       return viewOfRow(q, t, row);
     });
+  }
+
+  // ---------- courts and the order of play
+
+  // { names, minutes, auto } or null when no courts are set up.
+  function courtsOf(t) {
+    const c = t.courts;
+    if (!c || !c.names || !c.names.length) return null;
+    return { names: c.names, minutes: c.minutes || schedule.defaultMinutes(t.sport), auto: Boolean(c.auto) };
+  }
+
+  function courtSettings(input, t) {
+    if (!input) return null;
+    const names = (Array.isArray(input.names) ? input.names : []).map((n) => (typeof n === 'string' ? n.trim().replace(/\s+/g, ' ') : ''));
+    if (names.some((n) => !n)) fail(400, 'Give every court a name');
+    if (names.length > schedule.MAX_COURTS) fail(400, `Up to ${schedule.MAX_COURTS} courts`);
+    if (names.some((n) => n.length > 20)) fail(400, 'Court names must be at most 20 characters');
+    if (new Set(names.map((n) => n.toLowerCase())).size !== names.length) fail(400, 'Court names must be different');
+    if (!names.length) return null;
+    const minutes = input.minutes === undefined || input.minutes === '' || input.minutes === null
+      ? schedule.defaultMinutes(t.sport)
+      : int(input.minutes, 5, 240, null, 'Typical match length (minutes)');
+    return { names, minutes, auto: Boolean(input.auto) };
+  }
+
+  // Puts a match on a free court ("Call to court").
+  async function callMatch(id, actor, mid, court) {
+    return db.tx(async (q) => {
+      const { t: tournament } = await lockWith(q, id, actor, 'score');
+      const courts = courtsOf(tournament);
+      if (!courts || !courts.names.includes(court)) fail(400, 'Choose one of the tournament\'s courts');
+      const m = await matchOf(q, tournament, mid);
+      const t = await eventFor(q, tournament, m.event_id);
+      if (m.status !== 'scheduled') fail(409, m.status === 'live' ? 'This match is already on court' : 'This match is finished');
+      if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
+      requireStageOpen(t, m);
+      const [taken] = await q(`SELECT 1 FROM matches WHERE tournament_id = $1 AND court = $2 AND status = 'live'`, [tournament.id, court]);
+      if (taken) fail(409, `${court} is in use`);
+      await q(`UPDATE matches SET court = $1, status = 'live', called_at = now(), queue_pos = NULL, updated_at = now() WHERE id = $2`, [court, m.id]);
+      return view(q, tournament, actor);
+    });
+  }
+
+  // "Play next": pins a match to the front of the queue (top = false unpins it).
+  async function queueMatch(id, actor, mid, top = true) {
+    return db.tx(async (q) => {
+      const { t: tournament } = await lockWith(q, id, actor, 'score');
+      const m = await matchOf(q, tournament, mid);
+      if (m.status !== 'scheduled') fail(409, 'Only matches waiting to be played can be moved');
+      const [{ min }] = await q('SELECT MIN(queue_pos) AS min FROM matches WHERE tournament_id = $1', [tournament.id]);
+      await q('UPDATE matches SET queue_pos = $1 WHERE id = $2', [top ? (min ?? 0) - 1 : null, m.id]);
+      return view(q, tournament, actor);
+    });
+  }
+
+  // When a match ends on a court and auto-call is on, the next match goes there.
+  async function autoCall(q, tournament, court) {
+    const courts = courtsOf(tournament);
+    if (!courts || !courts.auto || !court || !courts.names.includes(court)) return;
+    const v = await view(q, tournament, null);
+    const plan = schedule.orderOfPlay({ events: v.events, courts: courts.names, minutes: courts.minutes });
+    const free = plan.courts.find((c) => c.name === court);
+    if (free.match || !plan.next) return;
+    await q(
+      `UPDATE matches SET court = $1, status = 'live', called_at = now(), queue_pos = NULL, updated_at = now() WHERE id = $2 AND status = 'scheduled'`,
+      [court, plan.next.match.id],
+    );
   }
 
   // Court, first server, and marking a match as on court before the first rally.
@@ -1806,9 +1889,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
       } else if (input.status === 'scheduled' && m.status === 'live' && !m.rallies) {
         status = 'scheduled';
       }
-      await q(`UPDATE matches SET court = $1, first_server = $2, status = $3, updated_at = now() WHERE id = $4`, [
-        court, firstServer, status, m.id,
-      ]);
+      // Taking a match off court clears its court; putting it on court records when.
+      await q(
+        `UPDATE matches SET court = $1, first_server = $2, status = $3, updated_at = now(),
+           called_at = CASE WHEN $3 = 'live' THEN COALESCE(called_at, now()) END WHERE id = $4`,
+        [status === 'scheduled' && input.status === 'scheduled' ? null : court, firstServer, status, m.id],
+      );
       return singleMatchView(q, t, m.id);
     });
   }
@@ -2189,6 +2275,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     drawPairs,
     unpair,
     updateEvent,
+    callMatch,
+    queueMatch,
     deleteEvent,
     reorderEvents,
     createTournament,
