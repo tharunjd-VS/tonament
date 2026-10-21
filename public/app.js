@@ -2350,7 +2350,7 @@
       const flag = live ? (sc.matchPoint[s] ? 'Match point' : sc.gamePoint[s] ? `${sc.unit || 'Game'} point` : null) : null;
       return h('div', { class: `dc-side${m.winner && m[s] && m.winner === m[s].id ? ' won' : ''}` },
         h('span', { class: 'dc-serve' }, live && sc.server === s ? h('span', { class: 'serve' }) : null),
-        h('span', { class: 'dc-name' }, nameOf(m[s]), flag ? h('span', { class: 'flag' }, flag) : null),
+        h('span', { class: 'dc-name' }, h('span', {}, nameOf(m[s])), flag ? h('span', { class: 'flag' }, flag) : null),
         live ? h('span', { class: 'dc-games' }, sc.gamesWon[s]) : null,
         live && sc.setGames ? h('span', { class: 'dc-games' }, sc.setGames[s]) : null,
         h('span', { class: 'dc-points' }, live ? (sc.points ? sc.points[s] : cur[s]) : ''));

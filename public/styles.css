@@ -602,8 +602,9 @@ body.display-mode.display-idle .dc-fs { visibility: hidden; }
 .dc-court-meta { color: var(--muted); font-size: 0.9em; }
 .dc-side { display: grid; grid-template-columns: 1em minmax(0, 1fr) auto auto 2.6em; align-items: center; gap: 0.5em; font-size: 1.25em; }
 .dc-side.won .dc-name { color: var(--accent-text); }
-.dc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.dc-name .flag { margin-left: 0.5em; font-size: 0.6em; vertical-align: middle; }
+.dc-name { display: flex; flex-wrap: wrap; align-items: center; gap: 0 0.5em; min-width: 0; font-weight: 600; }
+.dc-name > span:first-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-name .flag { flex: none; font-size: 0.6em; }
 .dc-games { background: var(--surface-2); border-radius: 6px; padding: 0 0.4em; font-variant-numeric: tabular-nums; color: var(--muted); }
 .dc-points { font-size: 1.5em; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .dc-free { color: var(--muted); }
