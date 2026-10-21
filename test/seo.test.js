@@ -120,6 +120,11 @@ test('preview images: the cover, then its 1200×630 copy', async () => {
 });
 
 test('no event data without a date and place; link-only and private pages are never indexed', async () => {
+  const timed = await diwali({ name: 'Morning Cup', startTime: '08:00', endTime: '18:30' });
+  const timedPage = (await get(`/t/${timed}`)).html;
+  assert.match(meta(timedPage, 'description'), /^Sat 2 – Sun 3 Nov 2030 · 8:00 AM – 6:30 PM · City Sports Hall/);
+  assert.deepEqual([ld(timedPage).startDate, ld(timedPage).endDate], ['2030-11-02T08:00', '2030-11-03T18:30']);
+
   const undated = await diwali({ name: 'Someday Cup', startsOn: undefined, endsOn: undefined });
   const html = (await get(`/t/${undated}`)).html;
   assert.equal(ld(html), null);

@@ -165,8 +165,18 @@
     };
     return end ? `${fmt(start)} – ${fmt(end)}` : fmt(start);
   }
+  // "08:30" as the viewer writes times (8:30 am / 08:30), not converted between time zones.
+  const fmtClock = (hm) => new Date(`1970-01-01T${hm}:00Z`).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
+  // Dates plus the start (and finish) time: "Sat, 2 Nov · 8:00 am – 6:00 pm".
+  function fmtSchedule(t) {
+    const dates = fmtDates(t.startsOn, t.endsOn);
+    if (!dates) return null;
+    const time = t.startTime && t.endTime ? `${fmtClock(t.startTime)} – ${fmtClock(t.endTime)}`
+      : t.startTime ? fmtClock(t.startTime) : t.endTime ? `until ${fmtClock(t.endTime)}` : null;
+    return [dates, time].filter(Boolean).join(' · ');
+  }
   const placeLine = (venue, city) => [venue, city].filter(Boolean).join(', ') || null;
-  const detailValues = (t) => ({ venue: t.venue, ...t.location, startsOn: t.startsOn, endsOn: t.endsOn });
+  const detailValues = (t) => ({ venue: t.venue, ...t.location, startsOn: t.startsOn, endsOn: t.endsOn, startTime: t.startTime, endTime: t.endTime });
 
   // ---------- organiser branding (paid) and page images
   // A brand colour replaces the lime accent on that tournament's pages. Text
@@ -792,8 +802,8 @@
         h('h3', {}, t.name),
         h('span', {}, visibilityPill(t.visibility), ' ', roleName ? pill('org', roleName) : null, ' ',
           t.entriesOpen ? pill('done', 'Entries open') : pill(t.status, STATUS[t.status]))),
-      fmtDates(t.startsOn, t.endsOn) || t.venue || t.city
-        ? h('div', { class: 't-card-when' }, [fmtDates(t.startsOn, t.endsOn), placeLine(t.venue, t.city)].filter(Boolean).join(' · '))
+      t.startsOn || t.venue || t.city
+        ? h('div', { class: 't-card-when' }, [fmtSchedule(t), placeLine(t.venue, t.city)].filter(Boolean).join(' · '))
         : null,
       // Events by short name ("MS U19 · XD") once a tournament has real categories.
       (t.events || []).length > 1 || ((t.events || [])[0] && t.events[0] !== 'Open')
@@ -841,7 +851,10 @@
       h('fieldset', { class: 'details-set' }, h('legend', {}, 'When'),
         h('div', { class: 'grid-2' },
           field('Start date', h('input', { type: 'date', name: 'startsOn', value: v.startsOn || '' }), null, 'Helps players find your tournament.'),
-          field('End date (optional)', h('input', { type: 'date', name: 'endsOn', value: v.endsOn || '' }), null, 'For events over more than one day.'))),
+          field('Start time', h('input', { type: 'time', name: 'startTime', value: v.startTime || '' }), null, 'When play begins, at the venue.')),
+        h('div', { class: 'grid-2' },
+          field('End date (optional)', h('input', { type: 'date', name: 'endsOn', value: v.endsOn || '' }), null, 'For events over more than one day.'),
+          field('Finish time (optional)', h('input', { type: 'time', name: 'endTime', value: v.endTime || '' }), null, 'Roughly; over several days, the daily hours.'))),
       h('fieldset', { class: 'details-set' }, h('legend', {}, 'Venue'),
         field('Venue name', h('input', { name: 'venue', maxlength: 80, value: v.venue || '', placeholder: 'e.g. City Sports Hall' })),
         field('Address', h('input', { name: 'address', maxlength: 120, value: v.address || '', placeholder: 'Street and area', autocomplete: 'off' })),
@@ -870,6 +883,8 @@
       country: choice === OTHER_COUNTRY ? fd.get('countryOther') || '' : choice,
       startsOn: fd.get('startsOn') || '',
       endsOn: fd.get('endsOn') || '',
+      startTime: fd.get('startTime') || '',
+      endTime: fd.get('endTime') || '',
     };
   }
 
@@ -1219,7 +1234,7 @@
           tt.official ? pill('org', 'Organised by Tonament') : null,
           tt.visibility !== 'private' ? h('button', { class: 'btn btn-small btn-ghost t-share', onclick: () => shareTournament(tt) }, 'Share') : null),
         h('p', { class: 'muted small' },
-          [fmtDates(tt.startsOn, tt.endsOn), placeLine(tt.venue, tt.location.city), tt.sport.name, multiEvent(tt) ? `${tt.events.length} events` : t.formatName, statusLine]
+          [fmtSchedule(tt), placeLine(tt.venue, tt.location.city), tt.sport.name, multiEvent(tt) ? `${tt.events.length} events` : t.formatName, statusLine]
             .filter(Boolean).join(' · '), '  ', connDot())),
       roleBar(t),
       tt.visibility === 'private' ? visibilityBanner(t) : null,
@@ -1711,7 +1726,7 @@
   function venueCard(t) {
     const L = t.location;
     const lines = [L.address, [L.city, [L.region, L.postcode].filter(Boolean).join(' ')].filter(Boolean).join(', '), L.country].filter(Boolean);
-    const dates = fmtDates(t.startsOn, t.endsOn);
+    const dates = fmtSchedule(t);
     if (!dates && !t.venue && !L.address && !L.city) return null;
     const query = [t.venue, ...lines].join(', ');
     return h('div', { class: 'card venue-card' },

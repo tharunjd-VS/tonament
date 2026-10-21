@@ -229,11 +229,15 @@ ALTER TABLE entries ADD COLUMN IF NOT EXISTS players JSONB;
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS courts JSONB;
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS queue_pos INTEGER;
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS called_at TIMESTAMPTZ;
+
+-- Start and finish times ("08:00"), the venue's local time.
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS start_time TEXT;
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS end_time TEXT;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 18;
 
 async function migrate(db) {
   try {

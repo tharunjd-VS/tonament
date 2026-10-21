@@ -28,6 +28,19 @@ function dateRange(from, to) {
   return `${full(a)} – ${full(b)}`;
 }
 
+// "08:30" -> "8:30 AM"; times are the venue's local time.
+function clock(hm) {
+  const [h, m] = hm.split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+}
+function hours(start, end) {
+  if (start && end) return `${clock(start)} – ${clock(end)}`;
+  if (start) return clock(start);
+  return end ? `until ${clock(end)}` : null;
+}
+// "Sat 2 Nov 2030 · 8:00 AM – 6:00 PM"
+const when = (t) => (t.startsOn ? [dateRange(t.startsOn, t.endsOn), hours(t.startTime, t.endTime)].filter(Boolean).join(' · ') : null);
+
 const rupees = (n) => `₹${Number(n).toLocaleString('en-IN')}`;
 const prizeTotal = (t) => t.events.reduce((sum, e) => sum + (e.prizes || []).reduce((s, p) => s + (p.cash || 0), 0), 0);
 
@@ -40,7 +53,7 @@ function summary(t) {
   const prize = prizeTotal(t);
   const status = t.entriesOpen ? 'Entries open' : t.status === 'completed' ? 'Results' : t.status === 'setup' ? null : 'Live scores';
   return [
-    t.startsOn ? dateRange(t.startsOn, t.endsOn) : null,
+    when(t),
     [t.venue, t.location.city].filter(Boolean).join(', '),
     events,
     prize ? `🏆 ${rupees(prize)} in prizes` : null,
@@ -63,8 +76,9 @@ function eventData(t, base, image) {
     url: `${base}/t/${t.id}`,
     description: summary(t),
     sport: t.sport.name,
-    startDate: t.startsOn,
-    endDate: t.endsOn || t.startsOn,
+    // Local times without an offset: Google reads them in the venue's time zone.
+    startDate: t.startTime ? `${t.startsOn}T${t.startTime}` : t.startsOn,
+    endDate: t.endTime ? `${t.endsOn || t.startsOn}T${t.endTime}` : t.endsOn || t.startsOn,
     eventStatus: 'https://schema.org/EventScheduled',
     eventAttendanceMode: 'https://schema.org/OfflineEventAttendanceMode',
     location: {
@@ -122,7 +136,7 @@ function tournamentBody(t) {
 
   return `<div class="prerender">
 <header class="t-header"><h1>${esc(t.name)}</h1><p class="muted small">${esc([t.sport.name, `${t.events.length} event${t.events.length === 1 ? '' : 's'}`, t.entriesOpen ? 'Entries open' : null].filter(Boolean).join(' · '))}</p></header>
-${card('When and where', [t.startsOn ? `<p><strong>${esc(dateRange(t.startsOn, t.endsOn))}</strong></p>` : '', t.venue || lines.length ? `<p>${[t.venue ? `<strong>${esc(t.venue)}</strong>` : '', ...lines.map(esc)].filter(Boolean).join('<br>')}</p>` : ''].join(''))}
+${card('When and where', [t.startsOn ? `<p><strong>${esc(when(t))}</strong></p>` : '', t.venue || lines.length ? `<p>${[t.venue ? `<strong>${esc(t.venue)}</strong>` : '', ...lines.map(esc)].filter(Boolean).join('<br>')}</p>` : ''].join(''))}
 ${card('Events', events)}
 ${card('Prizes', prizes)}
 ${card('What\'s included', list(perks.map(esc)) + (t.notes ? `<h3>Other details</h3>${para(t.notes)}` : ''))}
@@ -186,4 +200,4 @@ ${pages.map(url).join('\n')}
 `;
 }
 
-module.exports = { dateRange, summary, eventData, tournamentHtml, sitemap, esc };
+module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, sitemap, esc };

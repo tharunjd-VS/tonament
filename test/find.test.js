@@ -46,6 +46,18 @@ test('venue details: validation and normalising', async () => {
   await bad({ endsOn: '2030-07-01' }, /Add a start date first/);
   await bad({ address: 'x'.repeat(121) }, /Address must be at most 120/);
 
+  // Start and finish times (the venue's local time).
+  const timed = await svc.getTournament(await make({ name: 'Timed Cup', startsOn: '2030-07-05', startTime: '08:30', endTime: '18:00' }));
+  assert.deepEqual([timed.startTime, timed.endTime], ['08:30', '18:00']);
+  await bad({ startsOn: '2030-07-05', startTime: '8.30' }, /Start time: enter a time like 08:30/);
+  await bad({ startsOn: '2030-07-05', endTime: '25:00' }, /Finish time/);
+  await bad({ startTime: '08:00' }, /Add a date for the start time/);
+  await bad({ startsOn: '2030-07-05', startTime: '18:00', endTime: '09:00' }, /finish time must be after the start/);
+  const card = (await svc.listTournaments({ q: 'Timed Cup', when: 'any' }))[0];
+  assert.equal(card.startTime, '08:30');
+  const cleared = await svc.updateSettings(timed.id, ORG, { startTime: '', endTime: '' });
+  assert.deepEqual([cleared.startTime, cleared.endTime], [null, null]);
+
   // "Other" countries take any state; cities are title-cased.
   const other = await svc.getTournament(await make({ name: 'Doha Open', country: 'qatar', region: 'Al Rayyan', city: 'new  doha city' }));
   assert.deepEqual([other.location.country, other.location.region, other.location.city], ['Qatar', 'Al Rayyan', 'New Doha City']);

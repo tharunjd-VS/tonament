@@ -117,10 +117,16 @@ function isoDate(value, label) {
   if (!ok) fail(400, `${label}: enter a valid date`);
   return value;
 }
+// "08:00": a time of day at the venue (not converted between time zones).
+function clockTime(value, label) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) fail(400, `${label}: enter a time like 08:30`);
+  return value;
+}
 const addDays = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 
 // Venue, location and dates (all optional). Fields not sent keep their value.
-const DETAIL_KEYS = ['venue', 'address', 'city', 'region', 'postcode', 'country', 'startsOn', 'endsOn'];
+const DETAIL_KEYS = ['venue', 'address', 'city', 'region', 'postcode', 'country', 'startsOn', 'endsOn', 'startTime', 'endTime'];
 function detailsOf(input, prev = {}) {
   const pick = (key, col, label, max) => (input[key] === undefined ? prev[col] ?? null : text(input[key], label, { max, optional: true }));
   const d = {
@@ -132,6 +138,8 @@ function detailsOf(input, prev = {}) {
     country: pick('country', 'country', 'Country', 60),
     starts_on: input.startsOn === undefined ? prev.starts_on ?? null : isoDate(input.startsOn, 'Start date'),
     ends_on: input.endsOn === undefined ? prev.ends_on ?? null : isoDate(input.endsOn, 'End date'),
+    start_time: input.startTime === undefined ? prev.start_time ?? null : clockTime(input.startTime, 'Start time'),
+    end_time: input.endTime === undefined ? prev.end_time ?? null : clockTime(input.endTime, 'Finish time'),
   };
   if (d.city) d.city = titleCase(d.city);
   if (d.country) {
@@ -147,9 +155,12 @@ function detailsOf(input, prev = {}) {
   if (d.ends_on && !d.starts_on) fail(400, 'Add a start date first');
   if (d.ends_on && d.ends_on < d.starts_on) fail(400, 'The end date must be on or after the start date');
   if (d.ends_on === d.starts_on) d.ends_on = null; // a one-day event
+  if ((d.start_time || d.end_time) && !d.starts_on) fail(400, 'Add a date for the start time');
+  // Over several days the times are the daily hours: either way, finish after the start.
+  if (d.start_time && d.end_time && d.end_time <= d.start_time) fail(400, 'The finish time must be after the start time');
   return d;
 }
-const DETAIL_COLUMNS = ['venue', 'address', 'city', 'region', 'postcode', 'country', 'starts_on', 'ends_on'];
+const DETAIL_COLUMNS = ['venue', 'address', 'city', 'region', 'postcode', 'country', 'starts_on', 'ends_on', 'start_time', 'end_time'];
 const saveDetails = (q, t, d) =>
   q(`UPDATE tournaments SET ${DETAIL_COLUMNS.map((c, i) => `${c} = $${i + 1}`).join(', ')} WHERE id = $${DETAIL_COLUMNS.length + 1}`, [
     ...DETAIL_COLUMNS.map((c) => d[c]), t.id,
@@ -166,7 +177,7 @@ const ENTRIES_OPEN_SQL = `COALESCE((t.config->>'selfEntry')::boolean, true)
 
 // Tournament list cards (home page search and "My tournaments").
 const CARD_COLUMNS = `t.id, t.name, t.venue, t.sport, t.format, t.status, t.visibility, t.created_at AS "createdAt",
-  t.city, t.region, t.country, t.starts_on AS "startsOn", t.ends_on AS "endsOn",
+  t.city, t.region, t.country, t.starts_on AS "startsOn", t.ends_on AS "endsOn", t.start_time AS "startTime",
   (${ENTRIES_OPEN_SQL}) AS "entriesOpen",
   (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id AND e.paired_into IS NULL) AS entries,
   (SELECT m.id FROM media m WHERE m.tournament_id = t.id AND m.kind = 'cover' LIMIT 1) AS "coverId",
@@ -690,6 +701,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       location: { address: t.address, city: t.city, region: t.region, postcode: t.postcode, country: t.country },
       startsOn: t.starts_on,
       endsOn: t.ends_on,
+      startTime: t.start_time,
+      endTime: t.end_time,
       status: t.status,
       createdAt: t.created_at,
       sport: { id: t.sportDef.id, name: t.sportDef.name },
@@ -954,7 +967,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (when === 'past') add(`(t.status = 'completed' OR ${last} < ?)`, today);
     const order = when === 'past'
       ? `${last} DESC NULLS LAST, t.created_at DESC`
-      : 't.starts_on ASC NULLS LAST, t.created_at DESC';
+      : 't.starts_on ASC NULLS LAST, t.start_time ASC NULLS LAST, t.created_at DESC';
     const rows = await db.query(
       `SELECT ${CARD_COLUMNS} FROM tournaments t WHERE ${where.join(' AND ')} ORDER BY ${order}, t.id LIMIT 50`,
       params,
