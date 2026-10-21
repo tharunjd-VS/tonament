@@ -430,7 +430,9 @@
       }
       S.route = parts[2] === 'm'
         ? { name: 'match', id, mid: Number(parts[3]) }
-        : { name: 'tournament', id, tab: parts[2] || null, eventId: Number(params.get('e')) || null };
+        : parts[2] === 'display'
+          ? { name: 'display', id }
+          : { name: 'tournament', id, tab: parts[2] || null, eventId: Number(params.get('e')) || null };
       if (S.route.tab === 'team') S.members = null; // reload: invitees may have signed up since
       if (!S.t || S.t.id !== id || key) {
         S.t = null;
@@ -559,6 +561,7 @@
 
   // ---------- render
   // soft renders (from live updates) wait while the user is typing in a field
+  let wasDisplaying = false; // see the venue display below
   function render(soft = false) {
     if (soft && isEditing()) {
       S.pendingRender = true;
@@ -584,9 +587,16 @@
     else if (S.route.name === 'admin') view = viewAdmin();
     else if (S.route.name === 'tournament') view = S.t ? viewTournament() : loading();
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
+    else if (S.route.name === 'display') view = S.t ? viewDisplay() : loading();
     else view = viewHome();
+    // The venue display is always dark (easier to read across a hall); leaving it restores the theme.
+    const displaying = S.route.name === 'display' && !S.error;
+    document.body.classList.toggle('display-mode', displaying);
+    if (displaying) document.documentElement.setAttribute('data-theme', 'dark');
+    else if (wasDisplaying) applyTheme(themePref());
+    wasDisplaying = displaying;
     app.replaceChildren(...[view].flat(Infinity).filter(Boolean));
-    applyBranding(['tournament', 'match'].includes(S.route.name) && S.t && !S.error ? S.t.branding : null);
+    applyBranding(['tournament', 'match', 'display'].includes(S.route.name) && S.t && !S.error ? S.t.branding : null);
     renderNav();
   }
 
@@ -2176,6 +2186,11 @@
   const stageOrder = (m) => (m.stage === 'knockout' ? 1 : 0);
   const byOrder = (x, y) => stageOrder(x) - stageOrder(y) || x.round - y.round || (x.group ?? 0) - (y.group ?? 0) || x.slot - y.slot;
 
+  // Organisers: open the big-screen display (in a new tab, for the venue TV).
+  const displayLink = (t) => h('p', { class: 'display-link' },
+    h('a', { class: 'btn btn-small', href: `/t/${t.id}/display`, target: '_blank', rel: 'noopener' }, '📺 Open venue display'),
+    h('span', { class: 'muted small' }, ' Show courts, scores and what\'s next on a TV or projector.'));
+
   function panelLive(t) {
     const ms = t.matches.filter((m) => m.status !== 'bye');
     const live = ms.filter((m) => m.status === 'live').sort(byOrder);
@@ -2185,6 +2200,7 @@
     const results = ms.filter((m) => m.status === 'done')
       .sort((x, y) => (y.updatedAt || '').localeCompare(x.updatedAt || '') || y.id - x.id).slice(0, 12);
     return [
+      t.can.manage ? displayLink(t) : null,
       championBanner(t),
       stageBanner(t),
       redrawCard(t),
@@ -2202,6 +2218,7 @@
       return empty('The order of play appears here once an event starts.');
     }
     return [
+      t.can.manage ? displayLink(t) : null,
       h('div', { class: 'find-bar' },
         h('input', {
           type: 'search', class: 'find-q', value: S.courtFind || '', placeholder: 'Find your name', 'aria-label': 'Find your matches',
@@ -2277,6 +2294,163 @@
     const byCourt = new Map();
     for (const w of list) byCourt.set(w.court || '', [...(byCourt.get(w.court || '') || []), w.name]);
     return [...byCourt].map(([court, names]) => `${names.join(', ')}${court ? ` (${court})` : ''}`).join('; ');
+  }
+
+  // ----- display mode (/t/<id>/display): for a TV or projector at the venue.
+  // Read-only and updating itself: every court with its live score, the order
+  // of play, and a panel that rotates through results, standings, the current
+  // knockout round, prizes and how to follow on a phone.
+  const DISPLAY_ROTATE_MS = 15000;
+  let displayTimer = null;
+  let wakeLock = null;
+  function displayTick() {
+    if (S.route.name !== 'display') {
+      clearInterval(displayTimer);
+      displayTimer = null;
+      if (wakeLock) wakeLock.release().catch(() => {});
+      wakeLock = null;
+      return;
+    }
+    S.displayPanel = (S.displayPanel || 0) + 1;
+    render(true);
+  }
+  // Keep the screen awake while the display is showing.
+  async function keepAwake() {
+    if (wakeLock || !navigator.wakeLock || document.hidden) return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch { /* not allowed here; the screen may sleep */ }
+  }
+  document.addEventListener('visibilitychange', () => { if (S.route.name === 'display') keepAwake(); });
+  // Hide the mouse pointer when it hasn't moved for a while.
+  let idleTimer = null;
+  document.addEventListener('mousemove', () => {
+    document.body.classList.remove('display-idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => document.body.classList.add('display-idle'), 3000);
+  });
+
+  function viewDisplay() {
+    const t = S.t;
+    displayTimer ??= setInterval(displayTick, DISPLAY_ROTATE_MS);
+    keepAwake();
+    document.title = `${t.name} · Display · Tonament`;
+    const all = t.events.flatMap((ev) => ev.matches.map((m) => ({ m, ev })));
+    const named = multiEvent(t);
+    const evLabel = (ev) => (named ? ev.name : null);
+    const plan = t.courts ? TonamentSchedule.orderOfPlay({ events: t.events, courts: t.courts.names, minutes: t.courts.minutes, now: Date.now() }) : null;
+    const started = t.events.some((e) => e.status === 'league' || e.status === 'knockout');
+    const b = t.branding;
+
+    const side = (m, s) => {
+      const sc = m.score;
+      const cur = sc.games[sc.games.length - 1] || { a: 0, b: 0 };
+      const live = m.status === 'live' && m.rallies > 0;
+      const flag = live ? (sc.matchPoint[s] ? 'Match point' : sc.gamePoint[s] ? `${sc.unit || 'Game'} point` : null) : null;
+      return h('div', { class: `dc-side${m.winner && m[s] && m.winner === m[s].id ? ' won' : ''}` },
+        h('span', { class: 'dc-serve' }, live && sc.server === s ? h('span', { class: 'serve' }) : null),
+        h('span', { class: 'dc-name' }, nameOf(m[s]), flag ? h('span', { class: 'flag' }, flag) : null),
+        live ? h('span', { class: 'dc-games' }, sc.gamesWon[s]) : null,
+        live && sc.setGames ? h('span', { class: 'dc-games' }, sc.setGames[s]) : null,
+        h('span', { class: 'dc-points' }, live ? (sc.points ? sc.points[s] : cur[s]) : ''));
+    };
+    const courtCard = (name, m, ev, next) => h('div', { class: `dc-court${m ? (m.rallies ? ' live' : ' called') : ' free'}` },
+      h('div', { class: 'dc-court-head' },
+        h('span', { class: 'dc-court-name' }, name),
+        m ? h('span', { class: 'dc-court-meta' }, [evLabel(ev), m.rallies ? `${m.score.unit || 'Game'} ${m.score.games.length}` : 'Starting'].filter(Boolean).join(' · ')) : h('span', { class: 'dc-court-meta' }, 'Free')),
+      m ? [side(m, 'a'), side(m, 'b')]
+        : h('div', { class: 'dc-free' }, next ? ['Next: ', h('strong', {}, vsName(next.match))] : 'Nothing waiting'));
+    // Courts: the tournament's own, or every match on court now.
+    const courts = plan
+      ? plan.courts.map((c) => courtCard(c.name, c.match, c.event, c.next))
+      : all.filter(({ m }) => m.status === 'live').map(({ m, ev }, i) => courtCard(m.court ? (/^\d/.test(m.court) ? `Court ${m.court}` : m.court) : `Match ${i + 1}`, m, ev));
+
+    // Up next: the order of play, or the matches ready to play.
+    const upNext = plan
+      ? plan.queue.slice(0, 8).map((x) => ({
+        m: x.match, ev: x.event,
+        when: !x.waitingFor.length && x.startsAt <= Date.now() + 60000 ? 'Next' : `~${clock(x.startsAt)}`,
+        waiting: x.waitingFor.length ? `Waiting for ${waitingText(x.waitingFor)}` : null,
+      }))
+      : all.filter(({ m, ev }) => m.status === 'scheduled' && m.a && m.b && (m.stage === 'league' ? ev.status === 'league' : ev.status === 'knockout'))
+        .sort((x, y) => x.m.round - y.m.round || x.m.id - y.m.id).slice(0, 8).map((x) => ({ ...x, when: x.m.roundName }));
+
+    // The rotating panel.
+    const panels = [];
+    const results = all.filter(({ m }) => m.status === 'done' && !m.walkover && m.a && m.b)
+      .sort((x, y) => String(y.m.updatedAt || '').localeCompare(String(x.m.updatedAt || ''))).slice(0, 6);
+    if (results.length) {
+      panels.push(['Latest results', h('ul', { class: 'dc-list' }, results.map(({ m, ev }) => {
+        const w = m.winner === m.a.id ? m.a : m.b;
+        const l = w === m.a ? m.b : m.a;
+        // The winner's score first: "21-15, 21-18".
+        const score = w === m.a ? m.summary : m.summary.replace(/(\d+)-(\d+)/g, '$2-$1');
+        return h('li', {}, h('span', {}, h('strong', {}, w.name), ' beat ', l.name, evLabel(ev) ? h('small', {}, ev.name) : null), h('span', { class: 'dc-score' }, score));
+      }))]);
+    }
+    for (const ev of t.events) {
+      if (ev.status === 'league' || (ev.status !== 'setup' && ev.groups.length && ev.status !== 'knockout')) {
+        for (const g of ev.groups) {
+          panels.push([`${named ? `${ev.name} · ` : ''}${g.name}`, h('table', { class: 'dc-table' },
+            h('thead', {}, h('tr', {}, ['#', 'Name', 'P', 'W', 'L'].map((c, i) => h('th', { class: i === 1 ? '' : 'num' }, c)))),
+            h('tbody', {}, g.standings.map((r) => h('tr', {}, h('td', { class: 'num' }, r.rank), h('td', {}, r.name), h('td', { class: 'num' }, r.played), h('td', { class: 'num' }, r.won), h('td', { class: 'num' }, r.lost)))))]);
+        }
+      }
+      const ko = ev.matches.filter((m) => m.stage === 'knockout' && m.status !== 'bye');
+      if (ev.status === 'knockout' && ko.length) {
+        // The earliest round still being played (or the last one, once all are done).
+        const open = ko.filter((m) => m.status !== 'done');
+        const round = open.length ? Math.min(...open.map((m) => m.round)) : Math.max(...ko.map((m) => m.round));
+        const ms = ko.filter((m) => m.round === round);
+        panels.push([`${named ? `${ev.name} · ` : ''}${ms[0].roundName}`, h('ul', { class: 'dc-list' }, ms.map((m) => h('li', {},
+          h('span', {}, h('strong', { class: m.winner && m.a && m.winner === m.a.id ? 'won' : '' }, nameOf(m.a)), ' v ', h('strong', { class: m.winner && m.b && m.winner === m.b.id ? 'won' : '' }, nameOf(m.b))),
+          h('span', { class: 'dc-score' }, m.status === 'done' ? m.summary : m.status === 'live' ? 'Live' : ''))))]);
+      }
+      if (ev.status === 'completed' && ev.champion) panels.push([`${named ? `${ev.name} · ` : ''}Champion`, h('p', { class: 'dc-champion' }, '🏆 ', ev.champion.name)]);
+    }
+    const prized = t.events.filter((ev) => (ev.prizes || []).length);
+    if (prized.length) {
+      panels.push(['Prizes', h('ul', { class: 'dc-list' }, prized.flatMap((ev) => ev.prizes.slice(0, 3).map((p) => h('li', {},
+        h('span', {}, CAT.placeLabel(p.place), named ? h('small', {}, ev.name) : null),
+        h('span', { class: 'dc-score' }, [p.cash ? rupees(p.cash) : null, p.reward].filter(Boolean).join(' + '))))))]);
+    }
+    if (t.visibility !== 'private') {
+      panels.push(['Follow on your phone', h('div', { class: 'dc-follow' },
+        h('p', {}, 'Live scores, your matches and the order of play:'),
+        h('p', { class: 'dc-url' }, `${location.host}/t/${t.id}`))]);
+    }
+    const panel = panels.length ? panels[(S.displayPanel || 0) % panels.length] : null;
+
+    const fullscreen = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {});
+    return h('div', { class: 'display' },
+      h('header', { class: 'dc-head' },
+        b && b.logo ? h('img', { class: 'dc-logo', src: b.logo, alt: '' }) : null,
+        h('div', { class: 'dc-title' }, h('h1', {}, t.name),
+          h('p', {}, [b && b.orgName, fmtSchedule(t), placeLine(t.venue, t.location.city)].filter(Boolean).join(' · '))),
+        h('div', { class: 'dc-clock' },
+          h('strong', {}, new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })),
+          h('span', { class: `conn ${S.connected ? 'on' : ''}` }, S.connected ? 'Live' : 'Reconnecting…')),
+        h('button', { class: 'btn btn-small btn-ghost dc-fs', onclick: fullscreen, title: 'Full screen (F11)' }, '⛶')),
+      !started
+        ? h('div', { class: 'dc-wait' }, h('h2', {}, 'Starting soon'), h('p', {}, fmtSchedule(t) || 'Play starts once the draw is made.'))
+        : h('div', { class: 'dc-body' },
+          h('section', { class: 'dc-courts' },
+            h('h2', {}, plan ? 'Courts' : 'On court now'),
+            courts.length ? h('div', { class: 'dc-court-grid' }, courts) : h('p', { class: 'dc-empty' }, 'No matches on court right now.')),
+          h('section', { class: 'dc-next' },
+            h('h2', {}, 'Up next'),
+            upNext.length
+              ? h('ol', { class: 'dc-list dc-queue' }, upNext.map(({ m, ev, when, waiting }) => h('li', {},
+                h('span', { class: 'dc-match' }, h('strong', {}, vsName(m)), evLabel(ev) || waiting ? h('small', {}, [evLabel(ev), waiting].filter(Boolean).join(' · ')) : null),
+                h('span', { class: 'dc-when' }, when))))
+              : h('p', { class: 'dc-empty' }, 'Nothing waiting.')),
+          panel ? h('section', { class: 'dc-panel' }, h('h2', {}, panel[0]), panel[1],
+            panels.length > 1 ? h('div', { class: 'dc-dots' }, panels.map((_, i) => h('span', { class: i === (S.displayPanel || 0) % panels.length ? 'on' : '' }))) : null) : null),
+      t.sponsors && t.sponsors.length
+        ? h('footer', { class: 'dc-sponsors' }, t.sponsors.map((sp) => h('img', { src: sp.url, alt: sp.caption || 'Sponsor' })))
+        : null,
+      h('p', { class: 'dc-powered' }, 'Powered by Tonament'));
   }
 
   // Redo the draw (e.g. more players arrived) until the first point is played.

@@ -567,6 +567,70 @@ fieldset.details-set { display: grid; gap: 12px; }
 .faq p { margin: 0 0 14px; color: var(--muted); }
 .guide-cta { margin-top: 32px; }
 
+/* Venue display (/t/<id>/display): a TV or projector, read from across the hall */
+.display-link { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; }
+body.display-mode { background: var(--scoreboard); }
+body.display-mode .topbar, body.display-mode .footer { display: none; }
+body.display-mode #app { max-width: none; padding: 0; }
+body.display-mode.display-idle, body.display-mode.display-idle * { cursor: none; }
+.display { height: 100vh; overflow: hidden; display: flex; flex-direction: column; gap: 1.2vw; padding: 1.6vw 2vw; color: var(--text); font-size: clamp(16px, 1.25vw, 30px); }
+.display h2 { font-size: 1.15em; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.6em; }
+.dc-head { display: flex; align-items: center; gap: 1.2vw; border-bottom: 2px solid var(--accent); padding-bottom: 0.8vw; }
+.dc-logo { height: 3.2em; width: auto; border-radius: 8px; }
+.dc-title { flex: 1; min-width: 0; }
+.dc-title h1 { font-size: 2.2em; margin: 0; line-height: 1.1; }
+.dc-title p { margin: 0.2em 0 0; color: var(--muted); }
+.dc-clock { text-align: right; display: grid; gap: 0.2em; }
+.dc-clock strong { font-size: 2em; font-variant-numeric: tabular-nums; }
+.dc-fs { font-size: 1em; }
+body.display-mode.display-idle .dc-fs { visibility: hidden; }
+.dc-body { flex: 1; min-height: 0; display: grid; gap: 1.6vw; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1.1fr) minmax(0, 1fr); grid-template-areas: "courts next" "courts panel"; }
+/* Everything fits one screen: lists that run long are cut at the bottom, never scrolled. */
+.dc-courts, .dc-next, .dc-panel { min-height: 0; overflow: hidden; }
+.dc-courts { grid-area: courts; }
+.dc-next { grid-area: next; }
+.dc-match { min-width: 0; }
+.dc-match strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-panel { grid-area: panel; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 1em 1.2em; position: relative; }
+.dc-court-grid { display: grid; gap: 1vw; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22em), 1fr)); }
+.dc-court { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 0.8em 1em; display: grid; gap: 0.35em; }
+.dc-court.live { border-color: var(--live); box-shadow: inset 6px 0 0 var(--live); }
+.dc-court.free { border-style: dashed; opacity: 0.85; }
+.dc-court-head { display: flex; justify-content: space-between; gap: 0.6em; align-items: baseline; }
+.dc-court-name { font-weight: 700; font-size: 1.2em; }
+.dc-court-meta { color: var(--muted); font-size: 0.9em; }
+.dc-side { display: grid; grid-template-columns: 1em minmax(0, 1fr) auto auto 2.6em; align-items: center; gap: 0.5em; font-size: 1.25em; }
+.dc-side.won .dc-name { color: var(--accent-text); }
+.dc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.dc-name .flag { margin-left: 0.5em; font-size: 0.6em; vertical-align: middle; }
+.dc-games { background: var(--surface-2); border-radius: 6px; padding: 0 0.4em; font-variant-numeric: tabular-nums; color: var(--muted); }
+.dc-points { font-size: 1.5em; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+.dc-free { color: var(--muted); }
+.dc-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5em; }
+.dc-list li { display: flex; justify-content: space-between; gap: 1em; align-items: baseline; border-bottom: 1px solid var(--border); padding-bottom: 0.4em; }
+.dc-list small { display: block; color: var(--muted); font-size: 0.8em; }
+.dc-list .won { color: var(--accent-text); }
+.dc-score, .dc-when { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+.dc-queue li:first-child .dc-when { color: var(--accent-text); font-weight: 700; }
+.dc-table { width: 100%; border-collapse: collapse; font-size: 1em; }
+.dc-table th { font-size: 0.75em; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.dc-table th, .dc-table td { padding: 0.3em 0.4em; border-bottom: 1px solid var(--border); text-align: left; }
+.dc-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.dc-champion { font-size: 2em; font-weight: 700; margin: 0.4em 0; }
+.dc-follow .dc-url { font-size: 1.6em; font-weight: 700; color: var(--accent-text); word-break: break-all; }
+.dc-dots { position: absolute; right: 1em; top: 1.1em; display: flex; gap: 0.35em; }
+.dc-dots span { width: 0.5em; height: 0.5em; border-radius: 50%; background: var(--border); }
+.dc-dots span.on { background: var(--accent); }
+.dc-wait { flex: 1; display: grid; place-content: center; text-align: center; }
+.dc-wait h2 { font-size: 3em; color: var(--text); }
+.dc-empty { color: var(--muted); }
+.dc-sponsors { display: flex; gap: 2vw; justify-content: center; align-items: center; flex-wrap: wrap; padding-top: 0.6vw; border-top: 1px solid var(--border); }
+.dc-sponsors img { height: 3em; width: auto; max-width: 10em; object-fit: contain; }
+.dc-powered { margin: 0; text-align: right; color: var(--muted); font-size: 0.8em; }
+@media (max-aspect-ratio: 1/1) {
+  .dc-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "courts" "next" "panel"; }
+}
+
 /* Entry fees paid to the organiser */
 .qr-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
 .qr-preview { width: 96px; height: 96px; object-fit: contain; border-radius: 10px; background: var(--qr-bg); padding: 6px; border: 1px solid var(--border); }
