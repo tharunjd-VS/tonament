@@ -159,6 +159,7 @@ test('sitemap, robots.txt, app routes and real 404s', async () => {
   assert.ok(!xml.includes(link));
   assert.ok(xml.includes(`<loc>${base}/pricing</loc>`));
   assert.ok(xml.includes(`<loc>${base}/how-it-works</loc>`) && xml.includes(`<loc>${base}/faq</loc>`));
+  assert.ok(xml.includes(`<loc>${base}/features</loc>`));
   assert.match(xml, /<lastmod>\d{4}-\d{2}-\d{2}<\/lastmod>/);
   assert.ok((await get('/api/index?__path=sitemap')).html.includes(`/t/${pub}`));
 
@@ -178,6 +179,17 @@ test('sitemap, robots.txt, app routes and real 404s', async () => {
   assert.equal(nope.res.status, 404);
   assert.match(nope.html, /Page not found/);
   assert.equal((await get('/pricing')).res.status, 200);
+});
+
+test('Features page', async () => {
+  const page = await get('/features');
+  assert.equal(page.res.status, 200);
+  assert.match(page.html, /<link rel="canonical" href="https:\/\/tonament\.com\/features">/);
+  // Sign-up buttons lead on to creating a tournament.
+  assert.ok(page.html.includes('href="/signup?next=%2Fnew"'));
+  for (const src of new Set([...page.html.matchAll(/src="(\/guide\/[^"]+)"/g)].map((m) => m[1]))) {
+    assert.equal((await fetch(base + src)).status, 200, src);
+  }
 });
 
 test('How it works and FAQ pages', async () => {

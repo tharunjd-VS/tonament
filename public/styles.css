@@ -764,3 +764,32 @@ body.branded .brand .brand-mark { display: block; }
 .sponsor-edit .icon-btn { position: absolute; top: -10px; right: -12px; width: 26px; height: 26px; background: var(--surface); border: 1px solid var(--border); }
 label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .uploading { margin: 0; }
+
+/* ---------- features page (/features) */
+.features-page .hero { margin-bottom: 18px; }
+.features-page .hero .actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
+.hero-note { margin: 14px 0 0; font-size: 0.9rem; }
+.sport-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 40px; }
+.sport-strip span { border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; font-size: 0.9rem; background: var(--surface); }
+.spotlights { gap: 56px; margin-bottom: 56px; }
+.spotlights .step-text h2 { margin: 4px 0 10px; font-size: clamp(1.5rem, 4vw, 2rem); }
+.spotlights .eyebrow { color: var(--accent-text); margin: 0; }
+.step.step-wide, .step.step-wide:nth-child(even) { grid-template-columns: minmax(0, 1fr); }
+.step-wide .step-text { order: 0; max-width: 40em; }
+.tv-shot { margin: 0; border: 10px solid var(--scoreboard); border-radius: 16px; overflow: hidden; box-shadow: 0 16px 40px rgba(11, 18, 32, 0.35); }
+.tv-shot img { display: block; width: 100%; height: auto; }
+.features-title { font-size: clamp(1.5rem, 4vw, 2rem); margin: 0 0 16px; }
+.feature-groups { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); margin-bottom: 40px; }
+.feature-groups section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+.feature-groups h3 { margin: 0 0 10px; font-size: 1.1rem; }
+.feature-groups ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.feature-groups li { position: relative; padding-left: 18px; color: var(--muted); }
+.feature-groups li::before { content: ''; position: absolute; left: 0; top: 0.55em; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.feature-groups li strong { color: var(--text); font-weight: 600; }
+.price-strip h2 { margin-top: 0; }
+.price-tiers { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin: 6px 0 14px; }
+.price-tiers > div { display: grid; border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+.price-tiers strong { font-size: 1.4rem; }
+.price-tiers > div > span { color: var(--muted); font-size: 0.9rem; }
+.hero-end { margin-top: 32px; }
+.hero-end h2 { color: inherit; font-size: clamp(1.6rem, 5vw, 2.4rem); margin: 0 0 10px; }

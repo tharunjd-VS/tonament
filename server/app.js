@@ -317,7 +317,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
 
   async function sitemapXml(req, res) {
     const base = baseUrl(req) || SITE;
-    const fixed = ['/', '/how-it-works', '/faq', '/pricing', '/contact', '/terms', '/privacy', '/refunds', '/delivery'].map((p) => ({ path: p }));
+    const fixed = ['/', '/features', '/how-it-works', '/faq', '/pricing', '/contact', '/terms', '/privacy', '/refunds', '/delivery'].map((p) => ({ path: p }));
     const xml = pages.sitemap(base, [...fixed, ...await svc.sitemapTournaments()]);
     res.writeHead(200, {
       'Content-Type': 'application/xml; charset=utf-8',

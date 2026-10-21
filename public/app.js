@@ -664,7 +664,7 @@
             ? h('a', { class: 'btn btn-primary btn-lg', href: '/new' }, 'Create tournament')
             : h('a', { class: 'btn btn-primary btn-lg', href: '/signup' }, 'Get started — it\'s free'),
           h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/how-it-works' }, 'How it works'))),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/features' }, 'All features'))),
       S.me && S.myEntries && S.myEntries.length ? h('section', { class: 'section' },
         h('h2', {}, 'My entries'),
         h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
