@@ -5,6 +5,10 @@
   "cleanUrls": true,
   "rewrites": [
     {
+      "source": "/t/:path*",
+      "destination": "/api/index?__path=share/:path*"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api/index?__path=:path*"
     }

@@ -119,6 +119,18 @@
   }
 
   const tPath = (t) => `/tournaments/${encodeURIComponent(t.id)}`;
+  // The link to share: /t/<id> shows the tournament's name, details and
+  // image in WhatsApp and other link previews (then opens #/t/<id>).
+  const shareUrl = (t) => `${location.origin}/t/${t.id}`;
+  const whatsappUrl = (t) => `https://wa.me/?text=${encodeURIComponent(`${t.name} — ${shareUrl(t)}`)}`;
+  // The phone's share sheet where there is one; otherwise copy the link.
+  function shareTournament(t) {
+    if (navigator.share) {
+      navigator.share({ title: t.name, url: shareUrl(t) }).catch(() => { /* closed */ });
+    } else {
+      copy(shareUrl(t), 'Link copied');
+    }
+  }
   const pad2 = (n) => String(n).padStart(2, '0');
   // ISO time -> value for <input type="datetime-local"> in the viewer's timezone
   const toLocalInput = (iso) => {
@@ -206,6 +218,7 @@
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => {
       throw new Error('That image couldn\'t be read — try a JPEG or PNG');
     });
+    if (kind === 'preview') return cropped(bitmap, 1200, 630);
     const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(bitmap.width * scale);
@@ -218,6 +231,23 @@
       reader.onerror = () => reject(new Error('That image couldn\'t be read'));
       reader.readAsDataURL(blob);
     });
+  }
+
+  // Link-preview image: the picture scaled to fill w×h, centred, as a JPEG.
+  function cropped(bitmap, w, h) {
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const scale = Math.max(w / bitmap.width, h / bitmap.height);
+    const sw = w / scale;
+    const sh = h / scale;
+    canvas.getContext('2d').drawImage(bitmap, (bitmap.width - sw) / 2, (bitmap.height - sh) / 2, sw, sh, 0, 0, w, h);
+    return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.8)).then((blob) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('That image couldn\'t be read'));
+      reader.readAsDataURL(blob);
+    }));
   }
 
   // Full-screen photo viewer: arrows / swipe to move, Esc or tap outside to close.
@@ -1182,7 +1212,8 @@
       tt.cover ? h('div', { class: 't-hero' }, h('img', { src: tt.cover, alt: '' })) : null,
       h('header', { class: 't-header' },
         h('div', { class: 't-title' }, h('h1', {}, tt.name), pill(tt.status, STATUS[tt.status]), tt.can.score ? visibilityPill(tt.visibility) : null,
-          tt.official ? pill('org', 'Organised by Tonament') : null),
+          tt.official ? pill('org', 'Organised by Tonament') : null,
+          tt.visibility !== 'private' ? h('button', { class: 'btn btn-small btn-ghost t-share', onclick: () => shareTournament(tt) }, 'Share') : null),
         h('p', { class: 'muted small' },
           [fmtDates(tt.startsOn, tt.endsOn), placeLine(tt.venue, tt.location.city), tt.sport.name, multiEvent(tt) ? `${tt.events.length} events` : t.formatName, statusLine]
             .filter(Boolean).join(' · '), '  ', connDot())),
@@ -2644,7 +2675,7 @@
         !S.me ? h('span', { class: 'muted' }, ' (via a share link — ', h('a', { href: `#/signin?next=${encodeURIComponent(`/t/${t.id}`)}` }, 'sign in'), ' to keep it in your account)') : null),
       h('button', {
         class: 'btn btn-small btn-ghost',
-        onclick: () => copy(`${location.origin}/#/t/${t.id}`, t.visibility === 'private' ? 'Link copied — only your team can open it until you publish' : 'Public link copied'),
+        onclick: () => copy(shareUrl(t), t.visibility === 'private' ? 'Link copied — only your team can open it until you publish' : 'Public link copied'),
       }, 'Copy public link'));
   }
 
@@ -2689,6 +2720,10 @@
           try {
             const data = await prepareImage(file, kind);
             S.t = await api('POST', `${tPath(t)}/media`, { kind, data, caption }, t.id);
+            // A small 1200×630 copy of the cover for link previews (best effort).
+            if (kind === 'cover') {
+              await prepareImage(file, 'preview').then((preview) => api('POST', `${tPath(t)}/media`, { kind: 'preview', data: preview }, t.id)).catch(() => {});
+            }
             toast(kind === 'photo' ? 'Photo added ✓' : kind === 'cover' ? 'Cover updated ✓' : kind === 'logo' ? 'Logo updated ✓' : 'Sponsor added ✓');
           } catch (e) {
             if (e.code === 'upgrade') S.upgradeFor = t.id;
@@ -2907,7 +2942,10 @@
         h('p', { class: 'muted small' }, 'For people without an account — e.g. a volunteer scoring on a borrowed phone. Anyone with a link gets its access, so share carefully.'),
         linkRow('Scorer link', 'Can score matches only.', `${location.origin}/#/t/${t.id}?key=${encodeURIComponent(t.links.scorer)}`, 'Scorer link copied'),
         linkRow('Organiser link', 'Can manage the whole tournament.', `${location.origin}/#/t/${t.id}?key=${encodeURIComponent(t.links.organiser)}`, 'Organiser link copied — keep it private'),
-        linkRow('Public link', 'Anyone can follow live scores.', `${location.origin}/#/t/${t.id}`, 'Public link copied')) : null,
+        linkRow('Public link', 'Anyone can follow live scores. Shows the name, dates and cover image when shared.', shareUrl(t), 'Public link copied'),
+        t.visibility !== 'private'
+          ? h('div', { class: 'actions' }, h('a', { class: 'btn btn-small', href: whatsappUrl(t), target: '_blank', rel: 'noopener' }, 'Share on WhatsApp'))
+          : null) : null,
       planCard(t),
       dangerZone(t),
     ];

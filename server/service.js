@@ -41,7 +41,9 @@ function prizesOf(list) {
 }
 // Tournament page images. Free tournaments get a cover and a few photos;
 // paid ones also get their logo, colours and sponsors, and more photos.
-const MEDIA_KINDS = ['logo', 'cover', 'photo', 'sponsor'];
+// 'preview' is the cover cropped to 1200×630 for link previews (made by the browser).
+const MEDIA_KINDS = ['logo', 'cover', 'photo', 'sponsor', 'preview'];
+const MAX_PREVIEW_BYTES = 600 * 1024; // WhatsApp skips bigger preview images
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const PHOTO_LIMITS = { free: 3, paid: 30 };
 const SPONSOR_LIMIT = 8;
@@ -800,6 +802,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (bytes.length > MAX_IMAGE_BYTES) fail(413, 'That image is too large — try a smaller one');
     const mime = imageType(bytes);
     if (!mime) fail(400, 'Upload a JPEG, PNG or WebP image');
+    if (kind === 'preview' && (mime === 'image/webp' || bytes.length > MAX_PREVIEW_BYTES)) fail(400, 'The preview image must be a JPEG or PNG under 600 KB');
     const caption = text(input.caption, 'Caption', { max: 120, optional: true });
     return mutate(id, actor, async (q, t) => {
       const paid = paidPlan(t);
@@ -809,8 +812,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
         fail(402, paid ? `You can add up to ${PHOTO_LIMITS.paid} photos` : `The free plan includes ${PHOTO_LIMITS.free} photos — a paid plan allows up to ${PHOTO_LIMITS.paid}`, paid ? undefined : 'upgrade');
       }
       if (kind === 'sponsor' && n >= SPONSOR_LIMIT) fail(409, `You can add up to ${SPONSOR_LIMIT} sponsor logos`);
-      // One logo and one cover: a new upload replaces the old one.
-      if (kind === 'logo' || kind === 'cover') await q('DELETE FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
+      // One logo, cover and preview: a new upload replaces the old one (a new cover, its preview too).
+      if (kind === 'logo' || kind === 'cover' || kind === 'preview') await q('DELETE FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
+      if (kind === 'cover') await q(`DELETE FROM media WHERE tournament_id = $1 AND kind = 'preview'`, [t.id]);
       const mediaId = crypto.createHash('sha256').update(`${t.id}:${kind}:`).update(bytes).digest('hex').slice(0, 32);
       const [{ next }] = await q('SELECT COALESCE(MAX(position), -1)::int + 1 AS next FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
       await q(
@@ -844,8 +848,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // Organisers delete their images; site admins can delete any (moderation).
   async function deleteMedia(id, actor, mediaId) {
     return mutate(id, actor, async (q, t) => { // site admins count as organisers everywhere
-      const rows = await q('DELETE FROM media WHERE id = $1 AND tournament_id = $2 RETURNING id', [mediaId, t.id]);
+      const rows = await q('DELETE FROM media WHERE id = $1 AND tournament_id = $2 RETURNING kind', [mediaId, t.id]);
       if (!rows.length) fail(404, 'Image not found');
+      if (rows[0].kind === 'cover') await q(`DELETE FROM media WHERE tournament_id = $1 AND kind = 'preview'`, [t.id]);
     });
   }
 
@@ -862,6 +867,53 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (!access.score) fail(404, 'Not found');
     }
     return { mime: m.mime, bytes: Buffer.from(m.bytes), public: m.visibility !== 'private' };
+  }
+
+  // ---------- link previews (WhatsApp, Instagram, …)
+
+  // "Sat 2 – Sun 3 Nov 2030" (spelled out here: server locales differ).
+  function dateRange(from, to) {
+    const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const parts = (iso) => {
+      const d = new Date(`${iso}T00:00:00Z`);
+      return { wd: WD[d.getUTCDay()], day: d.getUTCDate(), mon: MON[d.getUTCMonth()], year: d.getUTCFullYear() };
+    };
+    const a = parts(from);
+    const full = (p) => `${p.wd} ${p.day} ${p.mon} ${p.year}`;
+    if (!to) return full(a);
+    const b = parts(to);
+    if (a.year === b.year && a.mon === b.mon) return `${a.wd} ${a.day} – ${full(b)}`;
+    if (a.year === b.year) return `${a.wd} ${a.day} ${a.mon} – ${full(b)}`;
+    return `${full(a)} – ${full(b)}`;
+  }
+
+  // What a shared tournament link shows: name, a one-line summary and an
+  // image. Private (or unknown) tournaments give null: the generic card.
+  async function sharePreview(id) {
+    let t;
+    try {
+      t = await getTournament(id);
+    } catch (err) {
+      if (err.status === 404) return null;
+      throw err;
+    }
+    const [preview] = await db.query(`SELECT id FROM media WHERE tournament_id = $1 AND kind = 'preview' LIMIT 1`, [t.id]);
+    const dates = t.startsOn ? dateRange(t.startsOn, t.endsOn) : null;
+    const place = [t.venue, t.location.city].filter(Boolean).join(', ');
+    const names = t.events.map((e) => e.name);
+    const events = names.length > 1 || names[0] !== 'Open'
+      ? `${t.sport.name}: ${names.slice(0, 4).join(', ')}${names.length > 4 ? ` +${names.length - 4} more` : ''}`
+      : t.sport.name;
+    const prize = t.events.reduce((sum, e) => sum + (e.prizes || []).reduce((s, p) => s + (p.cash || 0), 0), 0);
+    const status = t.entriesOpen ? 'Entries open' : t.status === 'completed' ? 'Results' : t.status === 'setup' ? null : 'Live scores';
+    return {
+      id: t.id,
+      title: t.name,
+      description: [dates, place, events, prize ? `🏆 ₹${prize.toLocaleString('en-IN')} in prizes` : null, status].filter(Boolean).join(' · '),
+      // The 1200×630 preview, else the cover itself.
+      image: preview ? { path: mediaUrl(preview.id), width: 1200, height: 630 } : t.cover ? { path: t.cover } : null,
+    };
   }
 
   // ---------- tournaments
@@ -2276,6 +2328,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     unpair,
     updateEvent,
     callMatch,
+    sharePreview,
     queueMatch,
     deleteEvent,
     reorderEvents,

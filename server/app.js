@@ -136,6 +136,52 @@ function baseUrl(req) {
   return `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`;
 }
 
+// ---------- shared links: /t/<id> (and /t/<id>/<tab>)
+// Link previews (WhatsApp, Instagram, …) read the page's meta tags but never
+// run the app or see a #fragment, so a shared tournament link gets a small
+// page with that tournament's name, summary and image, which sends people
+// on to the app (#/t/<id>…).
+const SITE = 'https://tonament.com';
+const GENERIC = {
+  title: 'Tonament — One platform. Every sport. Every tournament.',
+  description: 'Run league and knockout tournaments and score every match live.',
+};
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+function sharePage({ base, path: appPath, preview }) {
+  const p = preview || GENERIC;
+  const url = preview ? `${base}/t/${preview.id}` : `${base}/`;
+  const image = preview && preview.image ? preview.image : { path: '/brand/og.png', width: 1200, height: 630 };
+  const target = `/#${appPath}`;
+  const meta = (attr, name, content) => `<meta ${attr}="${name}" content="${escapeHtml(content)}">`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(preview ? `${p.title} · Tonament` : p.title)}</title>
+${meta('name', 'description', p.description)}
+<link rel="canonical" href="${escapeHtml(url)}">
+${meta('property', 'og:type', 'website')}
+${meta('property', 'og:site_name', 'Tonament')}
+${meta('property', 'og:title', p.title)}
+${meta('property', 'og:description', p.description)}
+${meta('property', 'og:url', url)}
+${meta('property', 'og:image', base + image.path)}
+${image.width ? `${meta('property', 'og:image:width', image.width)}\n${meta('property', 'og:image:height', image.height)}\n` : ''}${meta('name', 'twitter:card', 'summary_large_image')}
+${meta('name', 'twitter:title', p.title)}
+${meta('name', 'twitter:description', p.description)}
+${meta('name', 'twitter:image', base + image.path)}
+<meta http-equiv="refresh" content="0; url=${escapeHtml(target)}">
+<script>location.replace(${JSON.stringify(target).replace(/</g, '\\u003c')});</script>
+</head>
+<body style="font-family:system-ui,sans-serif;padding:24px">
+<p><a href="${escapeHtml(target)}">${escapeHtml(preview ? `Open ${p.title} on Tonament` : 'Open Tonament')}</a></p>
+</body>
+</html>
+`;
+}
+
 function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
   const svc = createService(db, { mailer, fetchImpl });
   const auth = createAuth(db, { mailer });
@@ -293,6 +339,20 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
           'Content-Security-Policy': "default-src 'none'",
         });
         return res.end(req.method === 'HEAD' ? undefined : file.bytes);
+      }
+      // Shared tournament links (on Vercel, /t/* is rewritten to /api/share/*).
+      const shared = pathname.match(/^\/(?:t|api\/share)\/([a-z0-9-]{1,100})(\/[a-z]*)?\/?$/);
+      if (shared && (req.method === 'GET' || req.method === 'HEAD')) {
+        const preview = await svc.sharePreview(shared[1]);
+        const html = sharePage({ base: baseUrl(req) || SITE, path: `/t/${shared[1]}${shared[2] || ''}${url.search.replace(/[?&]__path=[^&]*/, '').replace(/^&/, '?')}`, preview });
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          // Previews are cached briefly at the CDN; private ones never.
+          'Cache-Control': preview ? 'public, max-age=0, s-maxage=300' : 'no-store',
+          ...(preview && { 'Vercel-CDN-Cache-Control': 'max-age=300, stale-while-revalidate=3600' }),
+          'X-Content-Type-Options': 'nosniff',
+        });
+        return res.end(req.method === 'HEAD' ? undefined : html);
       }
       if (pathname === '/api' || pathname.startsWith('/api/')) {
         let pathMatched = false;
