@@ -2675,6 +2675,8 @@
         h('span', { class: 'actions' }, connDot(), statusTag(m))),
       scoreboard(m),
       canScore(t, m) ? scorer(t, m) : null,
+      // The winning point may still be on its way: scorers see when it's saved.
+      !canScore(t, m) && t.can.score && m.rallies ? syncLine(m) : null,
       t.can.score && m.status === 'done' && m.rallies
         ? h('div', { class: 'actions center', style: 'margin-bottom:16px' },
           h('button', { class: 'btn btn-ghost', onclick: () => undo(t, m) }, '↶ Undo last point (reopens the match)'))
@@ -2706,6 +2708,14 @@
         : m.status === 'done' ? h('div', { class: 'sb-foot' }, m.draw ? `Match drawn · ${m.summary}` : m.summary) : null);
   }
 
+  // Whether the umpire's points have reached the server.
+  function syncLine(m) {
+    return h('div', { class: `sync ${S.offline && m.pending ? 'offline' : m.pending ? 'saving' : 'saved'}`, role: 'status' },
+      S.offline && m.pending
+        ? `No connection — ${m.pending} point${m.pending === 1 ? '' : 's'} waiting, will send automatically`
+        : m.pending ? 'Saving…' : 'All points saved');
+  }
+
   function scorer(t, m) {
     const fresh = m.rallies === 0;
     // Side-out sports: winning the rally while receiving wins the serve, not a point.
@@ -2729,10 +2739,7 @@
             ? h('button', { class: 'btn btn-small', onclick: () => patchMatch(t, m, { status: 'live' }, 'Match marked as on court') }, 'Mark on court')
             : null)) : null,
       h('div', { class: 'score-btns' }, btn('a'), btn('b')),
-      h('div', { class: `sync ${S.offline && m.pending ? 'offline' : m.pending ? 'saving' : 'saved'}`, role: 'status' },
-        S.offline && m.pending
-          ? `No connection — ${m.pending} point${m.pending === 1 ? '' : 's'} waiting, will send automatically`
-          : m.pending ? 'Saving…' : 'All points saved'),
+      syncLine(m),
       h('div', { class: 'scorer-tools' },
         h('button', { class: 'btn', disabled: fresh, onclick: () => undo(t, m) }, '↶ Undo'),
         h('form', {
