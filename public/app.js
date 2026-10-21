@@ -2033,7 +2033,7 @@
         return h('div', { class: 'card' },
           h('h2', {}, g.name),
           h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ['#', t.event.discipline === 'team' ? 'Team' : 'Player', 'P', 'W', 'L', unitOf(t) === 'Set' ? 'Sets' : 'Games', 'Pts'].map((c, i) => h('th', { class: i === 1 ? '' : 'num', title: c === 'Pts' ? 'Point difference' : null }, c)))),
+            h('thead', {}, h('tr', {}, ['#', t.event.discipline === 'team' ? 'Team' : 'Player', 'P', 'W', 'L', unitOf(t) === 'Set' ? 'Sets' : 'Games', tennisLike(t) ? 'Gms' : 'Pts'].map((c, i) => h('th', { class: i === 1 ? '' : 'num', title: c === 'Pts' ? 'Point difference' : c === 'Gms' ? 'Game difference' : null }, c)))),
             h('tbody', {}, g.standings.map((r) => h('tr', { class: qualifying(g, q).has(r.id) ? 'q' : r.withdrawn ? 'out' : '' },
               h('td', { class: 'num' }, r.rank),
               h('td', { class: 'name' }, r.name, r.withdrawn ? [' ', pill('withdrawn', 'Withdrew')] : null),
@@ -2132,11 +2132,13 @@
       const p = m[s];
       const won = Boolean(m.winner && p && m.winner === p.id);
       const flag = live ? (sc.matchPoint[s] ? 'Match point' : sc.gamePoint[s] ? `${sc.unit || 'Game'} point` : null) : null;
-      return h('div', { class: `sb-row side-${s}${won ? ' won' : ''}` },
+      // Tennis-style sports also show the games in this set, and calls (15, 30, 40, AD) for points.
+      return h('div', { class: `sb-row side-${s}${won ? ' won' : ''}${sc.setGames ? ' has-set' : ''}` },
         h('div', { class: 'sb-serve' }, live && sc.server === s ? h('span', { class: 'serve', title: 'Serving' }) : null),
         h('div', { class: 'sb-name' }, nameOf(p), flag ? h('span', { class: 'flag' }, flag) : null, won ? h('span', { class: 'flag' }, 'Winner') : null),
         h('div', { class: 'sb-games', title: `${sc.unit || 'Game'}s won` }, sc.gamesWon[s]),
-        h('div', { class: 'sb-points' }, m.status === 'done' || m.status === 'bye' ? '' : cur[s]));
+        sc.setGames ? h('div', { class: 'sb-games sb-set', title: 'Games in this set' }, sc.setGames[s]) : null,
+        h('div', { class: 'sb-points' }, m.status === 'done' || m.status === 'bye' ? '' : sc.points ? sc.points[s] : cur[s]));
     };
     return h('div', { class: 'scoreboard' }, row('a'), row('b'),
       live && sc.server
@@ -2151,7 +2153,7 @@
     const btn = (s) => h('button', {
       class: `score-btn side-${s}`,
       onclick: () => rally(t, m, s),
-      'aria-label': tap(s) === '+1' ? `Point to ${m[s].name}` : `${m[s].name} won the rally: ${tap(s)}`,
+      'aria-label': ['+1', 'Point'].includes(tap(s)) ? `Point to ${m[s].name}` : `${m[s].name} won the rally: ${tap(s)}`,
     }, h('span', { class: `sbtn-plus${tap(s) === '+1' ? '' : ' sbtn-word'}` }, tap(s)), h('span', { class: 'sbtn-name' }, m[s].name));
 
     const courtInput = h('input', { name: 'court', maxlength: 20, placeholder: 'e.g. 3', value: m.court || '', 'aria-label': 'Court' });
@@ -2203,6 +2205,9 @@
   const scoringBusy = () => sending.size > 0 || [...queues.values()].some((q) => q.length);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const confirmedMatch = (mid) => S.t && allMatches(S.t).find((x) => x.id === mid);
+
+  // Tennis and padel: standings break ties on games, not points.
+  const tennisLike = (t) => ['tennis', 'padel'].includes(t.sport.id);
 
   // "Game" or "Set", from the sport's rules.
   function unitOf(t) {

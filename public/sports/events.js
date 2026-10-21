@@ -23,6 +23,7 @@
     throwball: TEAM,
     'sepak-takraw': TEAM,
     'beach-volleyball': { disciplines: ['doubles'] },
+    padel: { disciplines: ['doubles'] },
     pickleball: {
       levels: ['Open', 'Beginner', 'Intermediate', 'Advanced', '3.0', '3.5', '4.0', '4.5', '5.0+'],
       ages: ['Open', 'U19', '35+', '50+', '60+', '65+', '70+'],
