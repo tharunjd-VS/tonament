@@ -151,7 +151,7 @@ vercel.json           Vercel config: static output and API rewrite
 ```
 
 ### Sports roadmap
-Badminton, pickleball, table tennis, squash and the volleyball family are playable today. `server/sports/index.js` also lists the sports on the way, shown on the home page as "Soon"/"Later" chips that signed-in users can tap to request. Site admins see the totals on the admin page. Next: tennis and padel (points, games, sets and tie-breaks), then football, futsal, hockey, kabaddi and basketball (goal/point scoring with draws). Tennis, padel and cricket come later.
+Badminton, pickleball, table tennis, squash and the volleyball family are playable today. `server/sports/index.js` also lists the sports on the way, shown on the home page as "Soon"/"Later" chips that signed-in users can tap to request. Site admins see the totals on the admin page. Next: tennis and padel (points, games, sets and tie-breaks), then football, futsal, hockey, kabaddi and basketball (goal/point scoring with draws). Cricket comes later.
 
 ### Adding a sport
 
