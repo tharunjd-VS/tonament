@@ -634,7 +634,8 @@
           S.me
             ? h('a', { class: 'btn btn-primary btn-lg', href: '/new' }, 'Create tournament')
             : h('a', { class: 'btn btn-primary btn-lg', href: '/signup' }, 'Get started — it\'s free'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'))),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/how-it-works' }, 'How it works'))),
       S.me && S.myEntries && S.myEntries.length ? h('section', { class: 'section' },
         h('h2', {}, 'My entries'),
         h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
@@ -2175,7 +2176,7 @@
     return [
       m.stage === 'league' ? `${m.groupName} · ${m.roundName}` : m.roundName,
       m.catchUp && m.status !== 'done' ? 'Catch-up' : null,
-      m.court ? `Court ${m.court}` : null,
+      m.court ? (/^\d/.test(m.court) ? `Court ${m.court}` : m.court) : null, // "3" -> "Court 3"; "Court 3" or "Centre" as is
     ].filter(Boolean).join(' · ');
   }
 

@@ -158,6 +158,7 @@ test('sitemap, robots.txt, app routes and real 404s', async () => {
   assert.ok(xml.includes(`<loc>${base}/t/${pub}</loc>`));
   assert.ok(!xml.includes(link));
   assert.ok(xml.includes(`<loc>${base}/pricing</loc>`));
+  assert.ok(xml.includes(`<loc>${base}/how-it-works</loc>`) && xml.includes(`<loc>${base}/faq</loc>`));
   assert.match(xml, /<lastmod>\d{4}-\d{2}-\d{2}<\/lastmod>/);
   assert.ok((await get('/api/index?__path=sitemap')).html.includes(`/t/${pub}`));
 
@@ -177,4 +178,29 @@ test('sitemap, robots.txt, app routes and real 404s', async () => {
   assert.equal(nope.res.status, 404);
   assert.match(nope.html, /Page not found/);
   assert.equal((await get('/pricing')).res.status, 200);
+});
+
+test('How it works and FAQ pages', async () => {
+  const how = await get('/how-it-works');
+  assert.equal(how.res.status, 200);
+  assert.match(how.html, /<h1>How Tonament works<\/h1>/);
+  assert.match(how.html, /<link rel="canonical" href="https:\/\/tonament\.com\/how-it-works">/);
+  // Each screenshot comes in both themes, and every image exists.
+  const images = [...how.html.matchAll(/src="(\/guide\/[^"]+)"/g)].map((m) => m[1]);
+  assert.ok(images.length >= 20);
+  assert.equal(images.filter((x) => x.endsWith('-dark.jpg')).length, images.filter((x) => x.endsWith('-light.jpg')).length);
+  for (const src of new Set(images)) assert.equal((await fetch(base + src)).status, 200, src);
+  assert.ok(!/<img(?![^>]*\balt=")[^>]*>/.test(how.html)); // every image has alt text
+
+  const faq = await get('/faq');
+  assert.equal(faq.res.status, 200);
+  const data = ld(faq.html);
+  assert.equal(data['@type'], 'FAQPage');
+  const questions = [...faq.html.matchAll(/<summary>([^<]+)<\/summary>/g)].map((m) => m[1]);
+  assert.equal(data.mainEntity.length, questions.length);
+  assert.ok(questions.length >= 20);
+  for (const q of data.mainEntity) {
+    assert.equal(q['@type'], 'Question');
+    assert.ok(q.acceptedAnswer.text.length > 20 && !/</.test(q.acceptedAnswer.text), q.name); // plain text
+  }
 });
