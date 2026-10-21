@@ -217,7 +217,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['DELETE', `${T}/events/${N}`, (c, id, eid) => svc.deleteEvent(id, c.actor, eid)],
     ['POST', `${T}/entries`, (c, id) => svc.addEntries(id, c.actor, c.body.names, { walkIn: c.body.walkIn, event: ev(c) })],
     ['POST', `${T}/visibility`, (c, id) => svc.setVisibility(id, c.actor, c.body.visibility)],
-    ['POST', `${T}/register`, (c, id) => svc.register(id, { ...c.body, event: ev(c) }, { baseUrl: baseUrl(c.req) })],
+    ['POST', `${T}/register`, (c, id) => svc.register(id, c.actor, { ...c.body, event: ev(c) }, { baseUrl: baseUrl(c.req) })],
     ['POST', `${T}/entries/${N}/confirm`, (c, id, eid) => svc.confirmEntry(id, c.actor, eid)],
     ['POST', `${T}/media`, (c, id) => svc.uploadMedia(id, c.actor, c.body)],
     ['PATCH', `${T}/media/([0-9a-f]{32})`, (c, id, mid) => svc.updateMedia(id, c.actor, mid, c.body)],
@@ -228,6 +228,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${T}/entries/${N}/fee`, (c, id, eid) => svc.setEntryFee(id, c.actor, eid, c.body.status ?? null)],
     ['POST', `${T}/entries/${N}/check-in`, (c, id, eid) => svc.checkIn(id, c.actor, eid, c.body.here !== false)],
     ['POST', `${T}/check-in-all`, (c, id) => svc.checkInAll(id, c.actor, c.body.here !== false, { event: ev(c) })],
+    ['POST', `${T}/entries/${N}/leave`, (c, id, eid) => svc.leave(id, c.actor, eid)],
     ['POST', `${T}/entries/${N}/withdraw`, (c, id, eid) => svc.withdraw(id, c.actor, eid)],
     ['POST', `${T}/late-entry`, (c, id) => svc.lateEntry(id, c.actor, { ...c.body, event: ev(c) })],
     ['POST', `${T}/redraw`, (c, id) => svc.redraw(id, c.actor, { event: ev(c) })],
@@ -268,6 +269,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       return { ok: true };
     }],
     ['GET', '/api/me/tournaments', (c) => svc.myTournaments(c.actor)],
+    ['GET', '/api/me/entries', (c) => svc.myEntries(c.actor)],
     ['GET', '/api/admin/users', (c) => auth.listUsers(c.actor)],
 
     // Payments (Razorpay). The webhook is handled separately (raw body).

@@ -12,6 +12,7 @@ const beach = require('../server/sports/beach-volleyball');
 const tb = require('../server/sports/throwball');
 const st = require('../server/sports/sepak-takraw');
 const catalog = require('../public/sports/events');
+const { enterAs } = require('./players');
 
 const r = (side, n) => side.repeat(n);
 const sets = (...winners) => winners.map((w) => r(w, 25)).join('');
@@ -87,11 +88,11 @@ test('team entries: a team name, the captain\'s contact and optional players', a
     assert.equal(plain.events[0].name, 'Open Team');
 
     const ev = t.events[0].id;
-    await svc.register(id, { event: ev, name: 'Chennai Spikers', contact: 'cap@spikers.test', players: 'Arun\nBala, Chitra\n\n' });
-    await svc.register(id, { event: ev, name: 'City Smashers', contact: '9876543210' });
-    await assert.rejects(svc.register(id, { event: ev, name: 'X', partner: 'Y', contact: 'x@y.test' }), /team event/);
-    await assert.rejects(svc.register(id, { event: ev, name: 'Big', contact: 'big@y.test', players: Array.from({ length: 31 }, (_, i) => `P${i}`) }), /up to 30/);
-    await assert.rejects(svc.register(id, { event: ev, contact: 'nameless@y.test' }), /Team name/);
+    await enterAs(svc)(id, { event: ev, name: 'Chennai Spikers', contact: 'cap@spikers.test', players: 'Arun\nBala, Chitra\n\n' });
+    await enterAs(svc)(id, { event: ev, name: 'City Smashers', contact: '9876543210' });
+    await assert.rejects(enterAs(svc)(id, { event: ev, name: 'X', partner: 'Y', contact: 'x@y.test' }), /team event/);
+    await assert.rejects(enterAs(svc)(id, { event: ev, name: 'Big', contact: 'big@y.test', players: Array.from({ length: 31 }, (_, i) => `P${i}`) }), /up to 30/);
+    await assert.rejects(enterAs(svc)(id, { event: ev, contact: 'nameless@y.test' }), /Team name/);
 
     t = await svc.getTournament(id, ORG);
     const spikers = t.events[0].entries.find((e) => e.name === 'Chennai Spikers');

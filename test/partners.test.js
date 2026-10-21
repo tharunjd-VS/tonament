@@ -7,6 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createDb } = require('../server/db');
 const { createApp } = require('../server/app');
+const { enterAs } = require('./players');
 
 let db;
 let svc;
@@ -15,10 +16,11 @@ test.before(async () => {
   svc = createApp(db).service;
 });
 test.after(() => db.close());
+const enter = (...args) => enterAs(svc)(...args); // a player entering with their account
 
 const ORG = { user: { id: 1, email: 'org@partners.test', name: 'Org', isAdmin: false } };
 let n = 0;
-const solo = (id, event, name, extra = {}) => svc.register(id, { name, contact: `${name.toLowerCase().replace(/\W/g, '')}${++n}@x.dev`, event, solo: true, ...extra });
+const solo = (id, event, name, extra = {}) => enter(id, { name, contact: `${name.toLowerCase().replace(/\W/g, '')}${++n}@x.dev`, event, solo: true, ...extra });
 
 async function doublesCup(events, config = {}) {
   const { id } = await svc.createTournament(ORG, { name: 'Doubles Day', visibility: 'public', format: 'knockout', events });
@@ -32,16 +34,16 @@ test('solo entries: doubles only; mixed needs a side; drawn events take no partn
   const { id, events: [md, ms] } = await doublesCup([{ discipline: 'doubles', gender: 'men' }, { discipline: 'singles', gender: 'men' }]);
   assert.equal((await solo(id, md, 'Arun')).solo, true);
   await assert.rejects(solo(id, ms, 'Bala'), /isn't a doubles event/);
-  await assert.rejects(svc.register(id, { name: 'Chetan', contact: 'c@x.dev', event: md }), /add your partner's name, or ask us/);
+  await assert.rejects(enter(id, { name: 'Chetan', contact: 'c@x.dev', event: md }), /add your partner's name, or ask us/);
 
   const mixed = await doublesCup([{ discipline: 'doubles', gender: 'mixed' }]);
   await assert.rejects(solo(mixed.id, mixed.events[0], 'Dev'), /man or a woman/);
   assert.equal((await solo(mixed.id, mixed.events[0], 'Dev', { side: 'man' })).solo, true);
 
   const drawn = await doublesCup([{ discipline: 'doubles', gender: 'open' }], { partners: 'drawn' });
-  await assert.rejects(svc.register(drawn.id, { name: 'E', partner: 'F', contact: 'e@x.dev', event: drawn.events[0] }), /drawn/);
+  await assert.rejects(enter(drawn.id, { name: 'E', partner: 'F', contact: 'e@x.dev', event: drawn.events[0] }), /drawn/);
   // In a drawn event everyone is solo, even without ticking it.
-  const r = await svc.register(drawn.id, { name: 'Gita', contact: 'g@x.dev', event: drawn.events[0] });
+  const r = await enter(drawn.id, { name: 'Gita', contact: 'g@x.dev', event: drawn.events[0] });
   assert.equal(r.solo, true);
 });
 
@@ -99,7 +101,7 @@ test('drawing pairs: random, balanced by seeding, and mixed men with women', asy
 test('starting: drawn events pair automatically; leftover solos need a decision', async () => {
   const drawn = await doublesCup([{ discipline: 'doubles', gender: 'open' }], { partners: 'drawn', balancePairs: true });
   const [od] = drawn.events;
-  for (const name of ['A', 'B', 'C', 'D']) await svc.register(drawn.id, { name, contact: `${name}@drawn.dev`, event: od });
+  for (const name of ['A', 'B', 'C', 'D']) await enter(drawn.id, { name, contact: `${name}@drawn.dev`, event: od });
   let t = await svc.start(drawn.id, ORG, { event: od });
   let ev = t.events[0];
   assert.equal(ev.status, 'knockout');
@@ -107,7 +109,7 @@ test('starting: drawn events pair automatically; leftover solos need a decision'
   assert.equal(ev.matches.filter((m) => m.round === 1).length, 1);
 
   const odd = await doublesCup([{ discipline: 'doubles', gender: 'open' }], { partners: 'drawn' });
-  for (const name of ['P', 'Q', 'R']) await svc.register(odd.id, { name, contact: `${name}@odd.dev`, event: odd.events[0] });
+  for (const name of ['P', 'Q', 'R']) await enter(odd.id, { name, contact: `${name}@odd.dev`, event: odd.events[0] });
   await svc.addEntries(odd.id, ORG, ['X / Y'], { event: odd.events[0] });
   await assert.rejects(svc.start(odd.id, ORG, { event: odd.events[0] }), (e) => e.code === 'solo' && /1 player still needs a partner/.test(e.message));
   t = await svc.start(odd.id, ORG, { event: odd.events[0], skipUnconfirmed: true });

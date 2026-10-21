@@ -141,8 +141,6 @@
   const fmtWhen = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
   // Same rule as server/formats.js groupCount: about `size` per group, never a group of one.
   const groupCount = (n, size) => (n < 2 ? 1 : Math.min(Math.max(1, Math.round(n / size)), Math.floor(n / 2)));
-  // "You're entered" is remembered per event (the old per-tournament key for single-event tournaments).
-  const enteredKey = (t) => `tonament:entered:${t.id}${t.events && t.events.length > 1 ? `:${t.eventId}` : ''}`;
   const nameOf = (p) => (p ? p.name : 'TBD');
   const pow2 = (n) => { let s = 2; while (s < n) s *= 2; return s; };
   const field = (label, control, cls, hint) =>
@@ -474,9 +472,10 @@
         const qs = filterQuery(S.filters);
         if (qs && !params.toString()) history.replaceState(null, '', `/?${qs}`); // remembered search
         render();
-        [S.list, S.mine, S.interest, S.places] = await Promise.all([
+        [S.list, S.mine, S.myEntries, S.interest, S.places] = await Promise.all([
           api('GET', `/tournaments?${filterQuery(S.filters, true)}`).catch((e) => { S.error = e.message; return []; }),
           S.me ? api('GET', '/me/tournaments').catch(() => []) : null,
+          S.me ? api('GET', '/me/entries').catch(() => []) : null,
           api('GET', '/sports/interest').catch(() => null),
           api('GET', '/tournaments/places').catch(() => []),
         ]);
@@ -636,6 +635,9 @@
             ? h('a', { class: 'btn btn-primary btn-lg', href: '/new' }, 'Create tournament')
             : h('a', { class: 'btn btn-primary btn-lg', href: '/signup' }, 'Get started — it\'s free'),
           h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'))),
+      S.me && S.myEntries && S.myEntries.length ? h('section', { class: 'section' },
+        h('h2', {}, 'My entries'),
+        h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
       S.me ? h('section', { class: 'section' },
         h('h2', {}, 'My tournaments'),
         S.mine == null ? loading()
@@ -644,6 +646,25 @@
       findSection(),
       sportsSection(),
     ];
+  }
+
+  // A tournament the player entered, with their entry and where it stands.
+  const ENTRY_STATUS = {
+    entered: ['done', 'Entered ✓'],
+    waiting: ['waiting', 'On the waitlist'],
+    payment: ['waiting', 'Payment not finished'],
+    looking: ['waiting', 'Looking for a partner'],
+    playing: ['live', 'In the draw'],
+    withdrawn: ['', 'Withdrawn'],
+  };
+  function myEntryCard(t) {
+    const card = tournamentCard(t);
+    const [cls, label] = ENTRY_STATUS[t.entry.status] || ENTRY_STATUS.entered;
+    card.href = `/t/${t.id}/entries${t.entry.eventName ? `?e=${t.entry.eventId}` : ''}`;
+    card.append(h('div', { class: 'my-entry' },
+      h('span', {}, h('strong', {}, t.entry.name), t.entry.eventName ? ` · ${t.entry.eventName}` : ''),
+      pill(cls, label)));
+    return card;
   }
 
   // ----- find a tournament (home page)
@@ -1312,7 +1333,7 @@
           h('span', { class: 'seed' }, i + 1),
           h('span', { class: 'name' },
             h('span', { class: 'entry-name' }, e.name),
-            e.contact ? h('small', { class: 'contact' }, e.contact) : null,
+            e.contact || e.phone ? h('small', { class: 'contact' }, [e.contact, e.phone].filter(Boolean).join(' · ')) : null,
             e.players ? h('small', { class: 'contact' }, `Players: ${e.players.join(', ')}`) : null,
             e.members && t.can.manage && e.members.some((m) => m.contact)
               ? h('small', { class: 'contact' }, e.members.map((m) => `${m.name}: ${m.contact}`).join(' · '))
@@ -1387,38 +1408,44 @@
 
   // "Enter this tournament" for players (no account needed).
   function publicEntryCard(t) {
-    let entered = null;
-    try { entered = localStorage.getItem(enteredKey(t)); } catch { /* storage unavailable */ }
     const closes = t.config.entriesCloseAt ? `Entries close ${fmtWhen(t.config.entriesCloseAt)}.` : 'Entries close when the draw is made.';
-    const mine = entered && [...t.entries, ...t.solos].find((e) => e.name === entered);
-    // Entered alone and since paired up: their pair lists them as a member.
-    const myPair = entered && !mine && t.entries.find((e) => e.members && e.members.some((m) => m.name === entered));
-    if (myPair) {
-      const partner = myPair.members.find((m) => m.name !== entered);
+    if (!S.me) {
+      // Players enter with their account; sign-in brings them back here.
+      const here = encodeURIComponent(`/t/${t.id}/entries${multiEvent(t) ? `?e=${t.eventId}` : ''}`);
       return h('div', { class: 'card entry-card' },
-        h('h2', {}, `You're playing with ${partner ? partner.name : 'your partner'} ✓`),
-        h('p', {}, h('strong', {}, myPair.name), ' is on the entry list. See you on the day!'),
-        h('p', { class: 'muted small', style: 'margin:0' }, `Something wrong? Contact the organiser. ${closes}`));
+        h('h2', {}, multiEvent(t) ? `Enter ${t.event.name}` : 'Enter this tournament'),
+        h('p', { class: 'muted small' }, `Sign in or create a free account to enter — it takes a minute, and you can follow your entries and withdraw if plans change. ${closes}`),
+        h('div', { class: 'actions' },
+          h('a', { class: 'btn btn-primary', href: `/signin?next=${here}` }, 'Sign in to enter'),
+          h('a', { class: 'btn', href: `/signup?next=${here}` }, 'Create an account')));
     }
-    if (mine && mine.solo && mine.confirmed) {
-      return h('div', { class: 'card entry-card' },
-        h('h2', {}, 'You\'re entered — looking for a partner'),
-        h('p', {}, h('strong', {}, entered), t.config.partners === 'drawn'
+    // The player's own entry in this event (an unfinished payment doesn't count).
+    const mine = (t.myEntries || []).find((e) => e.eventId === t.eventId && !e.withdrawn && e.feeStatus !== 'pending');
+    if (mine) {
+      const leave = () => {
+        if (!confirm(`Withdraw ${mine.name} from ${multiEvent(t) ? t.event.name : t.name}?`)) return;
+        act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${mine.id}/leave`, {}, t.id); }, 'Your entry has been withdrawn');
+      };
+      const canLeave = !mine.paired && mine.feeStatus !== 'paid';
+      const card = (title, body, foot) => h('div', { class: 'card entry-card' },
+        h('h2', {}, title), h('p', {}, body),
+        h('p', { class: 'muted small', style: 'margin:0' }, `${foot} ${closes}`),
+        canLeave ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: leave }, 'Withdraw my entry')) : null);
+      if (mine.paired) {
+        // Entered alone and since paired up: their pair lists them as a member.
+        const pair = t.entries.find((e) => e.members && e.members.some((m) => m.id === mine.id));
+        const partner = pair && pair.members.find((m) => m.id !== mine.id);
+        return card(`You're playing with ${partner ? partner.name : 'your partner'} ✓`, [h('strong', {}, pair ? pair.name : mine.name), ' is on the entry list. See you on the day!'], 'Something wrong? Contact the organiser.');
+      }
+      if (mine.solo && mine.confirmed) {
+        return card('You\'re entered — looking for a partner', [h('strong', {}, mine.name), t.config.partners === 'drawn'
           ? ' — partners are drawn when the event starts. Your partner will show here.'
-          : ' — the organiser will pair you with another player. Your partner will show here.'),
-        h('p', { class: 'muted small', style: 'margin:0' }, `Questions? Contact the organiser. ${closes}`));
-    }
-    if (mine && !mine.confirmed) {
-      return h('div', { class: 'card entry-card' },
-        h('h2', {}, 'Entry received'),
-        h('p', {}, h('strong', {}, entered), ' — the organiser will confirm your place. This page updates once they do.'),
-        h('p', { class: 'muted small', style: 'margin:0' }, `Questions? Contact the organiser. ${closes}`));
-    }
-    if (entered) {
-      return h('div', { class: 'card entry-card' },
-        h('h2', {}, 'You\'re entered ✓'),
-        h('p', {}, h('strong', {}, entered), ' is on the entry list. See you on the day!'),
-        h('p', { class: 'muted small', style: 'margin:0' }, `Something wrong? Contact the organiser. ${closes}`));
+          : ' — the organiser will pair you with another player. Your partner will show here.'], 'Questions? Contact the organiser.');
+      }
+      if (!mine.confirmed) {
+        return card('Entry received', [h('strong', {}, mine.name), ' — the organiser will confirm your place. This page updates once they do.'], 'Questions? Contact the organiser.');
+      }
+      return card('You\'re entered ✓', [h('strong', {}, mine.name), ' is on the entry list. See you on the day!'], mine.feeStatus === 'paid' ? 'Paid ✓ — to withdraw, contact the organiser.' : 'Something wrong? Contact the organiser.');
     }
     const full = t.placesLeft === 0;
     const fee = t.event.fee || 0;
@@ -1448,7 +1475,6 @@
               return;
             }
           }
-          try { localStorage.setItem(enteredKey(t), res.name || body.name); } catch { /* fine */ }
           toast(res.payment ? 'Payment received — you\'re entered ✓ Your receipt is on its way.'
             : res.confirmed === false ? 'Entry received — the organiser will confirm your place' : 'You\'re entered — see you there!');
           refresh();
@@ -1465,7 +1491,7 @@
         ? 'Join the waitlist — the organiser will confirm your place if one opens up.'
         : `${feeLine}${t.placesLeft != null ? `${t.placesLeft} of ${t.config.maxEntries} places left. ` : ''}${closes}`)),
     h('div', { class: 'grid-2' },
-      field(team ? 'Team name' : 'Your name', h('input', { name: 'name', required: true, maxlength: 40, autocomplete: team ? 'off' : 'name' })),
+      field(team ? 'Team name' : 'Your name', h('input', { name: 'name', required: true, maxlength: 40, autocomplete: team ? 'off' : 'name', value: team ? '' : S.me.name })),
       // Doubles events need a partner (or "find me one"); singles and teams
       // have none; catch-all events make it optional; drawn-partner events never ask.
       t.event.discipline === 'singles' || team || drawn ? null
@@ -1485,11 +1511,9 @@
     team
       ? field('Players (optional)', h('textarea', { name: 'players', rows: 3, maxlength: 1300, placeholder: 'One name per line' }), null, 'Only the organisers see this.')
       : null,
-    fee
-      ? field(team ? 'Captain\'s email' : 'Email', h('input', { name: 'contact', type: 'email', required: true, maxlength: 120, autocomplete: 'email' }), null,
-        'Your receipt is sent here. Only the organisers see it.')
-      : field(team ? 'Captain\'s phone or email' : 'Phone or email', h('input', { name: 'contact', required: true, maxlength: 120, autocomplete: 'email' }), null,
-        'Only the organisers see this, in case they need to reach you.'),
+    field(team ? 'Captain\'s phone (optional)' : 'Phone (optional)', h('input', { name: 'phone', type: 'tel', maxlength: 20, autocomplete: 'tel' }), null,
+      fee ? `Your receipt goes to your account email, ${S.me.email}. Only the organisers see your details.`
+        : `The organisers can reach you at ${S.me.email}${team ? ' (the captain)' : ''}, or this number. Only they see your details.`),
     // honeypot: hidden from people, filled in by bots
     h('label', { class: 'hp', 'aria-hidden': 'true' }, 'Website', h('input', { name: 'website', tabindex: '-1', autocomplete: 'off' })),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, full ? 'Join waitlist' : fee ? `Pay ${money(fee)} and enter` : 'Enter')),
@@ -1606,7 +1630,7 @@
         return h('li', {},
           h('span', { class: 'name' },
             h('span', { class: 'entry-name' }, e.name),
-            e.contact ? h('small', { class: 'contact' }, e.contact) : null,
+            e.contact || e.phone ? h('small', { class: 'contact' }, [e.contact, e.phone].filter(Boolean).join(' · ')) : null,
             h('span', { class: 'entry-tags' },
               e.side ? pill('', e.side === 'man' ? 'Man' : 'Woman') : null,
               !e.confirmed && e.feeStatus !== 'pending' ? pill('waiting', 'Unconfirmed') : null,

@@ -19,10 +19,10 @@ Tournament management with live scoring for **tonament.com**. Badminton, pickleb
   - **Beach volleyball:** pairs; best of 3 sets to 21, deciding set to 15; "switch sides" every 7 points (5 in the deciding set).
   - **Throwball:** best of 3 sets to 25 (15/21 too).
   - **Sepak takraw:** best of 3 sets to 21, deciding set to 15.
-- **Team events** (volleyball, throwball, sepak takraw): Men's / Women's / Mixed / Open Team. Entries are team names; self-entry asks for the team name, the captain's phone or email and, optionally, the players (organisers only). Each sport offers only its own event types.
+- **Team events** (volleyball, throwball, sepak takraw): Men's / Women's / Mixed / Open Team. Entries are team names; self-entry (by the captain's account) asks for the team name, an optional phone and, optionally, the players (organisers only). Each sport offers only its own event types.
 - **Undo:** works on any point, including the one that won a match. It's blocked once the next match has started.
 - **Entries and the event day:**
-  - Players can enter themselves on the public page (name, partner, phone or email, no account needed) until a closing date/time or the draw.
+  - Players enter themselves on the public page until a closing date/time or the draw. They sign in (or create a free account) first: the entry belongs to their account (one per event), the account email is the contact (an optional phone too; organisers only), and the name is prefilled. Players see "My entries" on the home page and can withdraw their own entry before the draw (not once paid, or once paired). Organisers adding players by hand need no accounts.
   - On the day, organisers tick players as they arrive; only ticked players go into the draw, and walk-ins are added already checked in.
   - Groups are sized "about N per group" from the final head-count.
   - **Redraw** works until the first point is played.
@@ -189,7 +189,9 @@ All endpoints are under `/api`. Permission comes from the signed-in session cook
 | POST | `/tournaments/:id/visibility` `{ visibility }` | `private`, `link` or `public` (owner only) |
 | POST/PATCH/DELETE | `/tournaments/:id/events`, `/tournaments/:id/events/:eventId` | Add events (`{ events: [...] }`), change one (type, age, level, name, format, scoring, places, `fee`), delete one (before it starts) |
 | PUT | `/tournaments/:id/events/order` `{ ids }` | Reorder events |
-| POST | `/tournaments/:id/register` | Public self-entry `{ name, partner?, contact }` while entries are open; returns `confirmed: false` past the tournament's capacity |
+| POST | `/tournaments/:id/register` | Self-entry by the signed-in player `{ name?, partner?, phone?, solo?, players? }` while entries are open; returns `confirmed: false` past the tournament's capacity |
+| POST | `/tournaments/:id/entries/:entryId/leave` | The signed-in player withdraws their own entry before the draw |
+| GET | `/me/entries` | The signed-in player's entries across tournaments, with their status |
 | POST | `/tournaments/:id/entries/:entryId/fee` `{ status }` | Record an entry fee as `cash` (paid in person), `waived`, or `null` (official tournaments) |
 | POST/DELETE | `/tournaments/:id/pairs` `{ a, b }`, `/tournaments/:id/pairs/draw` `{ event, balance }`, `/tournaments/:id/pairs/:entryId` | Pair two solo players, draw pairs for everyone waiting, or split a drawn pair |
 | POST | `/tournaments/:id/entries/:entryId/confirm` | Confirm a waiting self-entry (within the plan's limit) |

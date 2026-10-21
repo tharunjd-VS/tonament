@@ -542,6 +542,9 @@ fieldset.details-set { display: grid; gap: 12px; }
 .solo-card .entries li { flex-wrap: wrap; }
 .pair-with { width: auto; max-width: 11rem; padding: 6px 10px; font-size: 0.875rem; }
 
+/* My entries (home) */
+.my-entry { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--border); font-size: 0.9rem; }
+
 /* Courts and order of play */
 .court-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 12px; }
 .court-card { display: grid; gap: 8px; margin: 0; padding: 12px 14px; }

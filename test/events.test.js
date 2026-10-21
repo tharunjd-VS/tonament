@@ -6,6 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createDb, migrate } = require('../server/db');
 const { createApp } = require('../server/app');
+const { enterAs } = require('./players');
 const catalog = require('../public/sports/events');
 
 let db;
@@ -15,6 +16,7 @@ test.before(async () => {
   svc = createApp(db).service;
 });
 test.after(() => db.close());
+const enter = (...args) => enterAs(svc)(...args); // a player entering with their account
 
 const ORG = { user: { id: 1, email: 'org@events.test', name: 'Org', isAdmin: false } };
 const OTHER = { user: { id: 2, email: 'someone@events.test', name: 'Someone', isAdmin: false } };
@@ -124,16 +126,16 @@ test('managing events: add, rename, reorder, delete and permissions', async () =
 test('self-entry picks an event; doubles need a partner; one entry per contact per event', async () => {
   const id = await diwali();
   const { events: [ms, ws, xd] } = await svc.getTournament(id);
-  await assert.rejects(svc.register(id, { name: 'Asha', contact: 'asha@x.dev' }), (e) => e.code === 'event');
-  await assert.rejects(svc.register(id, { name: 'Asha', contact: 'asha@x.dev', event: xd.id }), /doubles event — add your partner/);
-  assert.equal((await svc.register(id, { name: 'Asha', partner: 'Ravi', contact: 'asha@x.dev', event: xd.id })).name, 'Asha / Ravi');
+  await assert.rejects(enter(id, { name: 'Asha', contact: 'asha@x.dev' }), (e) => e.code === 'event');
+  await assert.rejects(enter(id, { name: 'Asha', contact: 'asha@x.dev', event: xd.id }), /doubles event — add your partner/);
+  assert.equal((await enter(id, { name: 'Asha', partner: 'Ravi', contact: 'asha@x.dev', event: xd.id })).name, 'Asha / Ravi');
   // Singles ignore a partner; the same contact can enter another event.
-  assert.equal((await svc.register(id, { name: 'Asha', partner: 'Ravi', contact: 'asha@x.dev', event: ws.id })).name, 'Asha');
-  await assert.rejects(svc.register(id, { name: 'Asha R', contact: 'asha@x.dev', event: ws.id }), /already been used to enter this event/);
+  assert.equal((await enter(id, { name: 'Asha', partner: 'Ravi', contact: 'asha@x.dev', event: ws.id })).name, 'Asha');
+  await assert.rejects(enter(id, { name: 'Asha R', contact: 'asha@x.dev', event: ws.id }), /already entered this event/);
   await svc.addEntries(id, ORG, ['Bea'], { event: ws.id });
   await svc.start(id, ORG, { event: ws.id });
-  await assert.rejects(svc.register(id, { name: 'Late', contact: 'late@x.dev', event: ws.id }), /draw has been made/);
-  assert.equal((await svc.register(id, { name: 'Late', contact: 'late@x.dev', event: ms.id })).confirmed, true);
+  await assert.rejects(enter(id, { name: 'Late', contact: 'late@x.dev', event: ws.id }), /draw has been made/);
+  assert.equal((await enter(id, { name: 'Late', contact: 'late@x.dev', event: ms.id })).confirmed, true);
 });
 
 test('tournaments made before events get one event holding their draw', async () => {

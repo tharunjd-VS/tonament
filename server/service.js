@@ -209,18 +209,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return { ...row, sportDef: sports.get(row.sport) };
   }
 
-  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into, players';
+  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into, players, user_id, phone';
 
   // Entries and matches of one event (`ev` is an event context, see eventFor).
   // Solo players already paired up play as their pair entry, so they're left out.
   const entriesOf = (q, ev) =>
     q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE event_id = $1 AND paired_into IS NULL ORDER BY seed, id`, [ev.eventId]);
 
-  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null, solo = false, side = null, players = null }) =>
+  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null, solo = false, side = null, players = null, userId = null, phone = null }) =>
     q(
-      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount, solo, solo_side, players)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb) RETURNING id`,
-      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount, solo, side, players && JSON.stringify(players)],
+      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount, solo, solo_side, players, user_id, phone)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16) RETURNING id`,
+      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount, solo, side, players && JSON.stringify(players), userId, phone],
     );
 
   // A team's players (optional): one name per line, or a list.
@@ -671,7 +671,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
             ...(access.can.manage && { contact: m.contact, feeStatus: m.fee_status, feeAmount: m.fee_amount }),
           })),
         }),
-        ...(access.can.manage && { contact: e.contact, feeStatus: e.fee_status, feeAmount: e.fee_amount, players: e.players || null }), // organisers only
+        ...(access.can.manage && { contact: e.contact, phone: e.phone, feeStatus: e.fee_status, feeAmount: e.fee_amount, players: e.players || null }), // organisers only
       })),
       groups,
       matches,
@@ -737,9 +737,24 @@ function createService(db, { mailer, fetchImpl } = {}) {
   async function accessFields(q, t, actor) {
     if (!actor) return { role: null, can: { score: false, manage: false, delete: false, own: false, claim: false } };
     const { role, ...can } = await accessOf(q, t, actor);
+    // The viewer's own entries (players enter with their account).
+    const mine = actor.user
+      ? await q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE tournament_id = $1 AND user_id = $2 ORDER BY id`, [t.id, actor.user.id])
+      : [];
     return {
       role,
       can,
+      myEntries: mine.map((e) => ({
+        id: e.id,
+        eventId: e.event_id,
+        name: e.name,
+        confirmed: e.confirmed,
+        feeStatus: e.fee_status,
+        solo: e.solo,
+        paired: e.paired_into != null,
+        inDraw: e.in_draw,
+        withdrawn: e.withdrawn,
+      })),
       // Share links are only shown to people who could hand them out anyway.
       links: can.manage ? { organiser: t.admin_key, scorer: t.scorer_key } : null,
     };
@@ -1259,31 +1274,31 @@ function createService(db, { mailer, fetchImpl } = {}) {
     });
   }
 
-  function contactOf(value) {
-    const s = text(value, 'Phone or email', { max: 120 });
-    if (s.includes('@')) {
-      const email = normalizeEmail(s);
-      if (!validEmail(email)) fail(400, 'Enter a valid phone number or email');
-      return email;
-    }
-    const phone = s.replace(/[^\d+]/g, '');
-    if (phone.replace(/\D/g, '').length < 7) fail(400, 'Enter a valid phone number or email');
+  // An optional phone number for the organisers.
+  function phoneOf(value) {
+    if (!given(value)) return null;
+    const phone = String(value).replace(/[^\d+]/g, '');
+    if (phone.replace(/\D/g, '').length < 7 || phone.length > 20) fail(400, 'Enter a valid phone number');
     return phone;
   }
 
-  // Public self-entry ("Enter this tournament"). No account needed; one entry
-  // per phone/email; closes at the deadline or when the draw is made. Past the
+  // Public self-entry ("Enter this tournament"): players sign in first, and
+  // the entry belongs to their account (one per event); the account email is
+  // the contact. Closes at the deadline or when the draw is made. Past the
   // tournament's capacity the entry is saved unconfirmed, and the owner is
   // emailed (once) that players are waiting.
-  async function register(id, input = {}, { baseUrl } = {}) {
+  async function register(id, actor, input = {}, { baseUrl } = {}) {
     if (given(input.website)) return { ok: true }; // honeypot: bots fill every field
-    const contact = contactOf(input.contact);
+    if (!actor || !actor.user) fail(401, 'Sign in to enter');
+    const userId = actor.user.id;
+    const contact = normalizeEmail(actor.user.email);
+    const phone = phoneOf(input.phone);
     const result = await db.tx(async (q) => {
       const row = await load(q, id, { lock: true });
       await requireVisible(q, row, null);
       const t = await eventFor(q, row, input.event);
       const team = t.event.discipline === 'team';
-      const player = text(input.name, team ? 'Team name' : 'Your name', { max: 40 });
+      const player = text(given(input.name) || team ? input.name : actor.user.name, team ? 'Team name' : 'Your name', { max: 40 });
       const partner = text(input.partner, 'Partner name', { max: 40, optional: true });
       if (team && partner) fail(400, `${eventLabel(t)} is a team event — enter your team's name`);
       const players = team ? playersOf(input.players) : null;
@@ -1298,10 +1313,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const fee = solo ? Math.ceil(feeOf(t) / 2) : feeOf(t);
       if (fee) {
         if (!billingConfig().enabled) fail(503, 'Online payment isn\'t available right now — contact the organiser');
-        if (!contact.includes('@')) fail(400, 'Enter your email address — your receipt is sent there');
         await clearExpiredPending(q, t);
         // Starting again replaces your own unfinished payment.
-        await q(`DELETE FROM entries WHERE event_id = $1 AND contact = $2 AND fee_status = 'pending'`, [t.eventId, contact]);
+        await q(`DELETE FROM entries WHERE event_id = $1 AND user_id = $2 AND fee_status = 'pending'`, [t.eventId, userId]);
       }
       // Doubles need a partner; singles ignore one.
       if (doubles && !solo && !partner) fail(400, `${eventLabel(t)} is a doubles event — add your partner's name, or ask us to find you one`);
@@ -1311,16 +1325,17 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (!entriesOpen(t)) fail(409, 'Entries are closed');
       const existing = await entriesOf(q, t);
       if (existing.length >= MAX_ENTRIES) fail(409, 'This event is full');
-      // Paired solo players aren't in entriesOf but still hold their contact.
-      const [used] = await q('SELECT 1 FROM entries WHERE event_id = $1 AND contact = $2', [t.eventId, contact]);
-      if (used) fail(409, 'This phone number or email has already been used to enter this event');
+      // One entry per account (paired solo players aren't in entriesOf but still count),
+      // and older entries made with the same email before accounts were needed.
+      const [used] = await q('SELECT 1 FROM entries WHERE event_id = $1 AND (user_id = $2 OR (user_id IS NULL AND contact = $3))', [t.eventId, userId, contact]);
+      if (used) fail(409, 'You\'ve already entered this event');
       if (existing.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(409, `"${name}" is already entered`);
       const seed = existing.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
       const room = await hasRoom(q, t);
       if (fee) {
         // Paid events never take a payment for a place that isn't there.
         if (!room) fail(409, `${eventLabel(t)} is full`);
-        const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee, solo, side, players });
+        const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee, solo, side, players, userId, phone });
         const [pay] = await q(
           `INSERT INTO payments (tournament_id, tournament_name, user_email, amount, currency, kind, entry_id, event_id, event_name, player)
            VALUES ($1, $2, $3, $4, $5, 'entry', $6, $7, $8, $9) RETURNING id`,
@@ -1329,7 +1344,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         return { t, name, entryId, paymentId: pay.id, fee, player, contact, solo };
       }
       const confirmed = room;
-      await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side, players });
+      await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side, players, userId, phone });
       let owners = [];
       if (!confirmed && !t.waiting_notified) {
         await q('UPDATE tournaments SET waiting_notified = true WHERE id = $1', [t.id]);
@@ -1527,13 +1542,68 @@ function createService(db, { mailer, fetchImpl } = {}) {
       requireSetup(t);
       const [e] = await q('SELECT source, paired_into FROM entries WHERE id = $1', [Number(entryId) || 0]);
       if (e?.paired_into) fail(409, 'This player is in a drawn pair — split the pair first');
-      if (e?.source === 'drawn') {
-        // Removing a drawn pair splits it; both players go back to looking.
-        await q('UPDATE entries SET paired_into = NULL WHERE paired_into = $1', [Number(entryId)]);
-      }
-      const deleted = await q('DELETE FROM entries WHERE id = $1 AND tournament_id = $2 RETURNING id', [Number(entryId) || 0, t.id]);
-      if (!deleted.length) fail(404, 'Entry not found');
+      await deleteEntry(q, t, entryId);
     });
+  }
+
+  async function deleteEntry(q, t, entryId) {
+    const [e] = await q('SELECT source FROM entries WHERE id = $1', [Number(entryId) || 0]);
+    if (e?.source === 'drawn') {
+      // Removing a drawn pair splits it; both players go back to looking.
+      await q('UPDATE entries SET paired_into = NULL WHERE paired_into = $1', [Number(entryId)]);
+    }
+    const deleted = await q('DELETE FROM entries WHERE id = $1 AND tournament_id = $2 RETURNING id', [Number(entryId) || 0, t.id]);
+    if (!deleted.length) fail(404, 'Entry not found');
+  }
+
+  // A player withdraws their own entry, before the draw.
+  async function leave(id, actor, entryId) {
+    if (!actor.user) fail(401, 'Sign in to do that');
+    return db.tx(async (q) => {
+      const row = await load(q, id, { lock: true });
+      const [e] = await q('SELECT * FROM entries WHERE id = $1 AND tournament_id = $2', [Number(entryId) || 0, row.id]);
+      if (!e || e.user_id !== actor.user.id) fail(404, 'Entry not found');
+      const t = await eventFor(q, row, e.event_id);
+      if (t.status !== 'setup') fail(409, 'The draw has been made — ask the organiser to withdraw you');
+      if (e.fee_status === 'paid') fail(409, 'Contact the organiser to withdraw — refunds are handled by them');
+      if (e.paired_into) {
+        const [pair] = await q('SELECT name FROM entries WHERE id = $1', [e.paired_into]);
+        const partner = pair ? pair.name.split(' / ').find((n) => n !== e.name) : null;
+        fail(409, `You've been paired${partner ? ` with ${partner}` : ''} — ask the organiser to change it`);
+      }
+      await deleteEntry(q, t, e.id);
+      return view(q, await load(q, id), actor);
+    });
+  }
+
+  // The signed-in player's entries across tournaments, newest first.
+  async function myEntries(actor) {
+    if (!actor.user) fail(401, 'Sign in to see your entries');
+    const rows = await db.query(
+      `SELECT ${CARD_COLUMNS}, e.id AS "entryId", e.name AS "entryName", e.confirmed, e.fee_status AS "feeStatus", e.solo,
+         e.paired_into IS NOT NULL AS paired, e.withdrawn, e.created_at AS "enteredAt",
+         ev.id AS "eventId", ev.status AS "eventStatus", ev.discipline, ev.gender, ev.age, ev.level, ev.name AS "eventCustomName",
+         (SELECT COUNT(*)::int FROM events x WHERE x.tournament_id = t.id) AS "eventCount"
+       FROM entries e JOIN tournaments t ON t.id = e.tournament_id JOIN events ev ON ev.id = e.event_id
+       WHERE e.user_id = $1 ORDER BY e.created_at DESC LIMIT 100`,
+      [actor.user.id],
+    );
+    return rows.map(({ entryId, entryName, confirmed, feeStatus, solo, paired, withdrawn, enteredAt, eventId, eventStatus, discipline, gender, age, level, eventCustomName, eventCount, ...card }) => ({
+      ...cardOf(card),
+      entry: {
+        id: entryId,
+        name: entryName,
+        eventId,
+        eventName: eventCount > 1 ? catalog.eventName({ discipline, gender, age, level, name: eventCustomName }) : null,
+        enteredAt,
+        // entered | waiting | payment | looking (for a partner) | playing | withdrawn
+        status: withdrawn ? 'withdrawn'
+          : feeStatus === 'pending' ? 'payment'
+            : eventStatus !== 'setup' ? 'playing'
+              : solo && !paired ? 'looking'
+                : confirmed ? 'entered' : 'waiting',
+      },
+    }));
   }
 
   async function reorderEntries(id, actor, ids, { event } = {}) {
@@ -2334,6 +2404,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     unpair,
     updateEvent,
     callMatch,
+    leave,
+    myEntries,
     sharePreview,
     tournamentPage,
     sitemapTournaments,

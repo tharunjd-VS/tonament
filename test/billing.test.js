@@ -10,6 +10,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { createDb } = require('../server/db');
 const { createApp } = require('../server/app');
+const { enterAs } = require('./players');
 const billing = require('../server/billing');
 
 const KEY_ID = 'rzp_test_KEY123';
@@ -73,6 +74,7 @@ test.before(async () => {
   svc = app.service;
 });
 test.after(() => db.close());
+const enter = (...args) => enterAs(svc)(...args); // a player entering with their account
 
 const BILLING_ENV = {
   RAZORPAY_KEY_ID: KEY_ID,
@@ -138,8 +140,8 @@ test('over the free limit, players can still enter: unconfirmed until the organi
     const sentBefore = mailer.sent.length;
     const base = { baseUrl: 'https://tonament.example' };
 
-    assert.deepEqual(await svc.register(id, { name: 'Late Lee', contact: 'lee@x.dev' }, base), { ok: true, name: 'Late Lee', confirmed: false, event: (await svc.getTournament(id)).eventId });
-    await svc.register(id, { name: 'Late Mo', contact: 'mo@x.dev' }, base);
+    assert.deepEqual(await enter(id, { name: 'Late Lee', contact: 'lee@x.dev' }, base), { ok: true, name: 'Late Lee', confirmed: false, event: (await svc.getTournament(id)).eventId });
+    await enter(id, { name: 'Late Mo', contact: 'mo@x.dev' }, base);
     // The owner is told once, not for every waiting player.
     const notes = mailer.sent.slice(sentBefore).filter((m) => m.subject === 'Players are waiting to enter Waiting Cup');
     assert.equal(notes.length, 1);
@@ -182,7 +184,7 @@ test('start without unconfirmed entries leaves them out of the draw', async () =
   try {
     const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Skip Cup', format: 'knockout' });
     await svc.addEntries(id, ORG, names(16));
-    await svc.register(id, { name: 'Waiter', contact: 'w@x.dev' });
+    await enter(id, { name: 'Waiter', contact: 'w@x.dev' });
     const t = await svc.start(id, ORG, { skipUnconfirmed: true });
     const waiter = t.entries.find((e) => e.name === 'Waiter');
     assert.equal(waiter.inDraw, false);
@@ -202,9 +204,9 @@ test('organiser maximum: places left, waitlist, and over 16 needs the Pass', asy
     assert.equal(pub.placesLeft, 8);
     await svc.addEntries(id, ORG, names(7));
     assert.equal((await svc.getTournament(id)).placesLeft, 1);
-    assert.equal((await svc.register(id, { name: 'Eighth', contact: 'e8@x.dev' })).confirmed, true);
+    assert.equal((await enter(id, { name: 'Eighth', contact: 'e8@x.dev' })).confirmed, true);
     assert.equal((await svc.getTournament(id)).placesLeft, 0);
-    assert.equal((await svc.register(id, { name: 'Ninth', contact: 'e9@x.dev' })).confirmed, false); // waitlist
+    assert.equal((await enter(id, { name: 'Ninth', contact: 'e9@x.dev' })).confirmed, false); // waitlist
     // Organisers may go past their own maximum (within the plan).
     let t = await svc.addEntries(id, ORG, ['Organiser Pick']);
     assert.equal(t.entries.find((e) => e.name === 'Organiser Pick').confirmed, true);
@@ -226,9 +228,9 @@ test('billing off: self-entries are only unconfirmed past the organiser maximum'
   withBilling(false);
   const { id } = await svc.createTournament(ORG, { visibility: 'public', name: 'Free For All', format: 'knockout' });
   await svc.addEntries(id, ORG, names(20));
-  assert.equal((await svc.register(id, { name: 'Twenty-one', contact: 't21@x.dev' })).confirmed, true);
+  assert.equal((await enter(id, { name: 'Twenty-one', contact: 't21@x.dev' })).confirmed, true);
   await svc.updateSettings(id, ORG, { maxEntries: 21 });
-  assert.equal((await svc.register(id, { name: 'Twenty-two', contact: 't22@x.dev' })).confirmed, false);
+  assert.equal((await enter(id, { name: 'Twenty-two', contact: 't22@x.dev' })).confirmed, false);
 });
 
 test('checkout -> verify activates the Club plan, sends a receipt, and is idempotent', async () => {
@@ -397,7 +399,7 @@ test('plan limits count entries across all events; the legacy Event Pass stays u
       (e) => e.status === 402 && e.code === 'upgrade' && /free plan allows up to 16 entries per tournament \(6 left\)\. Upgrade to Club \(up to 64 entries\)/.test(e.message));
     await svc.addEntries(id, ORG, names(6, 'W'), { event: ws.id });
     // A self-entry in either event now waits for confirmation.
-    assert.equal((await svc.register(id, { name: 'Late', contact: 'late@x.dev', event: ws.id })).confirmed, false);
+    assert.equal((await enter(id, { name: 'Late', contact: 'late@x.dev', event: ws.id })).confirmed, false);
 
     await svc.adminSetPlan(id, ADMIN, 'pass');
     const t = await svc.getTournament(id, ORG);

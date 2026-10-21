@@ -7,6 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createDb } = require('../server/db');
 const { createApp } = require('../server/app');
+const { enterAs } = require('./players');
 const formats = require('../server/formats');
 
 let db;
@@ -16,6 +17,7 @@ test.before(async () => {
   svc = createApp(db).service;
 });
 test.after(() => db.close());
+const enter = (...args) => enterAs(svc)(...args); // a player entering with their account
 
 const ORG = { user: { id: 1, email: 'org@club.test', name: 'Org', isAdmin: false } };
 const names = (n, p = 'P') => Array.from({ length: n }, (_, i) => `${p}${i + 1}`);
@@ -52,33 +54,33 @@ test('self-entry: open until the deadline or the draw; contact details stay priv
   assert.equal(t.config.selfEntry, true);
   assert.equal(t.entriesOpen, true);
 
-  assert.deepEqual(await svc.register(id, { name: 'Asha', contact: '+91 98765 43210' }), { ok: true, name: 'Asha', confirmed: true, event: t.eventId });
-  await svc.register(id, { name: 'Ben', partner: 'Cy', contact: 'Ben@Example.com' });
-  await assert.rejects(svc.register(id, { name: 'Asha Again', contact: '+919876543210' }), /already been used/);
-  await assert.rejects(svc.register(id, { name: 'Dee', contact: '123' }), /valid phone number or email/);
+  assert.deepEqual(await enter(id, { name: 'Asha', contact: '+91 98765 43210' }), { ok: true, name: 'Asha', confirmed: true, event: t.eventId });
+  await enter(id, { name: 'Ben', partner: 'Cy', contact: 'Ben@Example.com' });
+  await assert.rejects(enter(id, { name: 'Asha Again', contact: '+919876543210' }), /already entered this event/); // same account
+  await assert.rejects(enter(id, { name: 'Dee', contact: 'dee@x.dev', phone: '123' }), /valid phone number/);
   // Bots filling the honeypot get a fake success and nothing is stored.
-  assert.deepEqual(await svc.register(id, { name: 'Spam', contact: 'spam@x.dev', website: 'http://spam' }), { ok: true });
+  assert.deepEqual(await enter(id, { name: 'Spam', contact: 'spam@x.dev', website: 'http://spam' }), { ok: true });
 
   t = await svc.getTournament(id);
   assert.deepEqual(t.entries.map((e) => [e.name, e.source]), [['Asha', 'self'], ['Ben / Cy', 'self']]);
   assert.equal(t.entries[0].contact, undefined); // public view
   t = await svc.getTournament(id, ORG);
-  assert.deepEqual(t.entries.map((e) => e.contact), ['+919876543210', 'ben@example.com']);
+  assert.deepEqual(t.entries.map((e) => e.contact), ['919876543210@phone.test', 'ben@example.com']); // the account emails
 
   // Deadline in the past closes the form; organisers can still add people.
   await svc.updateSettings(id, ORG, { entriesCloseAt: new Date(Date.now() - 60_000).toISOString() });
   assert.equal((await svc.getTournament(id)).entriesOpen, false);
-  await assert.rejects(svc.register(id, { name: 'Late', contact: 'late@x.dev' }), /Entries are closed/);
+  await assert.rejects(enter(id, { name: 'Late', contact: 'late@x.dev' }), /Entries are closed/);
   await svc.addEntries(id, ORG, ['Organiser Added']);
   await svc.updateSettings(id, ORG, { entriesCloseAt: '' }); // clear: open until the draw
   assert.equal((await svc.getTournament(id)).entriesOpen, true);
 
   await svc.updateSettings(id, ORG, { selfEntry: false });
-  await assert.rejects(svc.register(id, { name: 'X', contact: 'x@x.dev' }), /doesn't take entries online/);
+  await assert.rejects(enter(id, { name: 'X', contact: 'x@x.dev' }), /doesn't take entries online/);
   await svc.updateSettings(id, ORG, { selfEntry: true });
 
   await svc.start(id, ORG);
-  await assert.rejects(svc.register(id, { name: 'After', contact: 'after@x.dev' }), /draw has been made/);
+  await assert.rejects(enter(id, { name: 'After', contact: 'after@x.dev' }), /draw has been made/);
   await assert.rejects(svc.updateSettings(id, ORG, { groupSize: 3 }), /locked/); // the event's format is locked
 });
 

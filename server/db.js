@@ -233,11 +233,17 @@ ALTER TABLE matches ADD COLUMN IF NOT EXISTS called_at TIMESTAMPTZ;
 -- Start and finish times ("08:00"), the venue's local time.
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS start_time TEXT;
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS end_time TEXT;
+
+-- Self-entries belong to the player's account (organisers' entries have none;
+-- no foreign key, like members, which are matched to accounts by email).
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS user_id INTEGER;
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS phone TEXT;
+CREATE INDEX IF NOT EXISTS entries_user ON entries(user_id);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 
 async function migrate(db) {
   try {

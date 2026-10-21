@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { createDb } = require('../server/db');
 const { createApp } = require('../server/app');
+const { enterAs } = require('./players');
 
 const KEY_ID = 'rzp_test_FEES';
 const KEY_SECRET = 'fees_secret';
@@ -49,6 +50,7 @@ test.before(async () => {
   svc = createApp(db, { mailer, fetchImpl: rp.fetchImpl }).service;
   Object.assign(process.env, { RAZORPAY_KEY_ID: KEY_ID, RAZORPAY_KEY_SECRET: KEY_SECRET, RAZORPAY_WEBHOOK_SECRET: WEBHOOK_SECRET, BUSINESS_NAME: 'Tonament Sports' });
 });
+const enter = (...args) => enterAs(svc)(...args); // a player entering with their account
 test.after(() => {
   for (const k of ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET', 'BUSINESS_NAME']) delete process.env[k];
   return db.close();
@@ -84,8 +86,7 @@ test('only site admins mark tournaments as organised by Tonament; only those tak
 
 test('paid self-entry: pending until paid, then confirmed with a receipt; replay does nothing', async () => {
   const { id, ms } = await officialCup();
-  await assert.rejects(svc.register(id, { name: 'Asha', contact: '+91 98765 43210', event: ms }), /Enter your email/);
-  const res = await svc.register(id, { name: 'Asha', contact: 'asha@x.dev', event: ms }, base);
+  const res = await enter(id, { name: 'Asha', contact: 'asha@x.dev', event: ms }, base);
   assert.equal(res.pending, true);
   assert.equal(res.payment.amount, 30000); // set by the server from the event
   assert.equal(res.payment.description, 'Entry fee — Men\'s Singles, Tonament Open');
@@ -114,7 +115,7 @@ test('paid self-entry: pending until paid, then confirmed with a receipt; replay
 
 test('the webhook confirms a paid entry when the tab was closed', async () => {
   const { id, ms } = await officialCup('Webhook Open');
-  const res = await svc.register(id, { name: 'Ben', contact: 'ben@x.dev', event: ms }, base);
+  const res = await enter(id, { name: 'Ben', contact: 'ben@x.dev', event: ms }, base);
   const paid = rp.pay(res.payment.orderId);
   const body = JSON.stringify({
     event: 'payment.captured',
@@ -127,16 +128,16 @@ test('the webhook confirms a paid entry when the tab was closed', async () => {
 
 test('places are held while paying; abandoned payments expire; full paid events refuse first', async () => {
   const { id, xd } = await officialCup('Full Open');
-  const a = await svc.register(id, { name: 'A', partner: 'B', contact: 'a@x.dev', event: xd }, base);
-  await svc.register(id, { name: 'C', partner: 'D', contact: 'c@x.dev', event: xd }, base);
+  const a = await enter(id, { name: 'A', partner: 'B', contact: 'a@x.dev', event: xd }, base);
+  await enter(id, { name: 'C', partner: 'D', contact: 'c@x.dev', event: xd }, base);
   // Both places are held by players paying, so a third can't start paying.
-  await assert.rejects(svc.register(id, { name: 'E', partner: 'F', contact: 'e@x.dev', event: xd }, base), /is full/);
+  await assert.rejects(enter(id, { name: 'E', partner: 'F', contact: 'e@x.dev', event: xd }, base), /is full/);
   // Retrying replaces your own unfinished payment instead of being "already entered".
-  const again = await svc.register(id, { name: 'A', partner: 'B', contact: 'a@x.dev', event: xd }, base);
+  const again = await enter(id, { name: 'A', partner: 'B', contact: 'a@x.dev', event: xd }, base);
   assert.notEqual(again.payment.orderId, a.payment.orderId);
   // After 30 minutes an unpaid entry no longer holds its place.
   await db.query(`UPDATE entries SET created_at = now() - interval '31 minutes' WHERE contact = 'c@x.dev'`);
-  const e = await svc.register(id, { name: 'E', partner: 'F', contact: 'e@x.dev', event: xd }, base);
+  const e = await enter(id, { name: 'E', partner: 'F', contact: 'e@x.dev', event: xd }, base);
   assert.equal(e.pending, true);
   // A very late payment for a cleared entry puts the player back in.
   await db.query(`DELETE FROM entries WHERE contact = 'a@x.dev'`);
@@ -155,7 +156,7 @@ test('organisers record fees paid in person or waive them; online payments are p
   t = await svc.setEntryFee(id, ADMIN, walk.id, 'waived');
   assert.deepEqual([t.events[0].entries[0].feeStatus, t.events[0].feeTotal], ['waived', 0]);
   await assert.rejects(svc.setEntryFee(id, ADMIN, walk.id, 'free'), /status must be/);
-  const res = await svc.register(id, { name: 'Online', contact: 'on@x.dev', event: ms }, base);
+  const res = await enter(id, { name: 'Online', contact: 'on@x.dev', event: ms }, base);
   await svc.verifyPayment(rp.pay(res.payment.orderId), base);
   const online = (await svc.getTournament(id, ADMIN)).events[0].entries.find((e) => e.name === 'Online');
   await assert.rejects(svc.setEntryFee(id, ADMIN, online.id, 'waived'), /Razorpay dashboard/);
@@ -164,7 +165,7 @@ test('organisers record fees paid in person or waive them; online payments are p
 test('a solo doubles player pays half the pair fee and keeps it after pairing', async () => {
   const { id, xd } = await officialCup('Solo Open');
   await svc.updateEvent(id, ADMIN, xd, { maxEntries: '' });
-  const res = await svc.register(id, { name: 'Ravi', contact: 'ravi@x.dev', event: xd, solo: true, side: 'man' }, base);
+  const res = await enter(id, { name: 'Ravi', contact: 'ravi@x.dev', event: xd, solo: true, side: 'man' }, base);
   assert.equal(res.payment.amount, 25000); // half of ₹500
   assert.match(res.payment.description, /half of the pair fee/);
   await svc.verifyPayment(rp.pay(res.payment.orderId), base);

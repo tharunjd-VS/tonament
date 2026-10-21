@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { createDb } = require('../server/db');
 const { createApp } = require('../server/app');
+const { enterAs } = require('./players');
 
 let db;
 let app;
@@ -18,6 +19,7 @@ test.before(async () => {
   svc = app.service;
 });
 test.after(() => db.close());
+const enter = (...args) => enterAs(svc)(...args); // a player entering with their account
 
 const OWNER = { user: { id: 1, email: 'owner@vis.test', name: 'Owner', isAdmin: false } };
 const ORGANISER = { user: { id: 2, email: 'org@vis.test', name: 'Org', isAdmin: false } };
@@ -42,7 +44,7 @@ test('new tournaments are private: team only, not listed, no sign-ups', async ()
   for (const who of [ORGANISER, UMPIRE, ADMIN, { key: own.links.organiser }, { key: own.links.scorer }]) {
     assert.equal((await svc.getTournament(id, who)).name, 'Secret Cup');
   }
-  await assert.rejects(svc.register(id, { name: 'Asha', contact: 'asha@x.dev' }), isPrivate);
+  await assert.rejects(enter(id, { name: 'Asha', contact: 'asha@x.dev' }), isPrivate);
   assert.deepEqual((await svc.myTournaments(OWNER)).map((t) => [t.id, t.visibility]), [[id, 'private']]);
 });
 
@@ -52,11 +54,11 @@ test('link only and public', async () => {
   assert.equal(t.visibility, 'link');
   assert.equal(await listed(id), false);
   assert.equal((await svc.getTournament(id)).visibility, 'link');
-  assert.equal((await svc.register(id, { name: 'Ben', contact: 'ben@x.dev' })).ok, true);
+  assert.equal((await enter(id, { name: 'Ben', contact: 'ben@x.dev' })).ok, true);
 
   t = await svc.setVisibility(id, OWNER, 'public');
   assert.equal(await listed(id), true);
-  assert.equal((await svc.register(id, { name: 'Cy', contact: 'cy@x.dev' })).ok, true);
+  assert.equal((await enter(id, { name: 'Cy', contact: 'cy@x.dev' })).ok, true);
 });
 
 test('only the owner (or a site admin) can change visibility, at any stage', async () => {
