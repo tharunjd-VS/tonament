@@ -10,13 +10,19 @@
   'use strict';
 
   // 'any' is the catch-all used by tournaments made before events existed:
-  // singles or pairs, partner optional.
-  const DISCIPLINES = ['singles', 'doubles', 'any'];
+  // singles or pairs, partner optional. 'team' entries are team names.
+  const DISCIPLINES = ['singles', 'doubles', 'team', 'any'];
   const GENDERS = ['men', 'women', 'mixed', 'open'];
   const LEVELS = ['Open', 'Beginner', 'Intermediate', 'Advanced'];
   const AGES = ['Open', 'U11', 'U13', 'U15', 'U17', 'U19', '35+', '45+', '55+'];
   // Sports whose players use other levels and age groups (pickleball: skill ratings).
+  // disciplines: the event types a sport offers ('any' = the singles-or-pairs catch-all).
+  const TEAM = { disciplines: ['team'] };
   const SPORT_LISTS = {
+    volleyball: TEAM,
+    throwball: TEAM,
+    'sepak-takraw': TEAM,
+    'beach-volleyball': { disciplines: ['doubles'] },
     pickleball: {
       levels: ['Open', 'Beginner', 'Intermediate', 'Advanced', '3.0', '3.5', '4.0', '4.5', '5.0+'],
       ages: ['Open', 'U19', '35+', '50+', '60+', '65+', '70+'],
@@ -24,8 +30,12 @@
   };
   const uniq = (xs) => [...new Set(xs)];
   // The suggestions for a sport; every sport's when none is given (search).
-  const levelsFor = (sport) => (sport ? (SPORT_LISTS[sport] || {}).levels || LEVELS : uniq([...LEVELS, ...Object.values(SPORT_LISTS).flatMap((l) => l.levels)]));
-  const agesFor = (sport) => (sport ? (SPORT_LISTS[sport] || {}).ages || AGES : uniq([...AGES, ...Object.values(SPORT_LISTS).flatMap((l) => l.ages)]));
+  const levelsFor = (sport) => (sport ? (SPORT_LISTS[sport] || {}).levels || LEVELS : uniq([...LEVELS, ...Object.values(SPORT_LISTS).flatMap((l) => l.levels || [])]));
+  const agesFor = (sport) => (sport ? (SPORT_LISTS[sport] || {}).ages || AGES : uniq([...AGES, ...Object.values(SPORT_LISTS).flatMap((l) => l.ages || [])]));
+  const disciplinesFor = (sport) => (sport && (SPORT_LISTS[sport] || {}).disciplines) || ['singles', 'doubles', 'any'];
+  const isTeamSport = (sport) => disciplinesFor(sport).includes('team');
+  // The quick-add choices for a sport; all of them when none is given (search).
+  const presetsFor = (sport) => (sport ? PRESETS.filter((p) => disciplinesFor(sport).includes(p.discipline)) : PRESETS);
 
   // The quick-add choices on the create form.
   const PRESETS = [
@@ -36,6 +46,10 @@
     { key: 'XD', discipline: 'doubles', gender: 'mixed', label: 'Mixed Doubles' },
     { key: 'OS', discipline: 'singles', gender: 'open', label: 'Open Singles' },
     { key: 'OD', discipline: 'doubles', gender: 'open', label: 'Open Doubles' },
+    { key: 'MT', discipline: 'team', gender: 'men', label: 'Men\'s Team' },
+    { key: 'WT', discipline: 'team', gender: 'women', label: 'Women\'s Team' },
+    { key: 'XT', discipline: 'team', gender: 'mixed', label: 'Mixed Team' },
+    { key: 'OT', discipline: 'team', gender: 'open', label: 'Open Team' },
   ];
 
   // Prize places (custom text is allowed too) and what an entry includes.
@@ -58,20 +72,27 @@
   const perkLabel = (key, sport) => (key === 'shuttles' && sport && sport !== 'badminton' ? 'Balls provided' : PERKS[key]);
 
   const GENDER_WORD = { men: 'Men\'s', women: 'Women\'s', mixed: 'Mixed', open: 'Open' };
-  const DISCIPLINE_WORD = { singles: 'Singles', doubles: 'Doubles' };
+  const DISCIPLINE_WORD = { singles: 'Singles', doubles: 'Doubles', team: 'Team' };
   const SHORT_LEVEL = { Beginner: 'Beg', Intermediate: 'Int', Advanced: 'Adv' };
 
   const clean = (v) => (typeof v === 'string' ? v.trim().replace(/\s+/g, ' ') : '');
 
   // Checks and tidies { discipline, gender, age, level, name }. Throws an
   // Error with a readable message when something is wrong.
-  function normalize(input = {}, prev = {}) {
+  // With a sport, only that sport's event types are allowed.
+  function normalize(input = {}, prev = {}, sport) {
     const pick = (k, fallback) => (input[k] === undefined ? prev[k] ?? fallback : input[k]);
-    const discipline = pick('discipline', 'any');
+    const allowed = disciplinesFor(sport);
+    const discipline = pick('discipline', allowed.includes('any') ? 'any' : allowed[0]);
     const gender = pick('gender', 'open');
-    if (!DISCIPLINES.includes(discipline)) throw new Error('Choose singles or doubles');
+    if (!DISCIPLINES.includes(discipline)) throw new Error('Choose singles, doubles or team');
+    if (sport && !allowed.includes(discipline)) {
+      throw new Error(allowed.length === 1 ? `This sport has ${DISCIPLINE_WORD[allowed[0]].toLowerCase()} events only` : 'This sport has no team events');
+    }
     if (!GENDERS.includes(gender)) throw new Error('Choose men, women, mixed or open');
-    if (gender === 'mixed' && discipline !== 'doubles') throw new Error('Mixed events are doubles only');
+    if (gender === 'mixed' && discipline !== 'doubles' && discipline !== 'team') {
+      throw new Error(allowed.includes('team') ? 'Mixed events are doubles or teams only' : 'Mixed events are doubles only');
+    }
     const text = (k, label) => {
       const v = clean(pick(k, 'Open')) || 'Open';
       if (v.length > 30) throw new Error(`${label} must be at most 30 characters`);
@@ -102,5 +123,5 @@
     return [base, e.age !== 'Open' ? e.age : null, level].filter(Boolean).join(' ');
   }
 
-  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName };
+  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName };
 });

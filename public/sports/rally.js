@@ -18,8 +18,10 @@
   }
   const oneOf = (value, list, fallback) => (list.includes(Number(value)) ? Number(value) : fallback);
 
-  function gameWonBy(game, side, c) {
-    return Boolean(c.cap && game[side] >= c.cap) || (game[side] >= c.points && game[side] - game[other(side)] >= 2);
+  // c.decider: points for the deciding game (volleyball's 5th set to 15).
+  const targetOf = (c, deciding) => (deciding && c.decider ? c.decider : c.points);
+  function gameWonBy(game, side, c, deciding = false) {
+    return Boolean(c.cap && game[side] >= c.cap) || (game[side] >= targetOf(c, deciding) && game[side] - game[other(side)] >= 2);
   }
 
   // rules: {
@@ -43,7 +45,7 @@
       const scorer = rules.rally(st, side, game, c);
       if (!scorer) continue;
       game[scorer] += 1;
-      if (gameWonBy(game, scorer, c)) {
+      if (gameWonBy(game, scorer, c, games.length === c.bestOf)) {
         game.winner = scorer;
         gamesWon[scorer] += 1;
         if (gamesWon[scorer] >= need) winner = scorer;
@@ -55,12 +57,13 @@
     }
 
     const current = games[games.length - 1];
+    const deciding = games.length === c.bestOf;
     const gamePoint = { a: false, b: false };
     const matchPoint = { a: false, b: false };
     if (!winner) {
       for (const side of ['a', 'b']) {
         if (rules.canScore && !rules.canScore(st, side, c)) continue;
-        gamePoint[side] = gameWonBy({ ...current, [side]: current[side] + 1 }, side, c);
+        gamePoint[side] = gameWonBy({ ...current, [side]: current[side] + 1 }, side, c, deciding);
         matchPoint[side] = gamePoint[side] && gamesWon[side] + 1 >= need;
       }
     }
@@ -70,9 +73,10 @@
       gamesWon,
       winner,
       server: winner ? null : st.server,
+      unit: rules.unit || 'Game',
       serveCourt: null,
       note: null,
-      ...(winner || !rules.extra ? {} : rules.extra(st, current, c)),
+      ...(winner || !rules.extra ? {} : rules.extra(st, current, c, deciding)),
       gamePoint,
       matchPoint,
       totals: {
@@ -89,12 +93,64 @@
       .join(', ');
   }
 
-  const bestOfField = (values) => ({
+  const bestOfField = (values, unit = 'game') => ({
     key: 'bestOf',
     label: 'Match length',
     type: 'select',
-    options: values.map((n) => ({ value: n, label: n === 1 ? 'Single game' : `Best of ${n} games` })),
+    options: values.map((n) => ({ value: n, label: n === 1 ? `Single ${unit}` : `Best of ${n} ${unit}s` })),
   });
 
-  return { other, int, oneOf, gameWonBy, play, summary, bestOfField };
+  // A set-based sport (volleyball, throwball, …): every rally scores and its
+  // winner serves; the first serve alternates each set; the deciding set can
+  // be shorter. spec: { id, name, bestOf: [..], points: [..], deciders: [..],
+  // defaults, switchEvery: [points per side switch, in the deciding set] }
+  function setSport(spec) {
+    const D = Object.freeze(spec.defaults);
+    const normalizeConfig = (cfg = {}) => {
+      cfg = cfg || {};
+      const points = oneOf(cfg.points, spec.points, D.points);
+      // 0 = the deciding set is played to the same score.
+      const decider = cfg.decider === undefined ? D.decider : oneOf(cfg.decider, [0, ...spec.deciders], D.decider);
+      return { bestOf: oneOf(cfg.bestOf, spec.bestOf, D.bestOf), points, decider: decider && decider < points ? decider : 0 };
+    };
+    const rules = {
+      unit: 'Set',
+      init: (first) => ({ server: first, setFirst: first }),
+      rally(st, winner) {
+        st.server = winner;
+        return winner;
+      },
+      nextGame(st) {
+        st.setFirst = other(st.setFirst);
+        st.server = st.setFirst;
+      },
+      extra(st, game, c, deciding) {
+        if (!spec.switchEvery) return {};
+        const every = spec.switchEvery[deciding ? 1 : 0];
+        const n = game.a + game.b;
+        return n > 0 && n % every === 0 ? { note: 'switch sides' } : {};
+      },
+    };
+    return {
+      id: spec.id,
+      name: spec.name,
+      defaults: D,
+      fields: [
+        bestOfField(spec.bestOf, 'set'),
+        { key: 'points', label: 'Points to win a set', type: 'select', options: spec.points.map((p) => ({ value: p, label: String(p) })) },
+        {
+          key: 'decider',
+          label: 'Deciding set to',
+          type: 'select',
+          options: [{ value: 0, label: 'Same as other sets' }, ...spec.deciders.map((p) => ({ value: p, label: String(p) }))],
+          hint: 'Win by 2.',
+        },
+      ],
+      normalizeConfig,
+      compute: (rallies = '', cfg, firstServer = 'a') => play(rallies, normalizeConfig(cfg), firstServer, rules),
+      summary,
+    };
+  }
+
+  return { other, int, oneOf, gameWonBy, play, summary, bestOfField, setSport };
 });

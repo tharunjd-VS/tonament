@@ -194,19 +194,28 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return { ...row, sportDef: sports.get(row.sport) };
   }
 
-  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into';
+  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into, players';
 
   // Entries and matches of one event (`ev` is an event context, see eventFor).
   // Solo players already paired up play as their pair entry, so they're left out.
   const entriesOf = (q, ev) =>
     q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE event_id = $1 AND paired_into IS NULL ORDER BY seed, id`, [ev.eventId]);
 
-  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null, solo = false, side = null }) =>
+  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null, solo = false, side = null, players = null }) =>
     q(
-      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount, solo, solo_side)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
-      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount, solo, side],
+      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount, solo, solo_side, players)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb) RETURNING id`,
+      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount, solo, side, players && JSON.stringify(players)],
     );
+
+  // A team's players (optional): one name per line, or a list.
+  function playersOf(value) {
+    const list = (Array.isArray(value) ? value : typeof value === 'string' ? value.split(/\r?\n|,/) : [])
+      .map((x) => (typeof x === 'string' ? x.trim().replace(/\s+/g, ' ') : '')).filter(Boolean);
+    if (list.length > 30) fail(400, 'List up to 30 players');
+    if (list.some((x) => x.length > 40)) fail(400, 'Player names must be at most 40 characters');
+    return list.length ? list : null;
+  }
 
   // ---------- entry fees (tournaments organised by Tonament only)
   // A paid self-entry is saved as 'pending' and holds its place for
@@ -392,9 +401,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const mutateEvent = (id, actor, eventId, fn) => mutate(id, actor, async (q, t) => fn(q, await eventFor(q, t, eventId)));
   const mutateEntry = (id, actor, entryId, fn) => mutate(id, actor, async (q, t) => fn(q, await eventOfEntry(q, t, entryId)));
 
-  function eventFields(input, prev) {
+  function eventFields(input, prev, sport) {
     try {
-      return catalog.normalize(input, prev);
+      return catalog.normalize(input, prev, sport);
     } catch (err) {
       return fail(400, err.message);
     }
@@ -645,7 +654,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
             ...(access.can.manage && { contact: m.contact, feeStatus: m.fee_status, feeAmount: m.fee_amount }),
           })),
         }),
-        ...(access.can.manage && { contact: e.contact, feeStatus: e.fee_status, feeAmount: e.fee_amount }), // organisers only
+        ...(access.can.manage && { contact: e.contact, feeStatus: e.fee_status, feeAmount: e.fee_amount, players: e.players || null }), // organisers only
       })),
       groups,
       matches,
@@ -962,7 +971,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     // Events to create (the quick-add on the create form); one catch-all event by default.
     const list = Array.isArray(input.events) && input.events.length ? input.events : [{}];
     if (list.length > 30) fail(400, 'A tournament can have at most 30 events');
-    const events = list.map((e) => ({ ...eventFields({ ...e }), format: FORMATS[e.format] ? e.format : format }));
+    const events = list.map((e) => ({ ...eventFields({ ...e }, undefined, sport.id), format: FORMATS[e.format] ? e.format : format }));
     const listed = new Set();
     for (const e of events) {
       const label = catalog.eventName(e);
@@ -1071,7 +1080,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (fee && !ev.official) fail(403, 'Entry fees are only available for tournaments organised by Tonament');
       config.fee = fee;
     }
-    const f = eventFields(input, ev.event);
+    const f = eventFields(input, ev.event, ev.sport);
     await q(
       `UPDATE events SET format = $1, config = $2::jsonb, discipline = $3, gender = $4, age = $5, level = $6, name = $7 WHERE id = $8`,
       [format, JSON.stringify(eventConfigOf(config)), f.discipline, f.gender, f.age, f.level, f.name, ev.eventId],
@@ -1094,7 +1103,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const names = new Set(existing.map((e) => catalog.eventName(e).toLowerCase()));
       let position = existing.reduce((max, e) => Math.max(max, e.position), -1);
       for (const raw of list) {
-        const f = eventFields(raw || {});
+        const f = eventFields(raw || {}, undefined, t.sport);
         const label = catalog.eventName(f);
         if (names.has(label.toLowerCase())) fail(409, `${label} already exists`);
         names.add(label.toLowerCase());
@@ -1110,7 +1119,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   async function updateEvent(id, actor, eventId, input = {}) {
     return mutateEvent(id, actor, eventId, async (q, ev) => {
       if (input.discipline !== undefined || input.gender !== undefined || input.age !== undefined || input.level !== undefined || input.name !== undefined) {
-        const f = eventFields(input, ev.event);
+        const f = eventFields(input, ev.event, ev.sport);
         const others = (await eventsOf(q, ev.id)).filter((e) => e.id !== ev.eventId);
         if (others.some((e) => catalog.eventName(e).toLowerCase() === catalog.eventName(f).toLowerCase())) {
           fail(409, `${catalog.eventName(f)} already exists`);
@@ -1203,13 +1212,16 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // emailed (once) that players are waiting.
   async function register(id, input = {}, { baseUrl } = {}) {
     if (given(input.website)) return { ok: true }; // honeypot: bots fill every field
-    const player = text(input.name, 'Your name', { max: 40 });
-    const partner = text(input.partner, 'Partner name', { max: 40, optional: true });
     const contact = contactOf(input.contact);
     const result = await db.tx(async (q) => {
       const row = await load(q, id, { lock: true });
       await requireVisible(q, row, null);
       const t = await eventFor(q, row, input.event);
+      const team = t.event.discipline === 'team';
+      const player = text(input.name, team ? 'Team name' : 'Your name', { max: 40 });
+      const partner = text(input.partner, 'Partner name', { max: 40, optional: true });
+      if (team && partner) fail(400, `${eventLabel(t)} is a team event — enter your team's name`);
+      const players = team ? playersOf(input.players) : null;
       const doubles = t.event.discipline === 'doubles';
       const drawn = doubles && t.config.partners === 'drawn';
       const solo = doubles && (drawn || Boolean(input.solo));
@@ -1243,7 +1255,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (fee) {
         // Paid events never take a payment for a place that isn't there.
         if (!room) fail(409, `${eventLabel(t)} is full`);
-        const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee, solo, side });
+        const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee, solo, side, players });
         const [pay] = await q(
           `INSERT INTO payments (tournament_id, tournament_name, user_email, amount, currency, kind, entry_id, event_id, event_name, player)
            VALUES ($1, $2, $3, $4, $5, 'entry', $6, $7, $8, $9) RETURNING id`,
@@ -1252,7 +1264,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         return { t, name, entryId, paymentId: pay.id, fee, player, contact, solo };
       }
       const confirmed = room;
-      await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side });
+      await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side, players });
       let owners = [];
       if (!confirmed && !t.waiting_notified) {
         await q('UPDATE tournaments SET waiting_notified = true WHERE id = $1', [t.id]);

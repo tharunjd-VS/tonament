@@ -220,11 +220,14 @@ CREATE INDEX IF NOT EXISTS media_t ON media(tournament_id, kind, position);
 -- Prizes live in each event's config.
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS perks JSONB;
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS notes TEXT;
+
+-- A team's players (team events; optional, organisers only).
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS players JSONB;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 
 async function migrate(db) {
   try {

@@ -686,7 +686,7 @@
           h('div', { class: 'filter-grid' },
             select('when', 'When', WHEN.map(([v, l]) => [v === 'upcoming' ? '' : v, l]), { anyLabel: null }),
             select('sport', 'Sport', liveSports().map((s) => [s.id, s.name])),
-            select('event', 'Event', CAT.PRESETS.map((p) => [p.key, p.label])),
+            select('event', 'Event', CAT.presetsFor(f.sport).map((p) => [p.key, p.label])),
             select('age', 'Age group', CAT.agesFor(f.sport)),
             select('level', 'Level', CAT.levelsFor(f.sport)),
             select('country', 'Country', countries),
@@ -896,10 +896,7 @@
   // What an event is: type, age group, level, optional name.
   function categoryFields(v, sport) {
     const type = v.discipline === 'any' ? 'any' : `${v.gender}-${v.discipline}`;
-    const types = [
-      ...CAT.PRESETS.map((p) => [`${p.gender}-${p.discipline}`, p.label]),
-      ['any', 'Open (singles or pairs)'],
-    ];
+    const types = eventTypes(sport);
     return h('fieldset', { class: 'details-set' }, h('legend', {}, 'Event'),
       h('div', { class: 'grid-2' },
         field('Type', h('select', { name: 'type', value: type }, types.map(([value, label]) => h('option', { value }, label)))),
@@ -916,7 +913,11 @@
 
   // ----- event list builder (create form and Events tab)
   // One row per event, each with its own type, age group and level.
-  const EVENT_TYPES = [...CAT.PRESETS.map((p) => [`${p.gender}-${p.discipline}`, p.label]), ['any', 'Open (singles or pairs)']];
+  // The event types a sport offers (team sports: teams; beach volleyball: pairs).
+  const eventTypes = (sport) => [
+    ...CAT.presetsFor(sport).map((p) => [`${p.gender}-${p.discipline}`, p.label]),
+    ...(CAT.disciplinesFor(sport).includes('any') ? [['any', 'Open (singles or pairs)']] : []),
+  ];
   const typeOf = (e) => (e.discipline === 'any' ? 'any' : `${e.gender}-${e.discipline}`);
   const fromType = (type) => {
     if (type === 'any') return { gender: 'open', discipline: 'any' };
@@ -945,6 +946,9 @@
   }
 
   function eventBuilder(initial = [], sport) {
+    const types = eventTypes(sport);
+    // Rows carried over from another sport switch to this sport's first type.
+    const fit = (v) => (types.some(([value]) => value === typeOf(v)) ? v : { ...v, ...fromType(types[0][0]) });
     const list = h('div', { class: 'ev-rows' });
     const note = h('p', { class: 'ev-note', hidden: true });
     const touched = () => list.closest('form')?.setAttribute('data-dirty', ''); // keep live redraws away
@@ -965,8 +969,9 @@
 
     function addRow(v) {
       const row = h('div', { class: 'ev-row' });
+      v = fit(v);
       const type = h('select', { 'aria-label': 'Event type', value: typeOf(v), onchange: refresh },
-        EVENT_TYPES.map(([value, label]) => h('option', { value }, label)));
+        types.map(([value, label]) => h('option', { value }, label)));
       const age = pickControl('Age group', CAT.agesFor(sport), v.age, refresh);
       const level = pickControl('Level', CAT.levelsFor(sport), v.level, refresh);
       row.read = () => ({ ...fromType(type.value), age: age.read(), level: level.read() });
@@ -987,7 +992,7 @@
     const several = h('details', { class: 'ev-several' },
       h('summary', {}, 'Add several at once'),
       h('p', { class: 'hint' }, 'Tick event types, age groups and levels — one event is added for every combination.'),
-      h('strong', {}, 'Events'), ticks(CAT.PRESETS.map((p) => [`${p.gender}-${p.discipline}`, p.label]), 'type'),
+      h('strong', {}, 'Events'), ticks(CAT.presetsFor(sport).map((p) => [`${p.gender}-${p.discipline}`, p.label]), 'type'),
       h('strong', {}, 'Age groups'), ticks(CAT.agesFor(sport).map((a) => [a, a]), 'age'),
       h('strong', {}, 'Levels'), ticks(CAT.levelsFor(sport).map((l) => [l, l]), 'level'),
       h('button', {
@@ -1257,6 +1262,7 @@
           h('span', { class: 'name' },
             h('span', { class: 'entry-name' }, e.name),
             e.contact ? h('small', { class: 'contact' }, e.contact) : null,
+            e.players ? h('small', { class: 'contact' }, `Players: ${e.players.join(', ')}`) : null,
             e.members && t.can.manage && e.members.some((m) => m.contact)
               ? h('small', { class: 'contact' }, e.members.map((m) => `${m.name}: ${m.contact}`).join(' · '))
               : null,
@@ -1275,7 +1281,7 @@
           t.can.manage && running && e.inDraw && !e.withdrawn
             ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => withdrawEntry(t, e) }, 'Withdraw')
             : null)))
-        : empty(editable ? 'No entries yet. Add players or pairs above.' : 'No entries yet.'),
+        : empty(editable ? `No entries yet. Add ${t.event.discipline === 'team' ? 'teams' : 'players or pairs'} above.` : 'No entries yet.'),
       editable && t.entries.length
         ? h('p', { class: 'hint', style: 'margin:8px 0 0' },
           'On the day, tick players as they arrive — once anyone is ticked, only ticked players go into the draw. List order is the seeding (1 = top seed).')
@@ -1303,7 +1309,8 @@
   function addEntriesForm(t, walkIn) {
     const ta = h('textarea', {
       name: 'names', rows: walkIn ? 2 : 4,
-      placeholder: t.event.discipline === 'doubles' ? 'One pair per line, e.g.\nAsha Rao / Lee Chan\nRavi / Meena'
+      placeholder: t.event.discipline === 'team' ? 'One team per line, e.g.\nChennai Spikers\nCity Smashers'
+        : t.event.discipline === 'doubles' ? 'One pair per line, e.g.\nAsha Rao / Lee Chan\nRavi / Meena'
         : t.event.discipline === 'singles' ? 'One player per line, e.g.\nAsha Rao\nLee Chan'
           : 'One player or pair per line, e.g.\nAsha Rao\nLee / Chan',
       oninput: (e) => { S.draft = e.target.value; },
@@ -1321,7 +1328,7 @@
         }, `Added ${names.length} ${names.length === 1 ? 'entry' : 'entries'}`);
       },
     },
-    h('h2', {}, walkIn ? 'Add walk-ins' : 'Add players or pairs'),
+    h('h2', {}, walkIn ? 'Add walk-ins' : t.event.discipline === 'team' ? 'Add teams' : 'Add players or pairs'),
     walkIn ? h('p', { class: 'muted small' }, 'Walk-ins are checked in automatically.') : null,
     ta,
     h('div', { class: 'actions', style: 'margin-top:10px' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add')));
@@ -1365,7 +1372,8 @@
     const full = t.placesLeft === 0;
     const fee = t.event.fee || 0;
     const drawn = t.event.discipline === 'doubles' && t.config.partners === 'drawn';
-    const feeLine = fee ? `Entry fee ${money(fee)}${t.event.discipline === 'doubles' ? ' per pair' : ''}, paid online when you enter. ` : '';
+    const team = t.event.discipline === 'team';
+    const feeLine = fee ? `Entry fee ${money(fee)}${t.event.discipline === 'doubles' ? ' per pair' : team ? ' per team' : ''}, paid online when you enter. ` : '';
     // Paid events have no waitlist: nobody pays for a place that isn't there.
     if (fee && full) {
       return h('div', { class: 'card entry-card' },
@@ -1406,10 +1414,10 @@
         ? 'Join the waitlist — the organiser will confirm your place if one opens up.'
         : `${feeLine}${t.placesLeft != null ? `${t.placesLeft} of ${t.config.maxEntries} places left. ` : ''}${closes}`)),
     h('div', { class: 'grid-2' },
-      field('Your name', h('input', { name: 'name', required: true, maxlength: 40, autocomplete: 'name' })),
-      // Doubles events need a partner (or "find me one"); singles have none;
-      // catch-all events make it optional; drawn-partner events never ask.
-      t.event.discipline === 'singles' || drawn ? null
+      field(team ? 'Team name' : 'Your name', h('input', { name: 'name', required: true, maxlength: 40, autocomplete: team ? 'off' : 'name' })),
+      // Doubles events need a partner (or "find me one"); singles and teams
+      // have none; catch-all events make it optional; drawn-partner events never ask.
+      t.event.discipline === 'singles' || team || drawn ? null
         : t.event.discipline === 'doubles'
           ? field('Partner\'s name', h('input', { name: 'partner', required: true, maxlength: 40, autocomplete: 'off' }), 'partner-field')
           : field('Partner (doubles only)', h('input', { name: 'partner', maxlength: 40, autocomplete: 'off' }))),
@@ -1423,10 +1431,13 @@
     t.event.gender === 'mixed' && t.event.discipline === 'doubles'
       ? Object.assign(field('I\'m playing as', h('select', { name: 'side' }, h('option', { value: 'man' }, 'Man'), h('option', { value: 'woman' }, 'Woman')), 'side-field'), { hidden: !drawn })
       : null,
+    team
+      ? field('Players (optional)', h('textarea', { name: 'players', rows: 3, maxlength: 1300, placeholder: 'One name per line' }), null, 'Only the organisers see this.')
+      : null,
     fee
-      ? field('Email', h('input', { name: 'contact', type: 'email', required: true, maxlength: 120, autocomplete: 'email' }), null,
+      ? field(team ? 'Captain\'s email' : 'Email', h('input', { name: 'contact', type: 'email', required: true, maxlength: 120, autocomplete: 'email' }), null,
         'Your receipt is sent here. Only the organisers see it.')
-      : field('Phone or email', h('input', { name: 'contact', required: true, maxlength: 120, autocomplete: 'email' }), null,
+      : field(team ? 'Captain\'s phone or email' : 'Phone or email', h('input', { name: 'contact', required: true, maxlength: 120, autocomplete: 'email' }), null,
         'Only the organisers see this, in case they need to reach you.'),
     // honeypot: hidden from people, filled in by bots
     h('label', { class: 'hp', 'aria-hidden': 'true' }, 'Website', h('input', { name: 'website', tabindex: '-1', autocomplete: 'off' })),
@@ -1762,7 +1773,7 @@
       : null,
     t.official
       ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'Entry fee'),
-        field(`Entry fee (₹)${t.event.discipline === 'doubles' ? ' per pair' : ''}`, h('input', {
+        field(`Entry fee (₹)${t.event.discipline === 'doubles' ? ' per pair' : t.event.discipline === 'team' ? ' per team' : ''}`, h('input', {
           type: 'number', name: 'fee', min: 0, max: 50000, step: 1, value: t.event.fee ? t.event.fee / 100 : '', placeholder: 'Free',
         }), null, 'Players pay online when they enter (Organised by Tonament only).'))
       : null,
@@ -2022,7 +2033,7 @@
         return h('div', { class: 'card' },
           h('h2', {}, g.name),
           h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ['#', 'Player', 'P', 'W', 'L', 'Games', 'Pts'].map((c, i) => h('th', { class: i === 1 ? '' : 'num', title: c === 'Pts' ? 'Point difference' : null }, c)))),
+            h('thead', {}, h('tr', {}, ['#', t.event.discipline === 'team' ? 'Team' : 'Player', 'P', 'W', 'L', unitOf(t) === 'Set' ? 'Sets' : 'Games', 'Pts'].map((c, i) => h('th', { class: i === 1 ? '' : 'num', title: c === 'Pts' ? 'Point difference' : null }, c)))),
             h('tbody', {}, g.standings.map((r) => h('tr', { class: qualifying(g, q).has(r.id) ? 'q' : r.withdrawn ? 'out' : '' },
               h('td', { class: 'num' }, r.rank),
               h('td', { class: 'name' }, r.name, r.withdrawn ? [' ', pill('withdrawn', 'Withdrew')] : null),
@@ -2120,16 +2131,16 @@
     const row = (s) => {
       const p = m[s];
       const won = Boolean(m.winner && p && m.winner === p.id);
-      const flag = live ? (sc.matchPoint[s] ? 'Match point' : sc.gamePoint[s] ? 'Game point' : null) : null;
+      const flag = live ? (sc.matchPoint[s] ? 'Match point' : sc.gamePoint[s] ? `${sc.unit || 'Game'} point` : null) : null;
       return h('div', { class: `sb-row side-${s}${won ? ' won' : ''}` },
         h('div', { class: 'sb-serve' }, live && sc.server === s ? h('span', { class: 'serve', title: 'Serving' }) : null),
         h('div', { class: 'sb-name' }, nameOf(p), flag ? h('span', { class: 'flag' }, flag) : null, won ? h('span', { class: 'flag' }, 'Winner') : null),
-        h('div', { class: 'sb-games', title: 'Games won' }, sc.gamesWon[s]),
+        h('div', { class: 'sb-games', title: `${sc.unit || 'Game'}s won` }, sc.gamesWon[s]),
         h('div', { class: 'sb-points' }, m.status === 'done' || m.status === 'bye' ? '' : cur[s]));
     };
     return h('div', { class: 'scoreboard' }, row('a'), row('b'),
       live && sc.server
-        ? h('div', { class: 'sb-foot' }, `Game ${sc.games.length} · ${nameOf(m[sc.server])} to serve${sc.serveCourt ? ` from the ${sc.serveCourt} court` : ''}${sc.note ? ` · ${sc.note}` : ''}`)
+        ? h('div', { class: 'sb-foot' }, `${sc.unit || 'Game'} ${sc.games.length} · ${nameOf(m[sc.server])} to serve${sc.serveCourt ? ` from the ${sc.serveCourt} court` : ''}${sc.note ? ` · ${sc.note}` : ''}`)
         : m.status === 'done' ? h('div', { class: 'sb-foot' }, m.summary) : null);
   }
 
@@ -2173,7 +2184,7 @@
     const games = m.score.games.filter((g) => g.a + g.b > 0);
     if (!games.length) return null;
     return h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'games-table' },
-      h('thead', {}, h('tr', {}, h('th', {}, ''), games.map((_, i) => h('th', { class: 'num' }, `Game ${i + 1}`)))),
+      h('thead', {}, h('tr', {}, h('th', {}, ''), games.map((_, i) => h('th', { class: 'num' }, `${m.score.unit || 'Game'} ${i + 1}`)))),
       h('tbody', {}, ['a', 'b'].map((s) => h('tr', {},
         h('td', { class: 'name' }, nameOf(m[s])),
         games.map((g) => h('td', { class: `num${g.winner === s ? ' won' : ''}` }, g[s]))))))));
@@ -2192,6 +2203,12 @@
   const scoringBusy = () => sending.size > 0 || [...queues.values()].some((q) => q.length);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const confirmedMatch = (mid) => S.t && allMatches(S.t).find((x) => x.id === mid);
+
+  // "Game" or "Set", from the sport's rules.
+  function unitOf(t) {
+    const sport = window.TonamentSports && window.TonamentSports[t.sport.id];
+    return (sport && sport.compute('', {}).unit) || 'Game';
+  }
 
   // The match as the umpire should see it: confirmed state plus queued taps.
   function withPending(t, m) {

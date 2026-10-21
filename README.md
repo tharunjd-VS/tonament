@@ -1,6 +1,6 @@
 # Tonament
 
-Tournament management with live scoring for **tonament.com**. Badminton, pickleball, table tennis and squash today; new sports are plug-in modules.
+Tournament management with live scoring for **tonament.com**. Badminton, pickleball, table tennis, squash, volleyball, beach volleyball, throwball and sepak takraw today; new sports are plug-in modules.
 
 ## Features
 
@@ -13,6 +13,12 @@ Tournament management with live scoring for **tonament.com**. Badminton, pickleb
 - **Pickleball rules:** traditional side-out scoring by default — only the serving side scores; in doubles both partners serve before a side-out (the first serving team starts on "0-0-2") and the scoreboard shows the score call ("4-2-1"). Organisers can switch an event to rally scoring. Games to 11 (or 15/21), win by 2, single game or best of 3/5. Level and age suggestions use skill ratings (3.0–5.0+) and 50+/60+/65+.
 - **Table tennis rules:** games to 11, win by 2, best of 5 (1/3/7 too); the serve changes every 2 points and every point from 10-10.
 - **Squash rules:** PAR scoring to 11 (or 15), win by 2, best of 5 (or 3); the rally winner serves.
+- **Set sports** (rally scoring, win by 2, the rally winner serves, first serve alternates each set; screens say "Set"):
+  - **Volleyball:** best of 5 sets to 25, deciding set to 15.
+  - **Beach volleyball:** pairs; best of 3 sets to 21, deciding set to 15; "switch sides" every 7 points (5 in the deciding set).
+  - **Throwball:** best of 3 sets to 25 (15/21 too).
+  - **Sepak takraw:** best of 3 sets to 21, deciding set to 15.
+- **Team events** (volleyball, throwball, sepak takraw): Men's / Women's / Mixed / Open Team. Entries are team names; self-entry asks for the team name, the captain's phone or email and, optionally, the players (organisers only). Each sport offers only its own event types.
 - **Undo:** works on any point, including the one that won a match. It's blocked once the next match has started.
 - **Entries and the event day:**
   - Players can enter themselves on the public page (name, partner, phone or email, no account needed) until a closing date/time or the draw.
@@ -145,11 +151,11 @@ vercel.json           Vercel config: static output and API rewrite
 ```
 
 ### Sports roadmap
-Badminton, pickleball, table tennis and squash are playable today. `server/sports/index.js` also lists the sports on the way, shown on the home page as "Soon"/"Later" chips that signed-in users can tap to request. Site admins see the totals on the admin page. Next: volleyball and throwball (rally scoring with teams), then football, futsal, hockey, kabaddi and basketball (goal/point scoring with draws). Tennis, padel and cricket come later.
+Badminton, pickleball, table tennis, squash and the volleyball family are playable today. `server/sports/index.js` also lists the sports on the way, shown on the home page as "Soon"/"Later" chips that signed-in users can tap to request. Site admins see the totals on the admin page. Next: tennis and padel (points, games, sets and tie-breaks), then football, futsal, hockey, kabaddi and basketball (goal/point scoring with draws). Tennis, padel and cricket come later.
 
 ### Adding a sport
 
-Create `public/sports/<sport>.js` with the same exports as `badminton.js` (`id`, `name`, `defaults`, `fields`, `normalizeConfig`, `compute(rallies, config, firstServer)` and `summary`), wrapped the same way so both the server and the browser can load it. Rally-scored sports can use `public/sports/rally.js`, which runs games, win-by-2 and best-of: the sport supplies only whether a rally scores and how the serve moves (see `squash.js`, the smallest). Add a one-line `server/sports/<sport>.js` re-export, add the id to `MODULES` in `server/sports/index.js`, set its catalogue status to `live`, and add its `<script>` tag to `public/index.html` (after `rally.js`).
+Create `public/sports/<sport>.js` with the same exports as `badminton.js` (`id`, `name`, `defaults`, `fields`, `normalizeConfig`, `compute(rallies, config, firstServer)` and `summary`), wrapped the same way so both the server and the browser can load it. Rally-scored sports can use `public/sports/rally.js`, which runs games, win-by-2 and best-of: the sport supplies only whether a rally scores and how the serve moves (see `squash.js`); set sports are a few lines with `setSport` (see `volleyball.js`). A sport's event types (singles/doubles/team) are set in `SPORT_LISTS` in `public/sports/events.js`. Add a one-line `server/sports/<sport>.js` re-export, add the id to `MODULES` in `server/sports/index.js`, set its catalogue status to `live`, and add its `<script>` tag to `public/index.html` (after `rally.js`).
 
 ## API
 

@@ -7,7 +7,7 @@
 // listed so people can see what's coming and vote for it; when a sport's
 // module ships, register it in MODULES and flip its status to 'live'.
 
-const MODULES = new Map(['badminton', 'pickleball', 'table-tennis', 'squash'].map((id) => {
+const MODULES = new Map(['badminton', 'pickleball', 'table-tennis', 'squash', 'volleyball', 'beach-volleyball', 'throwball', 'sepak-takraw'].map((id) => {
   const mod = require(`./${id}`);
   return [mod.id, mod];
 }));
@@ -18,8 +18,10 @@ const CATALOGUE = [
   { id: 'pickleball', name: 'Pickleball', family: 'rally', status: 'live' },
   { id: 'table-tennis', name: 'Table tennis', family: 'rally', status: 'live' },
   { id: 'squash', name: 'Squash', family: 'rally', status: 'live' },
-  { id: 'volleyball', name: 'Volleyball', family: 'rally', status: 'soon' },
-  { id: 'throwball', name: 'Throwball', family: 'rally', status: 'soon' },
+  { id: 'volleyball', name: 'Volleyball', family: 'sets', status: 'live' },
+  { id: 'beach-volleyball', name: 'Beach volleyball', family: 'sets', status: 'live' },
+  { id: 'throwball', name: 'Throwball', family: 'sets', status: 'live' },
+  { id: 'sepak-takraw', name: 'Sepak takraw', family: 'sets', status: 'live' },
   { id: 'football', name: 'Football', family: 'goals', status: 'soon' },
   { id: 'futsal', name: 'Futsal', family: 'goals', status: 'soon' },
   { id: 'hockey', name: 'Hockey', family: 'goals', status: 'soon' },
