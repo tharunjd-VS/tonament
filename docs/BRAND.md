@@ -16,6 +16,7 @@ The logo was recreated as SVG from the brand board. To use the designer's origin
 | `public/brand/icon.svg`, `icon-*.png`, `apple-touch-icon.png`, `/favicon.ico` | App icon: navy rounded square, white T, lime dot |
 | `public/brand/email-logo.png` | White lockup as a PNG for emails (mail apps don't show SVG) |
 | `public/brand/og.png` | 1200×630 link preview |
+| `public/brand/og-features.png` | 1200×630 link preview for /features (from `scripts/brand/og-features.html`) |
 
 Rules:
 - **The dot is always Electric Lime.** Only the T and the wordmark switch between navy and white.

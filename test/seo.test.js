@@ -187,6 +187,9 @@ test('Features page', async () => {
   assert.match(page.html, /<link rel="canonical" href="https:\/\/tonament\.com\/features">/);
   // Sign-up buttons lead on to creating a tournament.
   assert.ok(page.html.includes('href="/signup?next=%2Fnew"'));
+  // Its own link preview image, which exists.
+  assert.match(page.html, /<meta property="og:image" content="https:\/\/tonament\.com\/brand\/og-features\.png">/);
+  assert.equal((await fetch(`${base}/brand/og-features.png`)).status, 200);
   for (const src of new Set([...page.html.matchAll(/src="(\/guide\/[^"]+)"/g)].map((m) => m[1]))) {
     assert.equal((await fetch(base + src)).status, 200, src);
   }

@@ -1,6 +1,6 @@
 // Renders brand SVGs to PNG sizes.
 const { chromium } = require('playwright');
-// Renders the brand SVGs to PNG icons, the email logo and og.png.
+// Renders the brand SVGs to PNG icons, the email logo, og.png and og-features.png.
 // Usage: node scripts/brand/render.js   (needs Playwright with Chromium)
 const fs = require('fs');
 const os = require('os');
@@ -32,6 +32,11 @@ const jobs = [['icon.svg', 'icon-192.png', 192], ['icon.svg', 'icon-512.png', 51
   await og.evaluate(() => document.fonts.ready);
   await og.waitForFunction(() => document.images[0].complete && document.images[0].naturalWidth > 0);
   await og.screenshot({ path: `${B}/og.png` });
+  // Social preview for the features page
+  await og.goto('file://' + path.join(__dirname, 'og-features.html'));
+  await og.evaluate(() => document.fonts.ready);
+  await og.waitForFunction(() => [...document.images].every((i) => i.complete && i.naturalWidth > 0));
+  await og.screenshot({ path: `${B}/og-features.png` });
   await b.close();
   // favicon.ico = 16 + 32 px PNGs
   const imgs = [`${B}/favicon-16.png`, `${B}/favicon-32.png`].map((f) => fs.readFileSync(f));
