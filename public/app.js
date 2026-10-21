@@ -408,8 +408,9 @@
   function isEditing() {
     const a = document.activeElement;
     if (a && app.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.type !== 'radio') return true;
-    // Unsaved changes in an open Settings-style panel hold back live redraws.
-    return Boolean(app.querySelector('details[data-panel][open] form[data-dirty]'));
+    // Unsent input holds back live redraws: an open Settings-style panel with
+    // changes, or any other form someone has typed into (e.g. the entry form).
+    return Boolean(app.querySelector('details[data-panel][open] form[data-dirty], form[data-dirty]:not(details[data-panel] form)'));
   }
 
   // ---------- routing
@@ -590,15 +591,33 @@
   }
 
   const markDirty = (e) => {
-    const form = e.target.closest && e.target.closest('details[data-panel] form');
-    if (form) form.setAttribute('data-dirty', '');
+    const form = e.target.closest && e.target.closest('form');
+    if (!form) return;
+    if (form.closest('details[data-panel]')) {
+      form.setAttribute('data-dirty', '');
+      return;
+    }
+    // Other forms count as unsent while anything typed is still in them.
+    const typed = [...form.querySelectorAll('input:not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea')]
+      .some((el) => el.value !== el.defaultValue && el.value.trim());
+    if (typed) form.setAttribute('data-dirty', '');
+    else form.removeAttribute('data-dirty');
   };
   app.addEventListener('input', markDirty);
   app.addEventListener('change', markDirty);
 
-  app.addEventListener('focusout', () => setTimeout(() => {
-    if (S.pendingRender && !isEditing()) render();
-  }, 0));
+  // A held-back redraw runs once the person leaves the field, but never while
+  // a finger or mouse button is down: redrawing between press and release
+  // replaces the button under it and the tap is lost (and the form cleared).
+  let pressing = false;
+  const flushRender = () => {
+    if (S.pendingRender && !pressing && !isEditing()) render();
+  };
+  document.addEventListener('pointerdown', () => { pressing = true; }, true);
+  const release = () => setTimeout(() => { pressing = false; flushRender(); }, 100); // after the click it makes
+  document.addEventListener('pointerup', release, true);
+  document.addEventListener('pointercancel', release, true);
+  app.addEventListener('focusout', () => setTimeout(flushRender, 0));
 
   function errorView(message, code) {
     document.title = 'Tonament';
