@@ -482,13 +482,10 @@
         S.route = { name: 'reset', token: params.get('token') || '' };
         history.replaceState(null, '', '/reset'); // keep the token out of history
       } else if (parts[0] === 'admin') {
-        S.route = { name: 'admin', users: null };
+        const tab = ADMIN_TABS.some(([id]) => id === params.get('tab')) ? params.get('tab') : 'overview';
+        S.route = { name: 'admin', tab };
         render();
-        [S.route.users, S.interest, S.route.payments] = await Promise.all([
-          api('GET', '/admin/users').catch((e) => { S.error = e.message; return []; }),
-          api('GET', '/sports/interest').catch(() => null),
-          api('GET', '/admin/payments').catch(() => null),
-        ]);
+        await adminLoad(tab);
       } else {
         S.route = { name: 'home' };
         S.list = null;
@@ -3607,7 +3604,7 @@
           h('div', { class: 'menu-panel' },
             h('div', { class: 'menu-head' }, h('strong', {}, S.me.name), h('div', { class: 'muted small' }, S.me.email)),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
-            S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin · users') : null,
+            S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
             h('button', { onclick: signOut }, 'Sign out'),
             h('div', { class: 'menu-theme' }, 'Theme', themeSwitch()))),
       ]
@@ -3766,49 +3763,339 @@
 
   const PLAN_LABELS = { pass: 'Event Pass', club: 'Club', open: 'Open', championship: 'Championship' };
 
+  // ---------- site admin dashboard (/admin?tab=…)
+  const ADMIN_TABS = [['overview', 'Overview'], ['tournaments', 'Tournaments'], ['users', 'Users'], ['payments', 'Payments']];
+  const adminState = () => (S.admin ||= {
+    tournaments: { filters: {}, list: null, total: 0 },
+    users: { q: '', list: null, total: 0, open: null, detail: null, reset: null },
+    payments: { filters: {}, list: null, revenue: null, refund: null },
+  });
+  const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
+
+  // Fetches what a tab shows (more = the next page of a list).
+  async function adminLoad(tab, { more = false } = {}) {
+    const A = adminState();
+    try {
+      if (tab === 'overview') {
+        [A.stats, S.interest] = await Promise.all([api('GET', '/admin/stats'), api('GET', '/sports/interest').catch(() => null)]);
+      } else if (tab === 'tournaments') {
+        const T = A.tournaments;
+        const r = await api('GET', `/admin/tournaments?${qs({ ...T.filters, offset: more ? T.list.length : 0 })}`);
+        T.list = more ? [...T.list, ...r.tournaments] : r.tournaments;
+        T.total = r.total;
+        T.plans = r.plans;
+      } else if (tab === 'users') {
+        const U = A.users;
+        const r = await api('GET', `/admin/users?${qs({ q: U.q, offset: more ? U.list.length : 0 })}`);
+        U.list = more ? [...U.list, ...r.users] : r.users;
+        U.total = r.total;
+      } else if (tab === 'payments') {
+        const P = A.payments;
+        const r = await api('GET', `/admin/payments?${qs(P.filters)}`);
+        P.list = r.payments;
+        P.revenue = r.revenue;
+      }
+    } catch (e) {
+      toast(e.message, true);
+    }
+    render();
+  }
+
   function viewAdmin() {
     document.title = 'Admin · Tonament';
     if (!S.me || !S.me.isAdmin) return errorView('Site admins only.');
-    const users = S.route.users;
+    const tab = S.route.tab || 'overview';
+    const views = { overview: adminOverview, tournaments: adminTournaments, users: adminUsers, payments: adminPayments };
+    return [
+      h('h1', {}, 'Admin'),
+      h('nav', { class: 'tabs' }, ADMIN_TABS.map(([id, label]) => h('a', { href: `/admin?tab=${id}`, class: id === tab ? 'active' : '' }, label))),
+      h('section', { class: 'admin' }, views[tab]()),
+    ];
+  }
+
+  // ----- overview: numbers, 30-day bars, breakdowns, recent admin actions
+  const fmtDay = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString([], { day: 'numeric', month: 'short' });
+
+  // One series over 30 days as thin bars. Hover (or focus) a bar for its value;
+  // the same numbers are in a table underneath.
+  function dayBars(title, days, key, fmt = String) {
+    const values = days.map((d) => d[key]);
+    const max = Math.max(1, ...values);
+    const total = values.reduce((a, b) => a + b, 0);
+    const W = 300; const H = 90; const gap = 2; const bw = (W - gap * (days.length - 1)) / days.length;
+    const tip = h('span', { class: 'chart-tip', 'aria-live': 'polite' }, `${fmt(total)} in 30 days`);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('class', 'bars');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', `${title}: ${fmt(total)} in the last 30 days`);
+    days.forEach((d, i) => {
+      const v = d[key];
+      const bh = v ? Math.max(3, (v / max) * (H - 4)) : 0;
+      const x = i * (bw + gap);
+      const hit = document.createElementNS(svg.namespaceURI, 'rect'); // a hit area taller than the bar
+      Object.entries({ x, y: 0, width: bw + gap, height: H, class: 'bar-hit', tabindex: 0 }).forEach(([k, val]) => hit.setAttribute(k, val));
+      const show = () => { tip.textContent = `${fmtDay(d.day)}: ${fmt(v)}`; };
+      hit.addEventListener('mouseenter', show);
+      hit.addEventListener('focus', show);
+      hit.addEventListener('mouseleave', () => { tip.textContent = `${fmt(total)} in 30 days`; });
+      svg.append(hit);
+      if (bh) {
+        const r = Math.min(2, bw / 2, bh); // rounded data end, square at the baseline
+        const bar = document.createElementNS(svg.namespaceURI, 'path');
+        bar.setAttribute('d', `M${x},${H} V${H - bh + r} Q${x},${H - bh} ${x + r},${H - bh} H${x + bw - r} Q${x + bw},${H - bh} ${x + bw},${H - bh + r} V${H} Z`);
+        bar.setAttribute('class', 'bar');
+        svg.append(bar);
+      }
+    });
+    return h('div', { class: 'card chart-card' },
+      h('div', { class: 'card-head' }, h('h3', {}, title), tip),
+      svg,
+      h('div', { class: 'chart-axis' }, h('span', {}, fmtDay(days[0].day)), h('span', {}, 'Today')),
+      h('details', { class: 'chart-table' }, h('summary', {}, 'Table'),
+        h('div', { class: 'table-wrap' }, h('table', {}, h('tbody', {}, days.slice().reverse().map((d) => h('tr', {}, h('td', {}, fmtDay(d.day)), h('td', { class: 'num' }, fmt(d[key])))))))));
+  }
+
+  // A count per category as bars of one colour (biggest first), labelled.
+  function breakdown(title, rows, label = (k) => k) {
+    const max = Math.max(1, ...rows.map((r) => r.n));
+    return h('div', { class: 'card' }, h('h3', {}, title),
+      rows.length ? h('ul', { class: 'hbars' }, rows.map((r) => h('li', {},
+        h('span', { class: 'hbar-label' }, label(r.key)),
+        h('span', { class: 'hbar-track' }, h('span', { class: 'hbar', style: `width:${(r.n / max) * 100}%` })),
+        h('span', { class: 'num' }, r.n)))) : empty('Nothing yet.'));
+  }
+
+  const ACTION_TEXT = {
+    'tournament.plan': (x) => `plan ${PLAN_LABELS[x.detail.from] || 'Free'} → ${PLAN_LABELS[x.detail.to] || 'Free'} · ${x.detail.name}`,
+    'tournament.official': (x) => `marked official · ${x.detail.name}`,
+    'tournament.unofficial': (x) => `no longer official · ${x.detail.name}`,
+    'tournament.visibility': (x) => `${x.detail.to} · ${x.detail.name}`,
+    'tournament.delete': (x) => `deleted ${x.detail.name}`,
+    'user.admin': (x) => `made ${x.target} an admin`,
+    'user.unadmin': (x) => `removed admin from ${x.target}`,
+    'user.disable': (x) => `disabled ${x.target}`,
+    'user.enable': (x) => `enabled ${x.target}`,
+    'user.reset': (x) => `reset link for ${x.target}`,
+    'user.delete': (x) => `deleted account ${x.target}`,
+    'payment.refund': (x) => `refunded ${money(x.detail.amount)} · ${x.detail.tournament}${x.detail.plan ? ` (now ${PLAN_LABELS[x.detail.plan] || 'Free'})` : ''}`,
+  };
+
+  function adminOverview() {
+    const st = adminState().stats;
+    if (!st) return loading();
+    const tile = (label, value, sub) => h('div', { class: 'stat' }, h('span', { class: 'stat-label' }, label), h('strong', {}, value), sub ? h('small', {}, sub) : null);
+    const sportName = (id) => (S.sports.find((x) => x.id === id) || {}).name || id;
     const counts = (S.interest && S.interest.counts) || {};
-    const requested = S.sports.filter((s) => s.status !== 'live').map((s) => ({ ...s, n: counts[s.id] || 0 })).sort((a, b) => b.n - a.n);
-    const pay = S.route.payments;
-    const statusPill = (st) => pill(st === 'paid' ? 'done' : st === 'failed' ? 'withdrawn' : '', st === 'created' ? 'Started' : st);
-    return [h('div', { class: 'card' },
-      h('div', { class: 'card-head' },
-        h('h2', {}, 'Payments'),
-        pay ? h('span', { class: 'muted small' }, `${money(pay.revenue.total)} from ${pay.revenue.count} payment${pay.revenue.count === 1 ? '' : 's'}`) : null),
-      !pay ? loading()
-        : !pay.payments.length ? empty('No payments yet.')
-          : h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ['Date', 'Tournament', 'Paid by', 'For', 'Amount', 'Status', 'Payment ID'].map((c, i) => h('th', { class: i === 4 ? 'num' : '' }, c)))),
-            h('tbody', {}, pay.payments.map((p) => h('tr', {},
-              h('td', {}, new Date(p.paidAt || p.createdAt).toLocaleDateString()),
-              h('td', { class: 'name' }, p.tournamentId ? h('a', { href: `/t/${p.tournamentId}/team` }, p.tournamentName) : p.tournamentName),
-              h('td', {}, p.email || '—'),
-              h('td', {}, p.kind === 'entry' ? `Entry · ${p.eventName || ''}${p.player ? ` (${p.player})` : ''}` : PLAN_LABELS[p.tier || 'pass'] || p.tier),
-              h('td', { class: 'num' }, money(p.amount)),
-              h('td', {}, statusPill(p.status)),
-              h('td', { class: 'small' }, p.paymentId || '—'))))))),
-    h('div', { class: 'card' },
-      h('h2', {}, 'Most requested sports'),
-      h('div', { class: 'table-wrap' }, h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Sport'), h('th', {}, 'Status'), h('th', { class: 'num' }, 'Requests'))),
-        h('tbody', {}, requested.map((s) => h('tr', {},
-          h('td', { class: 'name' }, s.name),
-          h('td', {}, s.status === 'later' ? 'Later' : 'Soon'),
-          h('td', { class: 'num' }, s.n))))))),
-    h('div', { class: 'card' },
-      h('h1', {}, 'Users'),
-      users == null ? loading() : h('div', { class: 'table-wrap' }, h('table', {},
-        h('thead', {}, h('tr', {}, ['Name', 'Email', 'Joined', 'Owns', 'Helps on'].map((c, i) => h('th', { class: i > 2 ? 'num' : '' }, c)))),
-        h('tbody', {}, users.map((u) => h('tr', {},
-          h('td', { class: 'name' }, u.name, u.isAdmin ? [' ', pill('org', 'Admin')] : null),
-          h('td', {}, u.email),
-          h('td', {}, new Date(u.createdAt).toLocaleDateString()),
-          h('td', { class: 'num' }, u.owned),
-          h('td', { class: 'num' }, u.helping)))))),
-      users ? h('p', { class: 'muted small', style: 'margin:8px 0 0' }, `${users.length} user${users.length === 1 ? '' : 's'}`) : null)];
+    const requested = S.sports.filter((x) => x.status !== 'live').map((x) => ({ key: x.name, n: counts[x.id] || 0 })).filter((x) => x.n).sort((a, b) => b.n - a.n);
+    return [
+      h('div', { class: 'stat-tiles' },
+        tile('Users', st.users.total, `+${st.users.d30} in 30 days`),
+        tile('Tournaments', st.tournaments.total, `+${st.tournaments.d30} in 30 days`),
+        tile('Entries', st.entries.total, `+${st.entries.d30} in 30 days`),
+        tile('Matches finished', st.matches.done, `${st.matches.points.toLocaleString()} points scored`),
+        tile('Revenue this month', money(st.revenue.month), `${money(st.revenue.total)} all time`),
+        tile('Refunded', money(st.revenue.refunded), `Plans ${money(st.revenue.plans)} · entry fees ${money(st.revenue.entries)}`)),
+      h('div', { class: 'chart-grid' },
+        dayBars('Sign-ups', st.days, 'signups'),
+        dayBars('Tournaments created', st.days, 'tournaments'),
+        dayBars('Revenue', st.days, 'revenue', money)),
+      h('div', { class: 'chart-grid' },
+        breakdown('Tournaments by sport', st.bySport, sportName),
+        breakdown('By plan', st.byPlan, (k) => PLAN_LABELS[k] || 'Free'),
+        breakdown('By status', st.byStatus, (k) => STATUS[k] || k),
+        breakdown('By visibility', st.byVisibility, (k) => ({ private: 'Private', link: 'Link only', public: 'Public' })[k] || k),
+        breakdown('Most requested sports', requested)),
+      h('div', { class: 'card' }, h('h3', {}, 'Recent admin actions'),
+        st.log.length ? h('ul', { class: 'admin-log' }, st.log.map((x) => h('li', {},
+          h('span', { class: 'muted small' }, new Date(x.at).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })),
+          h('span', {}, h('strong', {}, x.admin.split('@')[0]), ' ', (ACTION_TEXT[x.action] || (() => `${x.action} ${x.target || ''}`))(x))))) : empty('No admin actions yet.')),
+    ];
+  }
+
+  // ----- every tournament
+  function adminTournaments() {
+    const T = adminState().tournaments;
+    const set = (k, v) => { T.filters = { ...T.filters, [k]: v }; adminLoad('tournaments'); };
+    const search = h('input', { type: 'search', name: 'q', value: T.filters.q || '', placeholder: 'Name, ID, city or owner email', 'aria-label': 'Search tournaments' });
+    const pills = (name, label, options) => groupField(label, choiceGroup({ name: `f-${name}`, label, value: T.filters[name] || '', options: [{ value: '', label: 'All' }, ...options], onchange: (e) => set(name, e.target.value) }));
+    const filters = h('form', { class: 'card admin-filters', onsubmit: (e) => { e.preventDefault(); set('q', search.value.trim()); } },
+      h('div', { class: 'search-row' }, search,
+        h('select', { 'aria-label': 'Sport', value: T.filters.sport || '', onchange: (e) => set('sport', e.target.value) },
+          h('option', { value: '' }, 'All sports'), liveSports().map((x) => h('option', { value: x.id }, x.name))),
+        h('button', { class: 'btn btn-primary', type: 'submit' }, 'Search')),
+      pills('plan', 'Plan', (T.plans || []).map((p) => ({ value: p.id, label: p.name }))),
+      pills('visibility', 'Visibility', [{ value: 'private', label: 'Private' }, { value: 'link', label: 'Link only' }, { value: 'public', label: 'Public' }]),
+      pills('status', 'Status', Object.entries(STATUS).filter(([k]) => k !== 'live').map(([value, label]) => ({ value, label }))));
+    if (!T.list) return [filters, loading()];
+
+    const row = (t) => {
+      const changePlan = (plan) => act(async () => {
+        await api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/plan`, { plan });
+        t.plan = plan;
+      }, `${t.name}: plan set to ${PLAN_LABELS[plan] || 'Free'}`);
+      const official = (on) => act(async () => { await api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/official`, { official: on }); t.official = on; }, on ? 'Marked as organised by Tonament' : 'No longer organised by Tonament');
+      const visibility = (v) => act(async () => { await api('POST', `/tournaments/${encodeURIComponent(t.id)}/visibility`, { visibility: v }); t.visibility = v; }, v === 'private' ? 'Unpublished' : 'Published');
+      const remove = () => {
+        const typed = prompt(`Delete "${t.name}" and everything in it? This can't be undone.\n\nType the tournament name to confirm:`);
+        if (typed == null) return;
+        if (typed.trim() !== t.name) { toast('The name didn\'t match — nothing was deleted', true); return; }
+        act(async () => { await api('DELETE', `/tournaments/${encodeURIComponent(t.id)}`); T.list = T.list.filter((x) => x.id !== t.id); T.total -= 1; }, `${t.name} deleted`);
+      };
+      return h('li', { class: 'card admin-row' },
+        h('div', { class: 'admin-row-head' },
+          h('div', {},
+            h('a', { href: `/t/${t.id}`, class: 'admin-name' }, t.name),
+            h('div', { class: 'muted small' }, [t.sportName, t.owner || 'No owner', `${t.entries} ${t.entries === 1 ? 'entry' : 'entries'}`, t.city, `created ${new Date(t.createdAt).toLocaleDateString()}`].filter(Boolean).join(' · '))),
+          h('span', { class: 'admin-pills' }, visibilityPill(t.visibility), ' ', pill(t.status, STATUS[t.status] || t.status), t.official ? [' ', pill('org', 'Tonament')] : null)),
+        groupField('Plan', choiceGroup({
+          name: `plan-${t.id}`, label: `Plan for ${t.name}`, value: t.plan,
+          options: (T.plans || []).map((p) => ({ value: p.id, label: p.name })),
+          onchange: (e) => changePlan(e.target.value),
+        })),
+        h('div', { class: 'actions admin-actions' },
+          h('label', { class: 'check-field' }, h('input', { type: 'checkbox', checked: t.official, onchange: (e) => official(e.target.checked) }), h('span', {}, 'Organised by Tonament')),
+          t.visibility === 'private'
+            ? h('button', { class: 'btn btn-small', onclick: () => visibility('public') }, 'Publish')
+            : h('button', { class: 'btn btn-small', onclick: () => visibility('private') }, 'Unpublish'),
+          h('button', { class: 'btn btn-small btn-ghost danger', onclick: remove }, 'Delete')));
+    };
+    return [filters,
+      h('p', { class: 'muted small' }, `${T.total} tournament${T.total === 1 ? '' : 's'}`),
+      T.list.length ? h('ul', { class: 'admin-list' }, T.list.map(row)) : empty('No tournaments match.'),
+      T.list.length < T.total ? h('div', { class: 'actions center' }, h('button', { class: 'btn', onclick: () => adminLoad('tournaments', { more: true }) }, 'Load more')) : null];
+  }
+
+  // ----- every user
+  function adminUsers() {
+    const U = adminState().users;
+    const search = h('input', { type: 'search', value: U.q, placeholder: 'Name or email', 'aria-label': 'Search users' });
+    const filters = h('form', { class: 'card admin-filters', onsubmit: (e) => { e.preventDefault(); U.q = search.value.trim(); adminLoad('users'); } },
+      h('div', { class: 'search-row' }, search, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Search')));
+    if (!U.list) return [filters, loading()];
+
+    const update = (u, data) => Object.assign(u, data);
+    const row = (u) => {
+      const me = S.me && S.me.id === u.id;
+      const open = U.open === u.id;
+      const toggle = async () => {
+        U.open = open ? null : u.id;
+        U.detail = null;
+        U.reset = null;
+        render();
+        if (!open) { try { U.detail = await api('GET', `/admin/users/${u.id}`); } catch (e) { toast(e.message, true); } render(); }
+      };
+      const setAdmin = (on) => act(async () => update(u, await api('POST', `/admin/users/${u.id}/admin`, { on })), on ? `${u.email} is now an admin` : `${u.email} is no longer an admin`);
+      const setDisabled = (on) => {
+        if (on && !confirm(`Disable ${u.email}? They're signed out everywhere and can't sign in until you enable them.`)) return;
+        act(async () => update(u, await api('POST', `/admin/users/${u.id}/disable`, { on })), on ? `${u.email} disabled` : `${u.email} enabled`);
+      };
+      const reset = () => act(async () => { U.reset = { id: u.id, ...(await api('POST', `/admin/users/${u.id}/reset`, {})) }; });
+      const remove = () => {
+        if (!confirm(`Delete the account ${u.email}? This can't be undone.`)) return;
+        act(async () => { await api('DELETE', `/admin/users/${u.id}`); U.list = U.list.filter((x) => x.id !== u.id); U.total -= 1; }, `${u.email} deleted`);
+      };
+      const D = open && U.detail;
+      return h('li', { class: 'card admin-row' },
+        h('div', { class: 'admin-row-head' },
+          h('div', {},
+            h('button', { class: 'link-btn admin-name', onclick: toggle, 'aria-expanded': String(open) }, u.name),
+            h('div', { class: 'muted small' }, [u.email, `joined ${new Date(u.createdAt).toLocaleDateString()}`, `owns ${u.owned}`, `helps on ${u.helping}`, `${u.entries} ${u.entries === 1 ? 'entry' : 'entries'}`].join(' · '))),
+          h('span', { class: 'admin-pills' }, u.isAdmin ? pill('org', u.envAdmin ? 'Admin (settings)' : 'Admin') : null, ' ', u.disabled ? pill('withdrawn', 'Disabled') : null)),
+        h('div', { class: 'actions admin-actions' },
+          u.envAdmin ? null : u.isAdmin
+            ? h('button', { class: 'btn btn-small', disabled: me, onclick: () => setAdmin(false) }, 'Remove admin')
+            : h('button', { class: 'btn btn-small', onclick: () => setAdmin(true) }, 'Make admin'),
+          u.disabled
+            ? h('button', { class: 'btn btn-small', onclick: () => setDisabled(false) }, 'Enable')
+            : h('button', { class: 'btn btn-small', disabled: me, onclick: () => setDisabled(true) }, 'Disable'),
+          h('button', { class: 'btn btn-small', onclick: reset }, 'Reset link'),
+          h('button', { class: 'btn btn-small btn-ghost danger', disabled: me, onclick: remove }, 'Delete')),
+        U.reset && U.reset.id === u.id
+          ? h('div', { class: 'banner info reset-link' },
+            h('span', {}, U.reset.emailed ? 'Emailed to them. ' : 'Email isn\'t set up — send them this link. ', 'It works once, for an hour.'),
+            h('button', { class: 'btn btn-small', onclick: () => copy(U.reset.url, 'Reset link copied') }, 'Copy link'))
+          : null,
+        open ? (D ? h('div', { class: 'admin-detail' },
+          h('h4', {}, `Tournaments (${D.tournaments.length})`),
+          D.tournaments.length ? h('ul', {}, D.tournaments.map((t) => h('li', {}, h('a', { href: `/t/${t.id}` }, t.name), ` · ${t.role} · ${PLAN_LABELS[t.plan] || 'Free'} · ${STATUS[t.status] || t.status}`))) : h('p', { class: 'muted small' }, 'None.'),
+          h('h4', {}, `Entries (${D.entries.length})`),
+          D.entries.length ? h('ul', {}, D.entries.map((e) => h('li', {}, h('a', { href: `/t/${e.tournamentId}` }, e.tournamentName), ` · ${e.eventName || ''} · ${e.name}${e.withdrawn ? ' · withdrawn' : e.confirmed ? '' : ' · not confirmed'}`))) : h('p', { class: 'muted small' }, 'None.'),
+          h('h4', {}, `Payments (${D.payments.length})`),
+          D.payments.length ? h('ul', {}, D.payments.map((p) => h('li', {}, `${new Date(p.paidAt || p.createdAt).toLocaleDateString()} · ${money(p.amount)} · ${p.status}${p.refundedAmount ? ` (refunded ${money(p.refundedAmount)})` : ''} · ${p.tournamentName}`))) : h('p', { class: 'muted small' }, 'None.'))
+          : loading()) : null);
+    };
+    return [filters,
+      h('p', { class: 'muted small' }, `${U.total} user${U.total === 1 ? '' : 's'}`),
+      U.list.length ? h('ul', { class: 'admin-list' }, U.list.map(row)) : empty('No users match.'),
+      U.list.length < U.total ? h('div', { class: 'actions center' }, h('button', { class: 'btn', onclick: () => adminLoad('users', { more: true }) }, 'Load more')) : null];
+  }
+
+  // ----- payments and refunds
+  function adminPayments() {
+    const P = adminState().payments;
+    const set = (k, v) => { P.filters = { ...P.filters, [k]: v }; adminLoad('payments'); };
+    const search = h('input', { type: 'search', value: P.filters.q || '', placeholder: 'Tournament, email, player or payment ID', 'aria-label': 'Search payments' });
+    const date = (k, label) => field(label, h('input', { type: 'date', value: P.filters[k] || '', onchange: (e) => set(k, e.target.value) }));
+    const filters = h('form', { class: 'card admin-filters', onsubmit: (e) => { e.preventDefault(); set('q', search.value.trim()); } },
+      h('div', { class: 'search-row' }, search, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Search')),
+      groupField('Status', choiceGroup({ name: 'f-pstatus', label: 'Status', value: P.filters.status || '',
+        options: [{ value: '', label: 'All' }, { value: 'paid', label: 'Paid' }, { value: 'partial', label: 'Part refunded' }, { value: 'refunded', label: 'Refunded' }, { value: 'created', label: 'Started' }, { value: 'failed', label: 'Failed' }],
+        onchange: (e) => set('status', e.target.value) })),
+      groupField('For', choiceGroup({ name: 'f-kind', label: 'For', value: P.filters.kind || '',
+        options: [{ value: '', label: 'All' }, { value: 'plan', label: 'Plans' }, { value: 'entry', label: 'Entry fees' }], onchange: (e) => set('kind', e.target.value) })),
+      h('div', { class: 'grid-2' }, date('from', 'From'), date('to', 'To')));
+    if (!P.list) return [filters, loading()];
+
+    const statusPill = (p) => (p.status === 'paid' && p.refundedAmount ? pill('waiting', 'Part refunded')
+      : pill(p.status === 'paid' ? 'done' : p.status === 'refunded' ? '' : p.status === 'failed' ? 'withdrawn' : '', ({ created: 'Started', paid: 'Paid', refunded: 'Refunded', failed: 'Failed' })[p.status] || p.status));
+    const R = P.refund;
+    const refundCard = R ? (() => {
+      const p = P.list.find((x) => x.id === R.id);
+      const left = p.amount - p.refundedAmount;
+      const amount = h('input', { type: 'number', min: 1, max: left / 100, step: '0.01', value: (left / 100).toFixed(2), required: true, 'aria-label': 'Amount to refund (₹)' });
+      const down = h('input', { type: 'checkbox', checked: true });
+      return h('form', {
+        class: 'card refund-card',
+        onsubmit: (e) => {
+          e.preventDefault();
+          const paise = Math.round(Number(amount.value) * 100);
+          act(async () => {
+            const r = await api('POST', `/admin/payments/${p.id}/refund`, { amount: paise, downgrade: p.kind === 'plan' && down.checked });
+            P.refund = null;
+            await adminLoad('payments');
+            if (r.plan) toast(`Refunded ${money(paise)} — ${p.tournamentName} is now on ${PLAN_LABELS[r.plan] || 'Free'}`);
+          }, `Refunded ${money(paise)}`);
+        },
+      },
+      h('h3', {}, `Refund ${p.tournamentName}`),
+      h('p', { class: 'muted small' }, `${money(p.amount)} paid by ${p.email || 'unknown'}${p.refundedAmount ? `, ${money(p.refundedAmount)} already refunded` : ''}. The money goes back through Razorpay to how they paid.`),
+      field('Amount to refund (₹)', amount, null, `Up to ${money(left)}.`),
+      p.kind === 'plan' ? h('label', { class: 'check-field' }, down, h('span', {}, h('strong', {}, 'Also take the plan away'), h('small', {}, 'The tournament goes back to the plan it still has paid for, or Free.'))) : null,
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn btn-primary', type: 'submit' }, 'Refund'),
+        h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { P.refund = null; render(); } }, 'Cancel')));
+    })() : null;
+
+    return [filters,
+      h('div', { class: 'card-head admin-sum' },
+        h('span', {}, h('strong', {}, money(P.revenue.total)), ` from ${P.revenue.count} payment${P.revenue.count === 1 ? '' : 's'}${P.list.length >= 1000 ? ' (first 1,000 shown)' : ''}`),
+        h('a', { class: 'btn btn-small', href: `/api/admin/payments.csv?${qs(P.filters)}`, download: '' }, 'Export CSV')),
+      refundCard,
+      P.list.length ? h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'admin-pay' },
+        h('thead', {}, h('tr', {}, ['Date', 'Tournament', 'Paid by', 'For', 'Amount', 'Refunded', 'Status', 'Payment ID', ''].map((c, i) => h('th', { class: i === 4 || i === 5 ? 'num' : '' }, c)))),
+        h('tbody', {}, P.list.map((p) => h('tr', {},
+          h('td', {}, new Date(p.paidAt || p.createdAt).toLocaleDateString()),
+          h('td', { class: 'name' }, p.tournamentId ? h('a', { href: `/t/${p.tournamentId}` }, p.tournamentName) : p.tournamentName),
+          h('td', {}, p.email || '—'),
+          h('td', {}, p.kind === 'entry' ? `Entry · ${p.eventName || ''}${p.player ? ` (${p.player})` : ''}` : PLAN_LABELS[p.tier || 'pass'] || p.tier),
+          h('td', { class: 'num' }, money(p.amount)),
+          h('td', { class: 'num' }, p.refundedAmount ? money(p.refundedAmount) : '—'),
+          h('td', {}, statusPill(p)),
+          h('td', { class: 'small' }, p.paymentId || '—'),
+          h('td', {}, p.status === 'paid' && p.paymentId && p.refundedAmount < p.amount
+            ? h('button', { class: 'btn btn-small', onclick: () => { P.refund = { id: p.id }; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); } }, 'Refund')
+            : null))))))) : empty('No payments match.')];
   }
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
