@@ -86,6 +86,8 @@ function createRazorpay({ keyId, keySecret, fetchImpl = globalThis.fetch }) {
     createOrder: (order) => call('POST', '/orders', order),
     fetchPayment: (id) => call('GET', `/payments/${encodeURIComponent(id)}`),
     capture: (id, amount, currency) => call('POST', `/payments/${encodeURIComponent(id)}/capture`, { amount, currency }),
+    // Full or partial refund of a captured payment (amount in paise).
+    refund: (id, amount) => call('POST', `/payments/${encodeURIComponent(id)}/refund`, { amount }),
   };
 }
 

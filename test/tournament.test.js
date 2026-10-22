@@ -383,7 +383,7 @@ test('HTTP: roles, invites before signup, caching and cross-site protection', as
       await root('POST', '/api/auth/signup', { name: 'Root', email: 'root@x.dev', password: 'password123' });
       const users = await root('GET', '/api/admin/users');
       assert.equal(users.status, 200);
-      const olu = users.data.find((u) => u.email === 'olu@x.dev');
+      const olu = users.data.users.find((u) => u.email === 'olu@x.dev');
       assert.equal(olu.owned, 1);
       assert.equal(olu.password_hash, undefined);
 

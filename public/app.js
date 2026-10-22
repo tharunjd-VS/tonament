@@ -1928,6 +1928,7 @@
     if (e.feeStatus === 'due') return pill('waiting', heldNow(e) ? `Payment due · held until ${fmtWhen(e.holdUntil)}` : heldNow(e) === null ? 'Payment due' : 'Payment due · not held');
     if (e.feeStatus === 'cash') return pill('done', 'Paid in person');
     if (e.feeStatus === 'waived') return pill('', 'Fee waived');
+    if (e.feeStatus === 'refunded') return pill('withdrawn', 'Refunded');
     if (e.feeStatus === 'pending') return pill('waiting', 'Paying…');
     return pill('waiting', 'Unpaid');
   }
@@ -2370,7 +2371,8 @@
   // Organisers: open the big-screen display (in a new tab, for the venue TV).
   const displayLink = (t) => h('p', { class: 'display-link' },
     h('a', { class: 'btn btn-small', href: `/t/${t.id}/display`, target: '_blank', rel: 'noopener' }, '📺 Open venue display'),
-    h('span', { class: 'muted small' }, ' Show courts, scores and what\'s next on a TV or projector.'));
+    h('span', { class: 'muted small' }, ' Show courts, scores and what\'s next on a TV or projector. ',
+      t.official ? null : t.whiteLabel ? 'Your logo and sponsors lead, with a small "Powered by Tonament".' : 'Your own logo and sponsors on the display come with the Open plan.'));
 
   function panelLive(t) {
     const ms = t.matches.filter((m) => m.status !== 'bye');
@@ -2606,8 +2608,9 @@
         h('p', {}, 'Live scores, your matches and the order of play:'),
         h('p', { class: 'dc-url' }, `${location.host}/t/${t.id}`))]);
     }
-    // And one for Tonament itself: everyone in the hall is a possible organiser.
-    panels.push(['Run your own tournament', h('div', { class: 'dc-promo' },
+    // And one for Tonament itself: everyone in the hall is a possible organiser
+    // (not on plans where the organiser's own branding leads).
+    if (!t.whiteLabel) panels.push(['Run your own tournament', h('div', { class: 'dc-promo' },
       h('img', { src: '/brand/logo-white.svg', alt: 'Tonament', width: 190, height: 26 }),
       h('p', {}, 'Entries, draws, courts and live scores like these — on everyone\'s phone.'),
       h('p', { class: 'dc-url' }, 'tonament.com'),
@@ -2615,18 +2618,23 @@
     const panel = panels[(S.displayPanel || 0) % panels.length];
 
     const fullscreen = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {});
-    return h('div', { class: 'display' },
+    // Open and above: the organiser's logo (or name) where Tonament's would be.
+    const white = Boolean(t.whiteLabel);
+    const orgMark = (cls) => (b && b.logo ? h('img', { class: `${cls} dc-org-logo`, src: b.logo, alt: b.orgName || '' })
+      : b && b.orgName ? h('span', { class: `${cls} dc-org-name` }, b.orgName) : null);
+    const lead = white ? orgMark('dc-brand') : h('img', { class: 'dc-brand', src: '/brand/logo-white.svg', alt: 'Tonament', width: 190, height: 26 });
+    return h('div', { class: `display${white ? ' white-label' : ''}` },
       h('header', { class: 'dc-head' },
-        h('img', { class: 'dc-brand', src: '/brand/logo-white.svg', alt: 'Tonament', width: 190, height: 26 }),
+        lead,
         h('div', { class: 'dc-title' }, h('h1', {}, t.name),
-          h('p', {}, [b && b.orgName, fmtSchedule(t), placeLine(t.venue, t.location.city)].filter(Boolean).join(' · '))),
-        b && b.logo ? h('img', { class: 'dc-logo', src: b.logo, alt: b.orgName || '' }) : null,
+          h('p', {}, [!white || !lead || (b && b.logo) ? b && b.orgName : null, fmtSchedule(t), placeLine(t.venue, t.location.city)].filter(Boolean).join(' · '))),
+        !white && b && b.logo ? h('img', { class: 'dc-logo', src: b.logo, alt: b.orgName || '' }) : null,
         h('div', { class: 'dc-clock' },
           h('strong', {}, new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })),
           h('span', { class: `conn ${S.connected ? 'on' : ''}` }, S.connected ? 'Live' : 'Reconnecting…')),
         h('button', { class: 'btn btn-small btn-ghost dc-fs', onclick: fullscreen, title: 'Full screen (F11)' }, '⛶')),
       !started
-        ? h('div', { class: 'dc-wait' }, h('img', { src: '/brand/logo-stacked-white.svg', alt: 'Tonament' }), h('h2', {}, 'Starting soon'), h('p', {}, fmtSchedule(t) || 'Play starts once the draw is made.'))
+        ? h('div', { class: 'dc-wait' }, white ? orgMark('dc-wait-org') : h('img', { src: '/brand/logo-stacked-white.svg', alt: 'Tonament' }), h('h2', {}, 'Starting soon'), h('p', {}, fmtSchedule(t) || 'Play starts once the draw is made.'))
         : h('div', { class: 'dc-body' },
           h('section', { class: 'dc-courts' },
             h('h2', {}, plan ? 'Courts' : 'On court now'),
@@ -2640,14 +2648,20 @@
               : h('p', { class: 'dc-empty' }, 'Nothing waiting.')),
           h('section', { class: 'dc-panel' }, h('h2', {}, panel[0]), panel[1],
             panels.length > 1 ? h('div', { class: 'dc-dots' }, panels.map((_, i) => h('span', { class: i === (S.displayPanel || 0) % panels.length ? 'on' : '' }))) : null)),
-      h('footer', { class: 'dc-foot' },
-        h('div', { class: 'dc-foot-brand' },
-          h('img', { src: '/brand/mark-white.svg', alt: '', width: 31, height: 22 }),
-          h('div', {}, h('strong', {}, 'tonament.com'), h('span', { class: 'eyebrow' }, 'One platform. Every sport. ', h('b', {}, 'Every tournament.')))),
-        t.sponsors && t.sponsors.length
-          ? h('div', { class: 'dc-sponsors' }, t.sponsors.map((sp) => h('img', { src: sp.url, alt: sp.caption || 'Sponsor' })))
-          : null,
-        h('div', { class: 'dc-foot-cta' }, h('span', {}, 'Run your own tournament — free'), 'Entries, draws and live scores')));
+      white
+        ? h('footer', { class: 'dc-foot dc-foot-white' },
+          t.sponsors && t.sponsors.length
+            ? h('div', { class: 'dc-sponsors' }, t.sponsors.map((sp) => h('img', { src: sp.url, alt: sp.caption || 'Sponsor' })))
+            : h('span'),
+          h('p', { class: 'dc-powered' }, 'Powered by', h('img', { src: '/brand/logo-white.svg', alt: 'Tonament', width: 95, height: 13 })))
+        : h('footer', { class: 'dc-foot' },
+          h('div', { class: 'dc-foot-brand' },
+            h('img', { src: '/brand/mark-white.svg', alt: '', width: 31, height: 22 }),
+            h('div', {}, h('strong', {}, 'tonament.com'), h('span', { class: 'eyebrow' }, 'One platform. Every sport. ', h('b', {}, 'Every tournament.')))),
+          t.sponsors && t.sponsors.length
+            ? h('div', { class: 'dc-sponsors' }, t.sponsors.map((sp) => h('img', { src: sp.url, alt: sp.caption || 'Sponsor' })))
+            : null,
+          h('div', { class: 'dc-foot-cta' }, h('span', {}, 'Run your own tournament — free'), 'Entries, draws and live scores')));
   }
 
   // Redo the draw (e.g. more players arrived) until the first point is played.

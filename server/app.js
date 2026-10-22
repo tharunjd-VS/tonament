@@ -273,13 +273,24 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     }],
     ['GET', '/api/me/tournaments', (c) => svc.myTournaments(c.actor)],
     ['GET', '/api/me/entries', (c) => svc.myEntries(c.actor)],
-    ['GET', '/api/admin/users', (c) => auth.listUsers(c.actor)],
+    ['GET', '/api/admin/users', (c) => auth.listUsers(c.actor, Object.fromEntries(c.query))],
+    ['GET', `/api/admin/users/${N}`, (c, id) => svc.adminUserDetail(c.actor, id)],
+    ['POST', `/api/admin/users/${N}/admin`, (c, id) => auth.setAdmin(c.actor, id, c.body.on)],
+    ['POST', `/api/admin/users/${N}/disable`, (c, id) => auth.setDisabled(c.actor, id, c.body.on)],
+    ['POST', `/api/admin/users/${N}/reset`, (c, id) => auth.adminResetLink(c.actor, id, baseUrl(c.req) || SITE)],
+    ['DELETE', `/api/admin/users/${N}`, (c, id) => auth.deleteUser(c.actor, id)],
+    ['GET', '/api/admin/stats', (c) => svc.adminStats(c.actor)],
+    ['GET', '/api/admin/tournaments', (c) => svc.adminTournaments(c.actor, Object.fromEntries(c.query))],
+    ['POST', `/api/admin/payments/${N}/refund`, (c, id) => svc.refundPayment(c.actor, id, c.body)],
 
     // Payments (Razorpay). The webhook is handled separately (raw body).
     ['GET', '/api/billing/config', () => publicBillingConfig(billingConfig())],
     ['POST', `${T}/checkout`, (c, id) => svc.checkout(id, c.actor, c.body)],
     ['POST', '/api/billing/razorpay/verify', (c) => svc.verifyPayment(c.body, { baseUrl: baseUrl(c.req) })],
-    ['GET', '/api/admin/payments', (c) => svc.adminPayments(c.actor)],
+    ['GET', '/api/admin/payments', (c) => svc.adminPayments(c.actor, Object.fromEntries(c.query))],
+    ['GET', '/api/admin/payments\\.csv', async (c) => ({
+      download: { type: 'text/csv; charset=utf-8', name: `tonament-payments-${new Date().toISOString().slice(0, 10)}.csv`, body: await svc.paymentsCsv(c.actor, Object.fromEntries(c.query)) },
+    })],
     ['POST', `/api/admin/tournaments/([a-z0-9-]+)/plan`, (c, id) => svc.adminSetPlan(id, c.actor, c.body.plan)],
     ['POST', `/api/admin/tournaments/([a-z0-9-]+)/official`, (c, id) => svc.setOfficial(id, c.actor, c.body.official)],
   ].map(([method, pattern, handler, cache = 0]) => ({ method, re: new RegExp(`^${pattern}$`), handler, cache }));
@@ -462,6 +473,16 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
             ? { user: null, key: null }
             : { user: await auth.userFromRequest(req), key: req.headers['x-admin-key'] || null };
           const result = await route.handler(ctx, ...m.slice(1));
+          // A file download (e.g. the payments CSV) instead of JSON.
+          if (result && result.download) {
+            res.writeHead(200, {
+              'Content-Type': result.download.type,
+              'Content-Disposition': `attachment; filename="${result.download.name}"`,
+              'Cache-Control': 'no-store',
+              'X-Content-Type-Options': 'nosniff',
+            });
+            return res.end(req.method === 'HEAD' ? undefined : result.download.body);
+          }
           const created = req.method === 'POST' && pathname === '/api/tournaments';
           return send(res, created ? 201 : 200, result, cache, cookies);
         }

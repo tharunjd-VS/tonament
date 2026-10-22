@@ -65,8 +65,9 @@ function adminEmails() {
   return new Set((process.env.ADMIN_EMAILS || '').split(',').map(normalizeEmail).filter(Boolean));
 }
 
+// Site admins: listed in ADMIN_EMAILS (can't be removed in the app) or made admin in the app.
 function userView(row) {
-  return { id: row.id, email: row.email, name: row.name, isAdmin: adminEmails().has(row.email) };
+  return { id: row.id, email: row.email, name: row.name, isAdmin: adminEmails().has(row.email) || Boolean(row.is_admin) };
 }
 
 function checkPassword(password) {
@@ -121,6 +122,7 @@ function createAuth(db, { mailer } = {}) {
       fail(401, 'Email or password is incorrect');
     }
     if (row.locked) fail(429, `Too many failed attempts. Try again in ${LOCK_MINUTES} minutes.`);
+    if (row.disabled_at) fail(403, 'This account is disabled. Contact support if you think this is a mistake.');
     if (!(await verifyPassword(password, row.password_hash))) {
       await db.query(
         `UPDATE users SET
@@ -154,19 +156,28 @@ function createAuth(db, { mailer } = {}) {
       [user.id],
     );
     if (recent) return; // one email a minute per account
+    await sendReset(user, baseUrl);
+  }
+
+  // A one-time reset link, emailed (when email is set up) and returned.
+  async function sendReset(user, baseUrl) {
     const token = crypto.randomBytes(32).toString('base64url');
     await db.query(
       `INSERT INTO password_resets (id, user_id, expires_at) VALUES ($1, $2, now() + interval '${RESET_MINUTES} minutes')`,
       [tokenHash(token), user.id],
     );
-    // The token travels in the URL fragment, so it never reaches server logs.
     // The token stays after the #, so it's never sent to the server or logged.
     const url = `${baseUrl}/#/reset?token=${token}`;
+    let emailed = false;
     try {
-      await mailer?.send({ to: user.email, ...passwordResetEmail({ name: user.name, url }) });
+      if (mailer) {
+        await mailer.send({ to: user.email, ...passwordResetEmail({ name: user.name, url }) });
+        emailed = Boolean(mailer.enabled);
+      }
     } catch (err) {
       console.error('Password reset email failed:', err.message);
     }
+    return { url, emailed };
   }
 
   // Sets a new password from a reset link, signs out every other device and
@@ -195,24 +206,92 @@ function createAuth(db, { mailer } = {}) {
     const token = parseCookies(req.headers.cookie)[COOKIE];
     if (!token) return null;
     const [row] = await db.query(
-      'SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = $1 AND s.expires_at > now()',
+      'SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = $1 AND s.expires_at > now() AND u.disabled_at IS NULL',
       [tokenHash(token)],
     );
     return row ? userView(row) : null;
   }
 
-  async function listUsers(actor) {
-    if (!actor.user?.isAdmin) fail(403, 'Site admins only');
+  // ---------- site admin: users
+
+  function requireAdmin(actor) {
+    if (!actor.user?.isAdmin) fail(actor.user ? 403 : 401, 'Site admins only');
+  }
+  const log = (actor, action, target, detail) => db.query(
+    'INSERT INTO admin_log (admin_email, action, target, detail) VALUES ($1, $2, $3, $4::jsonb)',
+    [actor.user.email, action, target, JSON.stringify(detail || {})],
+  );
+  const adminRow = (r) => {
+    const env = adminEmails().has(r.email);
+    return { ...r, isAdmin: env || Boolean(r.isAdmin), envAdmin: env, disabled: Boolean(r.disabledAt) };
+  };
+
+  // Search by name or email, newest first, 50 at a time.
+  async function listUsers(actor, { q = '', offset = 0 } = {}) {
+    requireAdmin(actor);
+    const term = typeof q === 'string' ? q.trim().slice(0, 80) : '';
     const rows = await db.query(`
-      SELECT u.id, u.email, u.name, u.created_at AS "createdAt",
+      SELECT u.id, u.email, u.name, u.created_at AS "createdAt", u.is_admin AS "isAdmin", u.disabled_at AS "disabledAt",
              (SELECT COUNT(*)::int FROM members m WHERE m.email = u.email AND m.role = 'owner') AS owned,
-             (SELECT COUNT(*)::int FROM members m WHERE m.email = u.email AND m.role <> 'owner') AS helping
-      FROM users u ORDER BY u.created_at DESC LIMIT 500`);
-    const admins = adminEmails();
-    return rows.map((r) => ({ ...r, isAdmin: admins.has(r.email) }));
+             (SELECT COUNT(*)::int FROM members m WHERE m.email = u.email AND m.role <> 'owner') AS helping,
+             (SELECT COUNT(*)::int FROM entries e WHERE e.user_id = u.id) AS entries,
+             COUNT(*) OVER ()::int AS total
+      FROM users u
+      WHERE ($1 = '' OR u.email ILIKE $2 OR u.name ILIKE $2)
+      ORDER BY u.created_at DESC, u.id DESC LIMIT 50 OFFSET $3`,
+    [term, `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`, Math.max(0, Number(offset) || 0)]);
+    return { users: rows.map(({ total, ...r }) => adminRow(r)), total: rows[0]?.total ?? 0 };
   }
 
-  return { signup, login, logout, forgotPassword, resetPassword, userFromRequest, listUsers };
+  async function userById(id) {
+    const [row] = await db.query('SELECT id, email, name, created_at AS "createdAt", is_admin AS "isAdmin", disabled_at AS "disabledAt" FROM users WHERE id = $1', [Number(id) || 0]);
+    if (!row) fail(404, 'User not found');
+    return adminRow(row);
+  }
+
+  async function setAdmin(actor, id, on) {
+    requireAdmin(actor);
+    const u = await userById(id);
+    if (u.envAdmin) fail(409, `${u.email} is an admin through the ADMIN_EMAILS setting — remove them there`);
+    if (u.id === actor.user.id && !on) fail(409, 'You can\'t remove your own admin access');
+    await db.query('UPDATE users SET is_admin = $1 WHERE id = $2', [Boolean(on), u.id]);
+    await log(actor, on ? 'user.admin' : 'user.unadmin', u.email);
+    return userById(u.id);
+  }
+
+  // Disabling signs the person out everywhere; they can't sign in until enabled.
+  async function setDisabled(actor, id, on) {
+    requireAdmin(actor);
+    const u = await userById(id);
+    if (u.id === actor.user.id) fail(409, 'You can\'t disable your own account');
+    await db.query(`UPDATE users SET disabled_at = ${on ? 'now()' : 'NULL'} WHERE id = $1`, [u.id]);
+    if (on) await db.query('DELETE FROM sessions WHERE user_id = $1', [u.id]);
+    await log(actor, on ? 'user.disable' : 'user.enable', u.email);
+    return userById(u.id);
+  }
+
+  async function adminResetLink(actor, id, baseUrl) {
+    requireAdmin(actor);
+    const u = await userById(id);
+    const { url, emailed } = await sendReset(u, baseUrl);
+    await log(actor, 'user.reset', u.email, { emailed });
+    return { url, emailed };
+  }
+
+  // Accounts that own tournaments can't be deleted (their tournaments would be left without an owner).
+  async function deleteUser(actor, id) {
+    requireAdmin(actor);
+    const u = await userById(id);
+    if (u.id === actor.user.id) fail(409, 'You can\'t delete your own account here');
+    const [{ n }] = await db.query(`SELECT COUNT(*)::int AS n FROM members WHERE email = $1 AND role = 'owner'`, [u.email]);
+    if (n) fail(409, `${u.email} owns ${n} tournament${n === 1 ? '' : 's'} — delete or hand ${n === 1 ? 'it' : 'them'} over first`);
+    await db.query('DELETE FROM users WHERE id = $1', [u.id]);
+    await db.query('DELETE FROM members WHERE email = $1', [u.email]);
+    await log(actor, 'user.delete', u.email, { name: u.name });
+    return { ok: true };
+  }
+
+  return { signup, login, logout, forgotPassword, resetPassword, userFromRequest, listUsers, userById, setAdmin, setDisabled, adminResetLink, deleteUser };
 }
 
 module.exports = { createAuth, normalizeEmail, validEmail, hashPassword, verifyPassword, parseCookies };

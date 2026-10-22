@@ -838,6 +838,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
         ? { orgName: branding.orgName || null, accent: branding.accent || null, logo: logo ? mediaUrl(logo.id) : null }
         : null,
       sponsors: paid ? of('sponsor').map((m) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption })) : [],
+      // Open and above: the organiser leads on the venue display, Tonament is a small "Powered by"
+      // (Tonament's own tournaments keep the full Tonament look).
+      whiteLabel: BRANDING_PLANS.includes(t.plan) && !t.official,
       ...(access.can.manage && {
         brandingAllowed: paid,
         brandingPlan: 'open',
@@ -1043,6 +1046,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (!VISIBILITY.includes(visibility)) fail(400, 'visibility must be "private", "link" or "public"');
     return mutate(id, actor, async (q, t) => {
       await q('UPDATE tournaments SET visibility = $1 WHERE id = $2', [visibility, t.id]);
+      if (actor.user?.isAdmin) await adminLog(q, actor, 'tournament.visibility', t.id, { name: t.name, from: t.visibility, to: visibility });
     }, 'own');
   }
 
@@ -1270,6 +1274,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       await q('DELETE FROM entries WHERE tournament_id = $1', [t.id]);
       await q('DELETE FROM events WHERE tournament_id = $1', [t.id]);
       await q('DELETE FROM tournaments WHERE id = $1', [t.id]);
+      if (actor.user?.isAdmin) await adminLog(q, actor, 'tournament.delete', t.id, { name: t.name });
       return { ok: true };
     });
   }
@@ -1607,6 +1612,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     requireSiteAdmin(actor);
     return mutate(id, actor, async (q, t) => {
       await q('UPDATE tournaments SET official = $1 WHERE id = $2', [Boolean(official), t.id]);
+      await adminLog(q, actor, official ? 'tournament.official' : 'tournament.unofficial', t.id, { name: t.name });
     });
   }
 
@@ -2366,22 +2372,184 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return mutate(id, actor, async (q, t) => {
       await q('UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2', [plan, t.id]);
       await confirmWaiting(q, { ...t, plan });
+      await adminLog(q, actor, 'tournament.plan', t.id, { name: t.name, from: t.plan, to: plan });
     });
   }
 
-  async function adminPayments(actor) {
+  // Every change made through the admin dashboard is recorded.
+  const adminLog = (q, actor, action, target, detail) => q(
+    'INSERT INTO admin_log (admin_email, action, target, detail) VALUES ($1, $2, $3, $4::jsonb)',
+    [actor.user.email, action, target == null ? null : String(target), JSON.stringify(detail || {})],
+  );
+  const likeTerm = (q) => `%${String(q).replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  // Money taken, net of refunds (payments.amount is in paise).
+  const NET = `COALESCE(SUM(amount - COALESCE(refunded_amount, 0)) FILTER (WHERE status IN ('paid', 'refunded')), 0)::int`;
+
+  // The dashboard's numbers: totals, last 7 and 30 days, and a 30-day series.
+  async function adminStats(actor) {
     requireSiteAdmin(actor);
+    const span = (col) => `COUNT(*)::int AS total, (COUNT(*) FILTER (WHERE ${col} > now() - interval '7 days'))::int AS d7,
+      (COUNT(*) FILTER (WHERE ${col} > now() - interval '30 days'))::int AS d30`;
+    const [[users], [tournaments], [entries], [matches], [revenue]] = await Promise.all([
+      db.query(`SELECT ${span('created_at')} FROM users`),
+      db.query(`SELECT ${span('created_at')} FROM tournaments`),
+      db.query(`SELECT ${span('created_at')} FROM entries`),
+      db.query(`SELECT (COUNT(*) FILTER (WHERE status = 'done'))::int AS done, COALESCE(SUM(length(rallies)), 0)::int AS points FROM matches`),
+      db.query(`SELECT ${NET} AS total,
+        COALESCE(SUM(amount - COALESCE(refunded_amount, 0)) FILTER (WHERE status IN ('paid', 'refunded') AND paid_at >= date_trunc('month', now())), 0)::int AS month,
+        COALESCE(SUM(amount - COALESCE(refunded_amount, 0)) FILTER (WHERE status IN ('paid', 'refunded') AND kind = 'plan'), 0)::int AS plans,
+        COALESCE(SUM(amount - COALESCE(refunded_amount, 0)) FILTER (WHERE status IN ('paid', 'refunded') AND kind = 'entry'), 0)::int AS entries,
+        COALESCE(SUM(refunded_amount), 0)::int AS refunded FROM payments`),
+    ]);
+    const by = (col) => db.query(`SELECT ${col} AS key, COUNT(*)::int AS n FROM tournaments GROUP BY ${col} ORDER BY n DESC, key`);
+    const [bySport, byPlan, byStatus, byVisibility, days, log] = await Promise.all([
+      by('sport'), by('plan'), by('status'), by('visibility'),
+      db.query(`SELECT to_char(d, 'YYYY-MM-DD') AS day,
+          (SELECT COUNT(*)::int FROM users u WHERE u.created_at::date = d) AS signups,
+          (SELECT COUNT(*)::int FROM tournaments t WHERE t.created_at::date = d) AS tournaments,
+          (SELECT COALESCE(SUM(p.amount - COALESCE(p.refunded_amount, 0)), 0)::int FROM payments p WHERE p.status IN ('paid', 'refunded') AND p.paid_at::date = d) AS revenue
+        FROM generate_series(current_date - 29, current_date, interval '1 day') AS d ORDER BY d`),
+      db.query(`SELECT admin_email AS "admin", action, target, detail, created_at AS "at" FROM admin_log ORDER BY id DESC LIMIT 20`),
+    ]);
+    return { users, tournaments, entries, matches, revenue, bySport, byPlan, byStatus, byVisibility, days, log, currency: billingConfig().currency };
+  }
+
+  // Every tournament, private ones too, 50 at a time.
+  async function adminTournaments(actor, filters = {}) {
+    requireSiteAdmin(actor);
+    const f = (k) => (typeof filters[k] === 'string' ? filters[k].trim().slice(0, 80) : '');
+    const where = ['true'];
+    const params = [];
+    const add = (sql, value) => { params.push(value); where.push(sql.replaceAll('?', `$${params.length}`)); };
+    if (f('q')) add(`(t.name ILIKE ? OR t.id ILIKE ? OR COALESCE(t.city, '') ILIKE ? OR EXISTS (SELECT 1 FROM members m WHERE m.tournament_id = t.id AND m.role = 'owner' AND m.email ILIKE ?))`, likeTerm(f('q')));
+    if (f('sport')) add('t.sport = ?', f('sport'));
+    if (f('plan')) add('t.plan = ?', f('plan'));
+    if (f('visibility')) add('t.visibility = ?', f('visibility'));
+    if (f('status')) add('t.status = ?', f('status'));
+    params.push(Math.max(0, Number(filters.offset) || 0));
+    const rows = await db.query(
+      `SELECT t.id, t.name, t.sport, t.plan, t.official, t.visibility, t.status, t.city, t.created_at AS "createdAt", t.starts_on AS "startsOn",
+              (SELECT m.email FROM members m WHERE m.tournament_id = t.id AND m.role = 'owner' LIMIT 1) AS owner,
+              (SELECT COUNT(*)::int FROM entries e WHERE e.tournament_id = t.id AND e.paired_into IS NULL) AS entries,
+              (SELECT COUNT(*)::int FROM events ev WHERE ev.tournament_id = t.id) AS events,
+              COUNT(*) OVER ()::int AS total
+       FROM tournaments t WHERE ${where.join(' AND ')}
+       ORDER BY t.created_at DESC, t.id LIMIT 50 OFFSET $${params.length}`,
+      params,
+    );
+    return {
+      tournaments: rows.map(({ total, startsOn, ...r }) => ({ ...r, startsOn: startsOn instanceof Date ? startsOn.toISOString().slice(0, 10) : startsOn, sportName: sports.get(r.sport)?.name || r.sport, planName: PLAN_NAMES[r.plan] || r.plan })),
+      total: rows[0]?.total ?? 0,
+      plans: Object.entries(PLAN_NAMES).map(([id, name]) => ({ id, name })),
+    };
+  }
+
+  // One person: their tournaments (with their role), entries and payments.
+  async function adminUserDetail(actor, id) {
+    requireSiteAdmin(actor);
+    const [u] = await db.query('SELECT id, email FROM users WHERE id = $1', [Number(id) || 0]);
+    if (!u) fail(404, 'User not found');
+    const [tournaments, entries, payments] = await Promise.all([
+      db.query(`SELECT t.id, t.name, t.sport, t.status, t.plan, t.visibility, m.role FROM members m JOIN tournaments t ON t.id = m.tournament_id
+                WHERE m.email = $1 ORDER BY t.created_at DESC LIMIT 100`, [u.email]),
+      db.query(`SELECT e.id, e.name, e.fee_status AS "feeStatus", e.confirmed, e.withdrawn, t.id AS "tournamentId", t.name AS "tournamentName", ev.name AS "eventName"
+                FROM entries e JOIN tournaments t ON t.id = e.tournament_id LEFT JOIN events ev ON ev.id = e.event_id
+                WHERE e.user_id = $1 ORDER BY e.created_at DESC LIMIT 100`, [u.id]),
+      db.query(`SELECT id, tournament_id AS "tournamentId", tournament_name AS "tournamentName", amount, refunded_amount AS "refundedAmount", status, kind, tier, paid_at AS "paidAt", created_at AS "createdAt"
+                FROM payments WHERE user_email = $1 ORDER BY created_at DESC LIMIT 100`, [u.email]),
+    ]);
+    return { tournaments, entries, payments };
+  }
+
+  function paymentFilters(filters = {}) {
+    const f = (k) => (typeof filters[k] === 'string' ? filters[k].trim().slice(0, 80) : '');
+    const where = ['true'];
+    const params = [];
+    const add = (sql, value) => { params.push(value); where.push(sql.replaceAll('?', `$${params.length}`)); };
+    if (['paid', 'created', 'failed', 'refunded'].includes(f('status'))) add('p.status = ?', f('status'));
+    if (f('status') === 'partial') where.push(`p.status = 'paid' AND COALESCE(p.refunded_amount, 0) > 0`);
+    if (['plan', 'entry'].includes(f('kind'))) add('p.kind = ?', f('kind'));
+    if (f('q')) add(`(p.tournament_name ILIKE ? OR COALESCE(p.user_email, '') ILIKE ? OR COALESCE(p.payment_id, '') ILIKE ? OR COALESCE(p.player, '') ILIKE ?)`, likeTerm(f('q')));
+    if (ISO_DATE.test(f('from'))) add('p.created_at >= ?::date', f('from'));
+    if (ISO_DATE.test(f('to'))) add(`p.created_at < (?::date + interval '1 day')`, f('to'));
+    return { where: where.join(' AND '), params };
+  }
+
+  async function adminPayments(actor, filters = {}) {
+    requireSiteAdmin(actor);
+    const { where, params } = paymentFilters(filters);
     const rows = await db.query(
       `SELECT p.id, p.tournament_id AS "tournamentId", p.tournament_name AS "tournamentName", p.user_email AS "email",
               p.order_id AS "orderId", p.payment_id AS "paymentId", p.amount, p.currency, p.status,
-              p.created_at AS "createdAt", p.paid_at AS "paidAt", p.tier, p.kind, p.event_name AS "eventName", p.player, t.plan
+              p.created_at AS "createdAt", p.paid_at AS "paidAt", p.tier, p.kind, p.event_name AS "eventName", p.player, t.plan,
+              p.refund_id AS "refundId", COALESCE(p.refunded_amount, 0) AS "refundedAmount", p.refunded_at AS "refundedAt"
        FROM payments p LEFT JOIN tournaments t ON t.id = p.tournament_id
-       ORDER BY p.created_at DESC LIMIT 300`,
+       WHERE ${where} ORDER BY p.created_at DESC, p.id DESC LIMIT 1000`,
+      params,
     );
     const [{ total, count }] = await db.query(
-      `SELECT COALESCE(SUM(amount), 0)::int AS total, COUNT(*)::int AS count FROM payments WHERE status = 'paid'`,
+      `SELECT COALESCE(SUM(p.amount - COALESCE(p.refunded_amount, 0)) FILTER (WHERE p.status IN ('paid', 'refunded')), 0)::int AS total,
+              (COUNT(*) FILTER (WHERE p.status IN ('paid', 'refunded')))::int AS count FROM payments p WHERE ${where}`,
+      params,
     );
     return { payments: rows, revenue: { total, count, currency: billingConfig().currency } };
+  }
+
+  // The same list as a spreadsheet. Cells that start like a formula are
+  // prefixed, so opening the file can't run anything.
+  async function paymentsCsv(actor, filters = {}) {
+    const { payments } = await adminPayments(actor, filters);
+    const cell = (v) => {
+      let s = v == null ? '' : v instanceof Date ? v.toISOString() : String(v);
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+      return `"${s.replace(/"/g, '""')}"`;
+    };
+    const rupees = (paise) => (paise / 100).toFixed(2);
+    const head = ['Date', 'Tournament', 'Tournament ID', 'Paid by', 'For', 'Event', 'Player', 'Amount', 'Refunded', 'Status', 'Payment ID', 'Order ID', 'Refund ID'];
+    const lines = payments.map((p) => [p.paidAt || p.createdAt, p.tournamentName, p.tournamentId, p.email, p.kind === 'entry' ? 'Entry fee' : PLAN_NAMES[p.tier || 'pass'] || p.tier,
+      p.eventName, p.player, rupees(p.amount), rupees(p.refundedAmount), p.status, p.paymentId, p.orderId, p.refundId].map(cell).join(','));
+    return [head.map(cell).join(','), ...lines].join('\r\n') + '\r\n';
+  }
+
+  // Refund (all or part of) a paid payment through Razorpay. A refunded plan
+  // payment can also move the tournament back to the plan it had before; a
+  // fully refunded entry fee frees the place.
+  const PLAN_RANK = { free: 0, club: 1, open: 2, championship: 3, pass: 4 };
+  async function refundPayment(actor, paymentId, input = {}) {
+    requireSiteAdmin(actor);
+    const cfg = billingConfig();
+    if (!cfg.enabled) fail(503, 'Razorpay isn\'t set up, so refunds can\'t be made from here');
+    return db.tx(async (q) => {
+      const [p] = await q('SELECT * FROM payments WHERE id = $1 FOR UPDATE', [Number(paymentId) || 0]);
+      if (!p) fail(404, 'Payment not found');
+      if (p.status !== 'paid' || !p.payment_id) fail(409, 'Only completed payments can be refunded');
+      const left = p.amount - (p.refunded_amount || 0);
+      const amount = input.amount == null || input.amount === '' ? left : Math.round(Number(input.amount));
+      if (!Number.isInteger(amount) || amount <= 0) fail(400, 'Enter an amount to refund');
+      if (amount > left) fail(400, `At most ${left / 100} can be refunded`);
+      let refund;
+      try {
+        refund = await razorpay(cfg).refund(p.payment_id, amount);
+      } catch (err) {
+        fail(502, `Razorpay didn't make the refund: ${err.message.replace(/^Razorpay \d+: /, '')}`);
+      }
+      const refunded = (p.refunded_amount || 0) + amount;
+      const full = refunded >= p.amount;
+      await q(`UPDATE payments SET refund_id = $1, refunded_amount = $2, refunded_at = now(), status = $3 WHERE id = $4`,
+        [refund.id || null, refunded, full ? 'refunded' : 'paid', p.id]);
+      let plan = null;
+      if (p.kind === 'plan' && input.downgrade && p.tournament_id) {
+        // Back to the best plan still paid for, or Free.
+        const others = await q(`SELECT tier FROM payments WHERE tournament_id = $1 AND kind = 'plan' AND status = 'paid' AND id <> $2`, [p.tournament_id, p.id]);
+        plan = others.map((x) => x.tier || 'pass').sort((a, b) => (PLAN_RANK[b] || 0) - (PLAN_RANK[a] || 0))[0] || 'free';
+        await q('UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2', [plan, p.tournament_id]);
+      }
+      if (p.kind === 'entry' && full && p.entry_id) {
+        await q(`UPDATE entries SET fee_status = 'refunded', confirmed = false WHERE id = $1`, [p.entry_id]);
+      }
+      await adminLog(q, actor, 'payment.refund', p.id, { tournament: p.tournament_name, amount, full, plan, refundId: refund.id || null });
+      return { ok: true, refunded, status: full ? 'refunded' : 'paid', plan };
+    });
   }
 
   // ---------- sport requests ("Request this sport" votes)
@@ -2505,6 +2673,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
     setOfficial,
     setEntryFee,
     adminPayments,
+    adminStats,
+    adminTournaments,
+    adminUserDetail,
+    paymentsCsv,
+    refundPayment,
     sportInterest,
     setSportInterest,
     myTournaments,

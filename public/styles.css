@@ -844,3 +844,14 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .choice-group.tiles.sports-hub { margin-bottom: 40px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); }
 .sports-hub .choice { text-decoration: none; }
 .sports-hub .choice small { margin-top: 4px; }
+
+/* Venue display on Open and above: the organiser leads, Tonament is a small "Powered by" */
+.display .dc-org-logo { height: 3.4em; width: auto; max-width: 16em; object-fit: contain; border-radius: 8px; }
+.display .dc-org-name { font-size: 1.7em; font-weight: 700; color: var(--text); white-space: nowrap; }
+.display.white-label .dc-head { border-bottom-color: var(--border); }
+.dc-wait .dc-wait-org { justify-self: center; margin-bottom: 1.5em; }
+.dc-wait img.dc-wait-org { height: 9em; max-width: 30em; }
+.dc-wait span.dc-wait-org { font-size: 2.6em; }
+.dc-foot-white { border-top: 1px solid var(--border); }
+.dc-powered { margin: 0; display: inline-flex; align-items: center; gap: 0.5em; color: var(--muted); font-size: 0.8em; white-space: nowrap; }
+.dc-powered img { height: 1.05em; width: auto; opacity: 0.75; }

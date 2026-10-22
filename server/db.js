@@ -248,11 +248,28 @@ ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS payment JSONB;
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS pay_ref TEXT;
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS pay_sent_at TIMESTAMPTZ;
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS hold_until TIMESTAMPTZ;
+
+-- v21: the admin dashboard. Admins can also be made in the app (besides
+-- ADMIN_EMAILS), accounts can be disabled, plan payments refunded, and every
+-- admin change is logged.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_id TEXT;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refunded_amount INTEGER;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS admin_log (
+  id          SERIAL PRIMARY KEY,
+  admin_email TEXT NOT NULL,
+  action      TEXT NOT NULL,
+  target      TEXT,
+  detail      JSONB,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 20;
+const SCHEMA_VERSION = 21;
 
 async function migrate(db) {
   try {
