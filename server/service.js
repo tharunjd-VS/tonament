@@ -10,7 +10,8 @@ const league = require('../public/sports/league');
 const pages = require('./pages');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
-const { inviteEmail, receiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
+const { createOrgs, createSettings } = require('./orgs');
+const { inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
 const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
 
 const FORMATS = {
@@ -203,6 +204,10 @@ const nextSlotColumn = (m) => (m.slot % 2 ? 'b_id' : 'a_id');
 // concurrent requests for one tournament (two umpires, retries, several
 // serverless instances) are applied one at a time.
 function createService(db, { mailer, fetchImpl } = {}) {
+  // Site-wide settings the admin changes, and academy / venue pages (set up at the end).
+  const settings = createSettings(db);
+  let orgs;
+
   // ---------- queries (q is db.query or a transaction's query)
 
   async function load(q, id, { lock = false } = {}) {
@@ -701,6 +706,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   }
 
   async function view(q, t, actor) {
+    const { org } = await withOrgBranding(q, t);
     const events = await eventsOf(q, t.id); // first: it may attach stray entries to a new event
     const media = await q('SELECT id, kind, caption, position FROM media WHERE tournament_id = $1 ORDER BY kind, position, created_at', [t.id]);
     const [entries, rows, access] = await Promise.all([
@@ -730,6 +736,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       courts: courtsOf(t),
       visibility: t.visibility,
       official: t.official,
+      // The academy / venue that runs it (its page link only while the page is public).
+      org: org && (org.public || access.can.manage) ? org : null,
       ...pageContent(t, media, access),
       plan: t.plan,
       ...(access.can.manage && {
@@ -811,7 +819,13 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // sponsors come with Open and above (and the original Event Pass).
   const BRANDING_PLANS = ['open', 'championship', 'pass'];
   const paidPlan = (t) => !billingConfig().enabled || t.plan !== 'free' || Boolean(t.official);
-  const brandingAllowed = (t) => !billingConfig().enabled || BRANDING_PLANS.includes(t.plan) || Boolean(t.official);
+  // t.orgBranding: the tournament's academy page includes branding (see withOrgBranding).
+  const brandingAllowed = (t) => !billingConfig().enabled || BRANDING_PLANS.includes(t.plan) || Boolean(t.official) || Boolean(t.orgBranding);
+  async function withOrgBranding(q, t) {
+    const link = await orgs.forTournament(q, t.org_id);
+    t.orgBranding = link.branding;
+    return link;
+  }
   const BRANDING_UPSELL = 'Your logo, colours and sponsors come with the Open plan or above';
 
   // What the public page shows (and, for organisers, everything uploaded).
@@ -840,7 +854,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       sponsors: paid ? of('sponsor').map((m) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption })) : [],
       // Open and above: the organiser leads on the venue display, Tonament is a small "Powered by"
       // (Tonament's own tournaments keep the full Tonament look).
-      whiteLabel: BRANDING_PLANS.includes(t.plan) && !t.official,
+      whiteLabel: (BRANDING_PLANS.includes(t.plan) || Boolean(t.orgBranding)) && !t.official,
       ...(access.can.manage && {
         brandingAllowed: paid,
         brandingPlan: 'open',
@@ -865,6 +879,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const caption = text(input.caption, 'Caption', { max: 120, optional: true });
     return mutate(id, actor, async (q, t) => {
       const paid = paidPlan(t);
+      await withOrgBranding(q, t);
       if ((kind === 'logo' || kind === 'sponsor') && !brandingAllowed(t)) fail(402, BRANDING_UPSELL, 'upgrade');
       const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM media WHERE tournament_id = $1 AND kind = $2', [t.id, kind]);
       if (kind === 'photo' && n >= (paid ? PHOTO_LIMITS.paid : PHOTO_LIMITS.free)) {
@@ -920,7 +935,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
        FROM media m JOIN tournaments t ON t.id = m.tournament_id WHERE m.id = $1`,
       [mediaId],
     );
-    if (!m) fail(404, 'Not found');
+    if (!m) return (await orgs.getMedia(mediaId)) || fail(404, 'Not found'); // an academy page's image
     if (m.visibility === 'private') {
       const access = await accessOf(db.query, { id: m.tid, admin_key: m.admin_key, scorer_key: m.scorer_key }, await actorOf());
       if (!access.score) fail(404, 'Not found');
@@ -1156,6 +1171,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         const orgName = text(b.orgName, 'Organiser name', { max: 60, optional: true });
         const accent = b.accent ? String(b.accent).trim() : null;
         if (accent && !HEX_COLOUR.test(accent)) fail(400, 'Brand colour must be a hex colour like #F97316');
+        await withOrgBranding(q, t);
         if ((orgName || accent) && !brandingAllowed(t)) fail(402, BRANDING_UPSELL, 'upgrade');
         await q('UPDATE tournaments SET branding = $1::jsonb WHERE id = $2', [JSON.stringify({ orgName, accent: accent && accent.toUpperCase() }), t.id]);
       }
@@ -2229,6 +2245,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       );
       if (p.kind === 'entry') {
         await settleEntryFee(q, paid);
+      } else if (p.kind === 'org') {
+        await orgs.applyPayment(q, paid);
       } else if (p.tournament_id) {
         // Payments made before tiers existed bought the unlimited Event Pass.
         await q(`UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2`, [p.tier || 'pass', p.tournament_id]);
@@ -2264,6 +2282,19 @@ function createService(db, { mailer, fetchImpl } = {}) {
   async function sendReceipt(payment, baseUrl) {
     if (!payment?.user_email || !mailer?.enabled || !baseUrl) return;
     const cfg = billingConfig();
+    if (payment.kind === 'org') {
+      const [o] = await db.query('SELECT slug, name, paid_until FROM orgs WHERE id = $1', [payment.org_id]);
+      if (!o) return;
+      try {
+        await mailer.send({
+          to: payment.user_email,
+          ...orgReceiptEmail({ business: cfg.business, org: o.name, until: o.paid_until, amount: payment.amount, currency: payment.currency, paymentId: payment.payment_id, paidAt: payment.paid_at, url: `${baseUrl}/@${o.slug}` }),
+        });
+      } catch (err) {
+        console.error('Receipt email failed:', err.message);
+      }
+      return;
+    }
     if (payment.kind === 'entry') {
       try {
         await mailer.send({
@@ -2468,7 +2499,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const add = (sql, value) => { params.push(value); where.push(sql.replaceAll('?', `$${params.length}`)); };
     if (['paid', 'created', 'failed', 'refunded'].includes(f('status'))) add('p.status = ?', f('status'));
     if (f('status') === 'partial') where.push(`p.status = 'paid' AND COALESCE(p.refunded_amount, 0) > 0`);
-    if (['plan', 'entry'].includes(f('kind'))) add('p.kind = ?', f('kind'));
+    if (['plan', 'entry', 'org'].includes(f('kind'))) add('p.kind = ?', f('kind'));
     if (f('q')) add(`(p.tournament_name ILIKE ? OR COALESCE(p.user_email, '') ILIKE ? OR COALESCE(p.payment_id, '') ILIKE ? OR COALESCE(p.player, '') ILIKE ?)`, likeTerm(f('q')));
     if (ISO_DATE.test(f('from'))) add('p.created_at >= ?::date', f('from'));
     if (ISO_DATE.test(f('to'))) add(`p.created_at < (?::date + interval '1 day')`, f('to'));
@@ -2506,7 +2537,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     };
     const rupees = (paise) => (paise / 100).toFixed(2);
     const head = ['Date', 'Tournament', 'Tournament ID', 'Paid by', 'For', 'Event', 'Player', 'Amount', 'Refunded', 'Status', 'Payment ID', 'Order ID', 'Refund ID'];
-    const lines = payments.map((p) => [p.paidAt || p.createdAt, p.tournamentName, p.tournamentId, p.email, p.kind === 'entry' ? 'Entry fee' : PLAN_NAMES[p.tier || 'pass'] || p.tier,
+    const lines = payments.map((p) => [p.paidAt || p.createdAt, p.tournamentName, p.tournamentId, p.email, p.kind === 'entry' ? 'Entry fee' : p.kind === 'org' ? 'Academy page (1 year)' : PLAN_NAMES[p.tier || 'pass'] || p.tier,
       p.eventName, p.player, rupees(p.amount), rupees(p.refundedAmount), p.status, p.paymentId, p.orderId, p.refundId].map(cell).join(','));
     return [head.map(cell).join(','), ...lines].join('\r\n') + '\r\n';
   }
@@ -2544,12 +2575,43 @@ function createService(db, { mailer, fetchImpl } = {}) {
         plan = others.map((x) => x.tier || 'pass').sort((a, b) => (PLAN_RANK[b] || 0) - (PLAN_RANK[a] || 0))[0] || 'free';
         await q('UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2', [plan, p.tournament_id]);
       }
+      if (p.kind === 'org' && input.downgrade && p.org_id) {
+        await orgs.takeBackYear(q, p.org_id);
+        plan = 'org';
+      }
       if (p.kind === 'entry' && full && p.entry_id) {
         await q(`UPDATE entries SET fee_status = 'refunded', confirmed = false WHERE id = $1`, [p.entry_id]);
       }
       await adminLog(q, actor, 'payment.refund', p.id, { tournament: p.tournament_name, amount, full, plan, refundId: refund.id || null });
       return { ok: true, refunded, status: full ? 'refunded' : 'paid', plan };
     });
+  }
+
+  // An academy's tournaments for its page: public ones (and private ones for its team).
+  async function orgCards(q, orgId, { includePrivate = false } = {}) {
+    const rows = await q(
+      `SELECT ${CARD_COLUMNS} FROM tournaments t WHERE t.org_id = $1 ${includePrivate ? '' : `AND t.visibility = 'public'`}
+       ORDER BY t.starts_on DESC NULLS LAST, t.created_at DESC LIMIT 60`,
+      [orgId],
+    );
+    return rows.map(cardOf);
+  }
+
+  // Site settings the admin dashboard changes (logged).
+  async function adminSettings(actor) {
+    requireSiteAdmin(actor);
+    return settings.all();
+  }
+  async function setAdminSettings(actor, input = {}) {
+    requireSiteAdmin(actor);
+    for (const key of Object.keys(input)) {
+      if (!(key in settings.DEFAULTS)) fail(400, `Unknown setting: ${key}`);
+      const from = await settings.get(key);
+      const to = typeof settings.DEFAULTS[key] === 'boolean' ? Boolean(input[key]) : input[key];
+      await settings.set(key, to, actor.user.email);
+      await adminLog(db.query, actor, 'setting.change', key, { from, to });
+    }
+    return settings.all();
   }
 
   // ---------- sport requests ("Request this sport" votes)
@@ -2665,7 +2727,16 @@ function createService(db, { mailer, fetchImpl } = {}) {
     });
   }
 
+  orgs = createOrgs({
+    db, fail, text, imageType, maxImageBytes: MAX_IMAGE_BYTES, mediaUrl, billingConfig, razorpay, adminLog, requireSiteAdmin, settings, orgCards,
+    tournamentAccess: (q, id, actor) => lockWith(q, id, actor, 'manage'),
+  });
+
   return {
+    orgs,
+    settings,
+    adminSettings,
+    setAdminSettings,
     checkout,
     verifyPayment,
     razorpayWebhook,

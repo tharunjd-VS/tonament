@@ -901,3 +901,27 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .refund-card { display: grid; gap: 10px; margin: 0; border-color: var(--accent); }
 .refund-card h3 { margin: 0; }
 .admin-pay td, .admin-pay th { white-space: nowrap; }
+
+/* ---------- academy / venue pages (/@slug) */
+.org-hero { position: relative; overflow: hidden; border-radius: 20px; margin: 8px 0 32px; color: #E5E7EB; border: 1px solid #1C2740;
+  padding: clamp(28px, 6vw, 56px) clamp(20px, 5vw, 48px); min-height: 260px; display: flex; align-items: flex-end;
+  background: linear-gradient(115deg, transparent 0 74%, var(--lime) 74% 77%, transparent 77%), radial-gradient(circle at 85% 20%, #1B2740 0, var(--navy) 65%); }
+.org-hero.has-cover { background: linear-gradient(180deg, rgba(11, 18, 32, 0.25) 0%, rgba(11, 18, 32, 0.92) 78%), var(--cover) center / cover no-repeat, var(--navy); min-height: 340px; }
+.org-hero-inner { display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
+.org-hero h1 { color: #fff; font-size: clamp(1.9rem, 6vw, 3rem); margin: 4px 0 10px; letter-spacing: -0.01em; }
+.org-hero .eyebrow { color: #CBD5E1; margin: 0; }
+.org-hero .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
+.org-hero .btn-ghost { color: #fff; border-color: rgba(255, 255, 255, 0.4); }
+.org-logo { width: 96px; height: 96px; object-fit: contain; border-radius: 18px; background: #fff; padding: 6px; flex: none; }
+.org-sports { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+.org-sports a { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; padding: 4px 12px; color: #fff; text-decoration: none; font-size: 0.9rem; }
+.org-sports .icon { width: 18px; height: 18px; color: var(--lime); }
+.org-about p { margin: 0 0 10px; max-width: 46em; }
+.org-facts { margin-bottom: 40px; }
+.org-gallery { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr)); }
+.org-gallery a { display: block; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: var(--surface); }
+.org-gallery img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lightbox { border: 0; padding: 0; background: transparent; max-width: min(96vw, 1200px); }
+.lightbox::backdrop { background: rgba(0, 0, 0, 0.85); }
+.lightbox img { display: block; max-width: 100%; max-height: 88vh; border-radius: 12px; }
+.lightbox button { position: absolute; top: 8px; right: 8px; }

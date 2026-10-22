@@ -102,6 +102,30 @@ function inviteEmail({ inviter, tournament, roleName, roleHint, url, hasAccount 
 
 // Receipt for a plan payment. `plan` is the plan's name ("Club"), or
 // "Event Pass" for the original unlimited pass; `limit` is its entry limit.
+// The yearly academy / venue page payment.
+function orgReceiptEmail({ business, org, until, amount, currency, paymentId, paidAt, url }) {
+  const item = `Page for one year — ${org}`;
+  const money = currency === 'INR' ? `₹${(amount / 100).toFixed(2)}` : `${(amount / 100).toFixed(2)} ${currency}`;
+  const date = new Date(paidAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
+  const live = new Date(until).toLocaleDateString('en-IN', { dateStyle: 'long', timeZone: 'Asia/Kolkata' });
+  const rows = [['Item', item], ['Amount paid', money], ['Payment ID', paymentId], ['Date', `${date} IST`], ['Live until', live],
+    ['Paid to', business.name + (business.gstin ? ` (GSTIN ${business.gstin})` : '')]];
+  const table = `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse">${rows
+    .map(([k, v]) => `<tr><td style="padding:6px 0;color:#475569;font-size:14px">${esc(k)}</td><td style="padding:6px 0;text-align:right;font-weight:600;font-size:14px">${esc(v)}</td></tr>`)
+    .join('')}</table>`;
+  return {
+    subject: `Payment received — ${item}`,
+    html: layout({
+      heading: 'Your page is live',
+      body: [`Thanks for your payment. <strong>${esc(org)}</strong> is live on Tonament until ${esc(live)}.`, table],
+      button: 'Open your page',
+      url,
+      footer: `This is your receipt. Questions or refunds: ${esc(business.email || 'reply to this email')}.`,
+    }),
+    text: `Payment received — ${item}\n\n${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\nOpen your page: ${url}`,
+  };
+}
+
 function receiptEmail({ business, tournament, plan = 'Event Pass', limit = null, amount, currency, paymentId, paidAt, url }) {
   const item = plan === 'Event Pass' ? `Event Pass — ${tournament}` : `${plan} plan — ${tournament}`;
   const money = currency === 'INR' ? `₹${(amount / 100).toFixed(2)}` : `${(amount / 100).toFixed(2)} ${currency}`;
@@ -209,4 +233,4 @@ function feeMissingEmail({ tournament, event, url }) {
   };
 }
 
-module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail };
+module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail };

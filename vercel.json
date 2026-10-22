@@ -21,6 +21,18 @@
       "destination": "/api/index?__path=sport"
     },
     {
+      "source": "/@:slug/edit",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/@:slug",
+      "destination": "/api/index?__path=org/:slug"
+    },
+    {
+      "source": "/academy/new",
+      "destination": "/index.html"
+    },
+    {
       "source": "/:page(new|signin|signup|forgot|reset|admin)",
       "destination": "/index.html"
     },

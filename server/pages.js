@@ -388,4 +388,109 @@ function sportsHubHtml({ base, sports }) {
   });
 }
 
-module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, sitemap, esc, sportHtml, sportsHubHtml };
+// ---------- academy / venue / club pages (/@slug)
+
+// o: orgs.page() (profile, media, tournament cards). Organiser-run content:
+// everything is escaped; links are built here, never taken as HTML.
+function orgHtml({ base, o }) {
+  const path = `/@${o.slug}`;
+  const L = o.location;
+  const placeText = [L.address, [L.city, [L.region, L.postcode].filter(Boolean).join(' ')].filter(Boolean).join(', '), L.country].filter(Boolean).join(', ');
+  const where = [o.kindName, L.city].filter(Boolean).join(' · ');
+  const today = new Date().toISOString().slice(0, 10);
+  const last = (t) => isoDate(t.endsOn) || isoDate(t.startsOn);
+  const live = o.tournaments.filter((t) => t.status === 'league' || t.status === 'knockout');
+  const upcoming = o.tournaments.filter((t) => t.status === 'setup' && (!last(t) || last(t) >= today))
+    .sort((a, b) => Number(b.entriesOpen) - Number(a.entriesOpen) || String(isoDate(a.startsOn) || '9').localeCompare(String(isoDate(b.startsOn) || '9')));
+  const past = o.tournaments.filter((t) => !live.includes(t) && !upcoming.includes(t)).slice(0, 12);
+  const list = (title, ts) => (ts.length ? `<section><h2 class="features-title">${esc(title)}</h2><div class="card-list sport-list">${ts.map(tournamentCardHtml).join('')}</div></section>` : '');
+  const digits = (n) => String(n || '').replace(/\D/g, '');
+  const C = o.contact;
+  const maps = placeText || o.name ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([o.name, placeText].filter(Boolean).join(', '))}` : null;
+  const buttons = [
+    C.whatsapp ? `<a class="btn btn-primary" href="https://wa.me/${digits(C.whatsapp)}" rel="noopener">WhatsApp</a>` : '',
+    C.phone ? `<a class="btn btn-ghost" href="tel:${esc(C.phone)}">Call</a>` : '',
+    maps && placeText ? `<a class="btn btn-ghost" href="${esc(maps)}" rel="noopener">Directions</a>` : '',
+    C.website ? `<a class="btn btn-ghost" href="${esc(C.website)}" rel="noopener nofollow">Website</a>` : '',
+    C.instagram ? `<a class="btn btn-ghost" href="https://instagram.com/${esc(C.instagram)}" rel="noopener nofollow">Instagram</a>` : '',
+  ].join(' ');
+  const para = (t) => String(t || '').split('\n').filter(Boolean).map((x) => `<p>${esc(x)}</p>`).join('');
+  const sportsChips = o.sports.length
+    ? `<p class="org-sports">${o.sports.map((x) => `<a href="/${esc(x.id)}">${iconSvg(x.id)} ${esc(x.name)}</a>`).join('')}</p>` : '';
+  const facts = [
+    o.courts ? `<section><h3>Courts</h3><p>${esc(o.courts)}</p></section>` : '',
+    o.timings ? `<section><h3>Timings</h3><p>${esc(o.timings)}</p></section>` : '',
+    placeText ? `<section><h3>Address</h3><p>${esc(placeText)}</p>${maps ? `<p><a href="${esc(maps)}" rel="noopener">Open in Google Maps</a></p>` : ''}</section>` : '',
+  ].filter(Boolean);
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <span>${esc(o.name)}</span></nav>
+    <section class="org-hero${o.cover ? ' has-cover' : ''}"${o.cover ? ` style="--cover:url('${esc(o.cover)}')"` : ''}>
+      <div class="org-hero-inner">
+        ${o.logo ? `<img class="org-logo" src="${esc(o.logo)}" alt="${esc(o.name)} logo" width="96" height="96">` : ''}
+        <div>
+          <p class="eyebrow">${esc(where)}</p>
+          <h1>${esc(o.name)}</h1>
+          ${sportsChips}
+          ${buttons ? `<p class="actions">${buttons}</p>` : ''}
+        </div>
+      </div>
+    </section>
+${list('Live now', live)}
+${list(upcoming.some((t) => t.entriesOpen) ? 'Upcoming tournaments — entries open' : 'Upcoming tournaments', upcoming)}
+    ${o.about ? `<section><h2 class="features-title">About</h2><div class="org-about">${para(o.about)}</div></section>` : ''}
+    ${facts.length ? `<div class="feature-groups org-facts">${facts.join('')}</div>` : ''}
+    ${o.coaching.length ? `<section><h2 class="features-title">Coaching</h2><div class="feature-groups">${o.coaching.map((c) => `<section><h3>${esc(c.title)}</h3><ul>${[c.who && `<li><strong>For</strong> ${esc(c.who)}</li>`, c.when && `<li><strong>When</strong> ${esc(c.when)}</li>`, c.fee && `<li><strong>Fee</strong> ${esc(c.fee)}</li>`].filter(Boolean).join('')}</ul></section>`).join('')}</div></section>` : ''}
+    ${o.photos.length ? `<section><h2 class="features-title">Photos</h2><div class="org-gallery">${o.photos.map((ph, i) => `<a href="${esc(ph.url)}" data-photo="${i}"><img src="${esc(ph.url)}" alt="${esc(ph.caption || `${o.name} photo ${i + 1}`)}" loading="lazy"></a>`).join('')}</div>
+    <dialog class="lightbox" aria-label="Photo"><img alt=""><button class="btn btn-small" type="button" aria-label="Close">✕</button></dialog></section>` : ''}
+${list('Past tournaments', past)}
+    <section class="hero hero-end">
+      <h2>Run your tournaments on Tonament</h2>
+      <p class="lead">Entries, draws, courts and live scores — the way ${esc(o.name)} does.</p>
+      <p class="actions"><a class="btn btn-primary btn-lg" href="${SIGN_UP}">Sign up free</a></p>
+    </section>
+    <script>
+      (function () {
+        var box = document.querySelector('.lightbox');
+        if (!box || !box.showModal) return;
+        var img = box.querySelector('img');
+        document.querySelectorAll('[data-photo]').forEach(function (a) {
+          a.addEventListener('click', function (e) { e.preventDefault(); img.src = a.href; img.alt = a.querySelector('img').alt; box.showModal(); });
+        });
+        box.addEventListener('click', function () { box.close(); });
+      })();
+    </script>`;
+  const sameAs = [C.website, C.instagram && `https://instagram.com/${C.instagram}`].filter(Boolean);
+  const ld = [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'SportsActivityLocation',
+      name: o.name,
+      url: base + path,
+      ...(o.about && { description: o.about.slice(0, 500) }),
+      ...(o.logo && { logo: base + o.logo }),
+      ...((o.cover || o.logo) && { image: base + (o.cover || o.logo) }),
+      ...(C.phone && { telephone: C.phone }),
+      ...(C.email && { email: C.email }),
+      ...(sameAs.length && { sameAs }),
+      ...((L.address || L.city) && {
+        address: {
+          '@type': 'PostalAddress',
+          ...(L.address && { streetAddress: L.address }),
+          ...(L.city && { addressLocality: L.city }),
+          ...(L.region && { addressRegion: L.region }),
+          ...(L.postcode && { postalCode: L.postcode }),
+          ...(L.country && { addressCountry: L.country }),
+        },
+      }),
+      ...(o.timings && { openingHours: o.timings }),
+    },
+    crumbs(base, [['Home', '/'], [o.name, path]]),
+    ...(o.tournaments.length ? [{ '@context': 'https://schema.org', '@type': 'ItemList', name: `${o.name} tournaments`, itemListElement: [...live, ...upcoming, ...past].map((t, i) => ({ '@type': 'ListItem', position: i + 1, url: `${base}/t/${t.id}`, name: t.name })) }] : []),
+  ];
+  const sportsText = o.sports.map((x) => x.name.toLowerCase()).join(', ');
+  const description = o.about
+    ? o.about.replace(/\s+/g, ' ').slice(0, 155)
+    : `${o.name}${L.city ? `, ${L.city}` : ''}: ${sportsText ? `${sportsText} ` : ''}${o.kindName.toLowerCase()} — courts, coaching and tournaments with live scores.`;
+  return sitePage({ base, path, title: `${o.name}${L.city ? ` — ${o.kindName} in ${L.city}` : ''} | Tonament`, description, ld, body });
+}
+
+module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, sitemap, esc, sportHtml, sportsHubHtml, orgHtml };

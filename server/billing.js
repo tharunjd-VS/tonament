@@ -44,6 +44,8 @@ function billingConfig(env = process.env) {
     price: TIERS[0].price, // the lowest paid plan, in paise (49900 = ₹499)
     currency: 'INR',
     freeLimit: intEnv(env.FREE_ENTRY_LIMIT, 16),
+    // An academy or venue page (tonament.com/@name), per year, in paise.
+    orgPrice: intEnv(env.ORG_PRICE, 299900),
     business: {
       name: env.BUSINESS_NAME || 'Tonament',
       address: env.BUSINESS_ADDRESS || '',
@@ -63,6 +65,7 @@ function publicBillingConfig(cfg = billingConfig()) {
     tiers: cfg.tiers,
     currency: cfg.currency,
     freeLimit: cfg.freeLimit,
+    orgPrice: cfg.orgPrice,
     business: cfg.business,
   };
 }

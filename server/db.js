@@ -265,11 +265,64 @@ CREATE TABLE IF NOT EXISTS admin_log (
   detail      JSONB,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- v22: academy & venue pages (tonament.com/@slug), a yearly paid page. Their
+-- tournaments link to them; site-wide settings the admin can change.
+CREATE TABLE IF NOT EXISTS orgs (
+  id          SERIAL PRIMARY KEY,
+  slug        TEXT UNIQUE NOT NULL,
+  name        TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'academy',   -- academy | venue | club
+  sports      TEXT[] NOT NULL DEFAULT '{}',
+  about       TEXT,
+  address     TEXT,
+  city        TEXT,
+  region      TEXT,
+  postcode    TEXT,
+  country     TEXT,
+  phone       TEXT,
+  whatsapp    TEXT,
+  email       TEXT,
+  website     TEXT,
+  instagram   TEXT,
+  courts      TEXT,
+  timings     TEXT,
+  coaching    JSONB,                             -- [{ title, who, when, fee }]
+  accent      TEXT,
+  paid_until  TIMESTAMPTZ,                       -- public while paid (plus a grace period)
+  branding_override BOOLEAN,                     -- null: follow the site setting
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS org_members (
+  org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  email       TEXT NOT NULL,
+  role        TEXT NOT NULL,                     -- owner | editor
+  PRIMARY KEY (org_id, email)
+);
+CREATE TABLE IF NOT EXISTS org_media (
+  id          TEXT PRIMARY KEY,
+  org_id      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,                     -- logo | cover | photo
+  mime        TEXT NOT NULL,
+  bytes       BYTEA NOT NULL,
+  caption     TEXT,
+  position    INTEGER NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS org_media_o ON org_media(org_id, kind, position);
+CREATE TABLE IF NOT EXISTS site_settings (
+  key         TEXT PRIMARY KEY,
+  value       JSONB NOT NULL,
+  updated_by  TEXT,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS org_id INTEGER;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS org_id INTEGER;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 21;
+const SCHEMA_VERSION = 22;
 
 async function migrate(db) {
   try {
