@@ -481,6 +481,15 @@
       } else if (parts[0] === 'reset') {
         S.route = { name: 'reset', token: params.get('token') || '' };
         history.replaceState(null, '', '/reset'); // keep the token out of history
+      } else if (parts[0] === 'me' && parts[1] === 'profile') {
+        if (!S.me) {
+          navigate('/signin?next=/me/profile', { replace: true });
+          return;
+        }
+        S.route = { name: 'profile' };
+        S.profile = null;
+        render();
+        await loadProfile();
       } else if (parts[0] === 'academy' && parts[1] === 'new') {
         if (!S.me) {
           navigate('/signin?next=/academy/new', { replace: true });
@@ -525,7 +534,7 @@
         ]);
       }
     }
-    if (['new', 'tournament', 'orgNew', 'org'].includes(S.route.name)) ensurePlaces(); // city suggestions
+    if (['new', 'tournament', 'orgNew', 'org', 'profile'].includes(S.route.name)) ensurePlaces(); // city suggestions
     render();
     if (prev.name !== S.route.name || prev.mid !== S.route.mid || prev.id !== S.route.id) window.scrollTo(0, 0);
   }
@@ -627,6 +636,7 @@
     else if (S.route.name === 'reset') view = viewReset();
     else if (S.route.name === 'admin') view = viewAdmin();
     else if (S.route.name === 'orgNew') view = viewOrgNew();
+    else if (S.route.name === 'profile') view = viewProfile();
     else if (S.route.name === 'org') view = viewOrgEdit();
     else if (S.route.name === 'tournament') view = S.t ? viewTournament() : loading();
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
@@ -1536,7 +1546,8 @@
         editable && t.entries.length ? h('span', { class: 'actions' },
           h('button', { class: 'btn btn-small btn-ghost', disabled: S.checkAllBusy, onclick: () => checkInAll(t, !usingCheckIn) },
             S.checkAllBusy ? 'Saving…' : usingCheckIn ? 'Clear check-in' : 'Check in all'),
-          t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null) : null),
+          t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null,
+          duprTools(t)) : !setup ? duprTools(t) : null),
       t.can.manage && t.event.fee
         ? h('p', { class: 'muted small', style: 'margin:0 0 8px' }, `Entry fee ${money(t.event.fee)} · ${money(t.event.feeTotal || 0)} collected`)
         : null,
@@ -1566,13 +1577,14 @@
             : null,
           h('span', { class: 'seed' }, i + 1),
           h('span', { class: 'name' },
-            h('span', { class: 'entry-name' }, e.name),
+            entryName(e),
             e.contact || e.phone ? h('small', { class: 'contact' }, [e.contact, e.phone].filter(Boolean).join(' · ')) : null,
             e.players ? h('small', { class: 'contact' }, `Players: ${e.players.join(', ')}`) : null,
             e.members && t.can.manage && e.members.some((m) => m.contact)
               ? h('small', { class: 'contact' }, e.members.map((m) => `${m.name}: ${m.contact}`).join(' · '))
               : null,
-            h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group)),
+            h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group), e.rating != null ? pill('', `DUPR ${e.rating.toFixed(2)}`) : null),
+            entryPeople(t, e),
             editable && !e.confirmed && !['pending', 'due', 'sent'].includes(e.feeStatus)
               ? h('button', { class: 'btn btn-small btn-primary confirm-btn', onclick: () => confirmEntry(t, e) }, 'Confirm place')
               : null,
@@ -1608,7 +1620,7 @@
         list,
       ];
     }
-    if (!setup) return [paymentsToCheck(t), upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, prizeSettingsCard(t), tournamentSettingsCard(t)];
+    if (!setup) return [paymentsToCheck(t), upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, rankedCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
     return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
   }
 
@@ -1747,6 +1759,11 @@
           ? field('Partner\'s name', h('input', { name: 'partner', required: true, maxlength: 40, autocomplete: 'off' }), 'partner-field')
           : field('Partner (doubles only)', h('input', { name: 'partner', maxlength: 40, autocomplete: 'off' }))),
     t.event.discipline === 'doubles' && !drawn
+      ? field('Partner\'s email (optional)', h('input', { name: 'partnerEmail', type: 'email', maxlength: 120, autocomplete: 'off' }), 'partner-email-field',
+        'Their results and ranking points go on their Tonament profile too. We\'ll let them know.')
+      : null,
+    duprEntryFields(t, drawn),
+    t.event.discipline === 'doubles' && !drawn
       ? h('label', { class: 'check-field' },
         h('input', { type: 'checkbox', name: 'solo', onchange: (e) => syncSolo(e.target.form, e.target.checked) }),
         h('span', {}, h('strong', {}, 'I don\'t have a partner — find me one'),
@@ -1767,6 +1784,26 @@
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, full ? 'Join waitlist' : online ? `Pay ${money(fee)} and enter` : 'Enter')),
     online ? h('p', { class: 'hint', style: 'margin:0' }, 'Secure payment by Razorpay — UPI, cards, netbanking or wallets. ', h('a', { href: '/refunds', target: '_blank', rel: 'noopener' }, 'Refund policy')) : null);
     return form;
+  }
+
+  // Pickleball events that ask for DUPR IDs: yours (from your profile) and your partner's.
+  function duprEntryFields(t, drawn) {
+    const mode = t.config.dupr || 'off';
+    if (t.sport.id !== 'pickleball' || mode === 'off') return null;
+    if (!S.profile && !S.profileLoading) {
+      S.profileLoading = true;
+      api('GET', '/me/profile').then((p) => { S.profile = p; render(); }, () => {}).finally(() => { S.profileLoading = false; });
+    }
+    const mine = S.profile && S.profile.dupr ? S.profile.dupr.id : '';
+    const required = mode === 'required';
+    const { duprMin: lo, duprMax: hi } = t.config;
+    const range = lo != null || hi != null ? ` This event is for DUPR ${lo != null && hi != null ? `${lo.toFixed(2)}–${hi.toFixed(2)}` : lo != null ? `${lo.toFixed(2)}+` : `up to ${hi.toFixed(2)}`} (${t.event.discipline === 'singles' ? 'singles' : 'doubles'} rating from your profile).` : '';
+    const pair = t.event.discipline === 'doubles' && !drawn;
+    return h('div', { class: 'grid-2' },
+      field(`Your DUPR ID${required ? '' : ' (optional)'}`, h('input', { name: 'duprId', maxlength: 12, value: mine || '', required: required || null, autocomplete: 'off', style: 'text-transform:uppercase' }), null,
+        h('span', {}, `Saved to your profile.${range} `, h('a', { href: '/me/profile', target: '_blank', rel: 'noopener' }, 'Your ratings'))),
+      pair ? field(`Partner's DUPR ID${required ? '' : ' (optional)'}`, h('input', { name: 'partnerDuprId', maxlength: 12, autocomplete: 'off', style: 'text-transform:uppercase' }), 'partner-dupr-field',
+        required ? 'Not needed if their Tonament profile has it.' : null) : null);
   }
 
   // A player's entry with the fee still to pay: how to pay the organiser, then "I've paid".
@@ -2233,7 +2270,10 @@
           const partners = form.querySelector('input[name=partners]')
             ? { partners: form.querySelector('input[name=partners]:checked').value, balancePairs: form.balancePairs.checked }
             : {};
-          S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ...readCategory(form), ...readFormat(form, sport), ...fee, ...partners }, t.id);
+          const fd = new FormData(form);
+          const extra = form.ranked ? { ranked: form.ranked.checked } : {};
+          if (t.sport.id === 'pickleball') Object.assign(extra, { dupr: fd.get('dupr') || 'off', duprMin: fd.get('duprMin') || null, duprMax: fd.get('duprMax') || null });
+          S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ...readCategory(form), ...readFormat(form, sport), ...fee, ...partners, ...extra }, t.id);
         }, 'Event settings saved');
       },
     },
@@ -2259,6 +2299,15 @@
           ? `Players pay you directly (UPI ${t.payment.upi}) and you confirm each payment.`
           : 'Players pay you directly and you confirm each payment. Add your UPI ID under Tournament settings → Entry fees.')),
     formatFields(sport, { format: t.format, ...t.config }),
+    t.sport.id === 'pickleball' ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'DUPR'),
+      groupField('DUPR ID on entry', choiceGroup({ name: 'dupr', label: 'DUPR ID on entry', value: t.config.dupr || 'off', options: [{ value: 'off', label: 'Off' }, { value: 'ask', label: 'Ask' }, { value: 'required', label: 'Required' }] })),
+      h('div', { class: 'grid-2' },
+        field('Lowest rating (optional)', h('input', { name: 'duprMin', type: 'number', step: '0.01', min: 2, max: 8, value: t.config.duprMin ?? '', placeholder: 'e.g. 3.0' })),
+        field('Highest rating (optional)', h('input', { name: 'duprMax', type: 'number', step: '0.01', min: 2, max: 8, value: t.config.duprMax ?? '', placeholder: 'e.g. 3.49' }))),
+      h('p', { class: 'hint', style: 'margin:0' }, 'For level events: players outside the range can\'t enter. Ratings come from players\' Tonament profiles (self-reported until verified with DUPR).')) : null,
+    t.event.discipline !== 'team' && t.event.discipline !== 'any' ? h('label', { class: 'check-field' },
+      h('input', { type: 'checkbox', name: 'ranked', checked: t.config.ranked !== false }),
+      h('span', {}, h('strong', {}, 'Counts for rankings'), h('small', {}, 'Players collect ranking points (public tournaments, 4+ entries). Untick for fun or social events.'))) : null,
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
     syncFormat(form);
     return panel(t, `event-${t.eventId}`, multiEvent(t) ? `Event settings · ${t.event.name}` : `Event settings · ${t.formatName}`, form);
@@ -3133,6 +3182,7 @@
       partner.hidden = solo;
       partner.querySelector('input').required = !solo;
     }
+    for (const el of form.querySelectorAll('.partner-email-field, .partner-dupr-field')) el.hidden = solo;
     const side = form.querySelector('.side-field');
     if (side) side.hidden = !solo;
   }
@@ -3631,6 +3681,7 @@
           h('summary', { class: 'avatar', title: S.me.email, 'aria-label': 'Account menu' }, initials(S.me.name)),
           h('div', { class: 'menu-panel' },
             h('div', { class: 'menu-head' }, h('strong', {}, S.me.name), h('div', { class: 'muted small' }, S.me.email)),
+            h('a', { href: '/me/profile', onclick: closeMenu }, 'Your profile'),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.myOrgs && !S.myOrgs.length ? h('a', { href: '/academy/new', onclick: closeMenu }, 'Create an academy page') : null,
@@ -3789,6 +3840,201 @@
     field('New password', pw, null, 'At least 8 characters.'),
     field('Confirm new password', confirmPw),
     btn);
+  }
+
+  // ---------- player profiles (tonament.com/p/<handle>)
+  const FINISH_NAMES = { W: 'Winner', F: 'Runner-up', SF: 'Semi-final', QF: 'Quarter-final', R16: 'Last 16', R32: 'Last 32', G: 'Group stage' };
+  const profileUrl = (handle) => `${location.origin}/p/${handle}`;
+  const initialsOf = (name) => String(name || '?').split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+
+  // An entry's name, with each player linked to their public profile.
+  function entryName(e) {
+    const people = e.people || [];
+    if (!people.some((p) => p.handle)) return h('span', { class: 'entry-name' }, e.name);
+    return h('span', { class: 'entry-name' }, people.map((p, i) => [i ? ' / ' : null,
+      p.handle ? h('a', { class: 'player-link', href: `/p/${p.handle}` }, p.name) : p.name]));
+  }
+
+  // Organisers: which players are linked to accounts, and a form to link them.
+  function entryPeople(t, e) {
+    if (!t.can.manage || t.event.discipline === 'team' || e.source === 'drawn' || e.solo) return null;
+    const people = e.people || [];
+    const open = S.linking === e.id;
+    const status = people.length
+      ? h('small', { class: 'contact' }, people.map((p) => `${p.name}: ${p.linked ? '✓ on Tonament' : p.email ? `invited (${p.email})` : 'not linked'}`).join(' · '))
+      : null;
+    if (!open) {
+      return [status, h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.linking = e.id; render(); } }, people.some((p) => p.email) ? 'Edit players' : 'Link players'))];
+    }
+    const doubles = t.event.discipline === 'doubles';
+    const names = doubles ? e.name.split(' / ') : [e.name];
+    const rows = names.map((name, i) => h('div', { class: 'grid-2' },
+      field(names.length > 1 ? `Player ${i + 1}` : 'Player', h('input', { 'data-k': 'name', maxlength: 40, value: (people[i] && people[i].name) || name })),
+      field('Email', h('input', { 'data-k': 'email', type: 'email', maxlength: 120, value: (people[i] && people[i].email) || '', placeholder: 'Their Tonament email' }))));
+    const form = h('form', {
+      class: 'link-form',
+      onsubmit: (ev) => {
+        ev.preventDefault();
+        const players = [...form.querySelectorAll('.grid-2')].map((row) => Object.fromEntries([...row.querySelectorAll('[data-k]')].map((x) => [x.dataset.k, x.value.trim()])));
+        act(async () => { S.t = await api('PUT', `${tPath(t)}/entries/${e.id}/players`, { players }, t.id); S.linking = null; }, 'Players linked');
+      },
+    }, rows,
+    h('p', { class: 'hint', style: 'margin:0' }, 'Their results and ranking points go on their Tonament profile. People without an account get them when they sign up with this email.'),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn btn-small btn-primary', type: 'submit' }, 'Save'),
+      h('button', { class: 'btn btn-small btn-ghost', type: 'button', onclick: () => { S.linking = null; render(); } }, 'Cancel')));
+    return form;
+  }
+
+  // Organisers: whether a finished (or running) event counts for rankings.
+  function rankedCard(t) {
+    if (!t.can.manage || t.status === 'setup' || t.event.discipline === 'team' || t.event.discipline === 'any') return null;
+    return h('div', { class: 'card' },
+      h('label', { class: 'check-field', style: 'margin:0' },
+        h('input', { type: 'checkbox', checked: t.config.ranked !== false, onchange: (e) => act(async () => { S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ranked: e.target.checked }, t.id); }, e.target.checked ? 'Counts for rankings' : 'Doesn\'t count for rankings') }),
+        h('span', {}, h('strong', {}, 'Counts for rankings'), h('small', {}, 'Players\' ranking points from this event (public tournaments with 4+ entries). Untick for fun or social events — results still show on their profiles.'))));
+  }
+
+  // Pickleball organisers: seed by DUPR before the draw; download results for DUPR after.
+  function duprTools(t) {
+    if (t.sport.id !== 'pickleball' || !t.can.manage) return null;
+    if (t.status === 'setup' && t.entries.length > 1) {
+      return h('button', { class: 'btn btn-small btn-ghost', onclick: () => act(async () => { S.t = await api('POST', `${tPath(t)}/seed-dupr`, withEv(t, {}), t.id); }, 'Seeded by DUPR rating') }, 'Seed by DUPR');
+    }
+    if (t.matches.some((m) => m.status === 'done')) {
+      return h('a', { class: 'btn btn-small btn-ghost', href: `/api${tPath(t)}/dupr.csv?event=${t.eventId}`, download: '' }, 'Download for DUPR');
+    }
+    return null;
+  }
+
+  async function loadProfile() {
+    try {
+      S.profile = await api('GET', '/me/profile');
+    } catch (e) {
+      S.error = e.message;
+    }
+    render();
+  }
+
+  function viewProfile() {
+    document.title = 'Your profile · Tonament';
+    const p = S.profile;
+    if (!p) return loading();
+    const key = { id: 'profile' };
+    const save = (form, body, msg) => saveForm(form, async () => { S.profile = await api('PATCH', '/me/profile', body); }, msg);
+    const url = profileUrl(p.handle);
+
+    const details = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(details);
+        save(details, { name: fd.get('name'), handle: fd.get('handle'), city: fd.get('city'), region: fd.get('region'), sports: fd.getAll('sports'), bio: fd.get('bio') }, 'Profile saved');
+      },
+    },
+    field('Name', h('input', { name: 'name', required: true, maxlength: 60, value: p.name, autocomplete: 'name' }), null, 'As it appears on entry lists and rankings.'),
+    field('Profile address', h('div', { class: 'slug-input' }, h('span', { class: 'muted' }, 'tonament.com/p/'), h('input', { name: 'handle', required: true, maxlength: 30, value: p.handle, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Profile address' }))),
+    h('div', { class: 'grid-2' },
+      field('City', h('input', { name: 'city', maxlength: 60, value: p.city || '', list: 'profile-cities' }), null, 'For your city ranking.'),
+      field('State', h('input', { name: 'region', maxlength: 60, value: p.region || '', list: 'profile-states' }))),
+    h('datalist', { id: 'profile-cities' }, cityOptions(REGIONS.defaultCountry).map((c) => h('option', { value: c }))),
+    h('datalist', { id: 'profile-states' }, (REGIONS.regionsFor(REGIONS.defaultCountry) || []).map((c) => h('option', { value: c }))),
+    groupField('Sports you play', choiceGroup({ name: 'sports', label: 'Sports', value: p.sportIds, multiple: true, options: S.sports.map((x) => ({ value: x.id, label: x.name, icon: x.id })) })),
+    field('About you', h('textarea', { name: 'bio', rows: 3, maxlength: 600, value: p.bio || '', placeholder: 'Club, coach, favourite event, achievements…' })),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
+
+    const upload = (files) => {
+      const file = files[0];
+      if (!file) return;
+      S.uploading = 1;
+      render();
+      (async () => {
+        try {
+          const data = await prepareImage(file, 'logo');
+          S.profile = await api('POST', '/me/profile/media', { data });
+          toast('Photo updated ✓');
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          S.uploading = 0;
+          render();
+        }
+      })();
+    };
+    const photo = h('div', { class: 'form' },
+      h('div', { class: 'brand-row' },
+        p.photo ? h('img', { class: 'logo-preview round', src: p.photo, alt: 'Your photo' }) : h('span', { class: 'logo-preview round initials' }, initialsOf(p.name)),
+        h('div', { class: 'actions' },
+          h('label', { class: 'btn btn-small' }, p.photo ? 'Replace photo' : 'Upload photo',
+            h('input', { type: 'file', accept: 'image/*', hidden: true, onchange: (e) => { upload(e.target.files); e.target.value = ''; } })),
+          p.photo ? h('button', { type: 'button', class: 'btn btn-small btn-ghost', onclick: () => act(async () => { S.profile = await api('DELETE', '/me/profile/media'); }, 'Photo removed') }, 'Remove') : null)),
+      S.uploading ? h('p', { class: 'hint uploading', role: 'status' }, 'Uploading…') : null);
+
+    const D = p.dupr || {};
+    const duprForm = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(duprForm);
+        const body = { duprId: fd.get('duprId') || '' };
+        if (!D.verified) Object.assign(body, { duprDoubles: fd.get('duprDoubles') || '', duprSingles: fd.get('duprSingles') || '' });
+        save(duprForm, body, 'DUPR saved');
+      },
+    },
+    h('p', { class: 'hint', style: 'margin:0' }, 'For pickleball. Organisers can seed by DUPR and set rating limits for events.'),
+    field('DUPR ID', h('input', { name: 'duprId', maxlength: 12, value: D.id || '', placeholder: 'e.g. 4DGE5W', autocomplete: 'off', style: 'text-transform:uppercase' }), null, 'In the DUPR app, under your name.'),
+    h('div', { class: 'grid-2' },
+      field('Doubles rating', h('input', { name: 'duprDoubles', type: 'number', step: '0.001', min: 2, max: 8, value: D.doubles ?? '', disabled: D.verified || null, placeholder: 'e.g. 3.512' })),
+      field('Singles rating', h('input', { name: 'duprSingles', type: 'number', step: '0.001', min: 2, max: 8, value: D.singles ?? '', disabled: D.verified || null }))),
+    D.verified
+      ? h('p', { class: 'hint org-perk' }, '✓ Verified with DUPR — ratings update from DUPR. ', h('button', { type: 'button', class: 'link-btn', onclick: () => act(async () => { S.profile = await api('DELETE', '/me/dupr'); }, 'Disconnected from DUPR') }, 'Disconnect'))
+      : h('p', { class: 'hint', style: 'margin:0' }, 'Ratings you type are shown as "self-reported".'),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save'),
+      p.duprConnect && !D.verified ? h('button', {
+        type: 'button', class: 'btn',
+        onclick: () => act(async () => { S.profile = await api('POST', '/me/dupr', { duprId: duprForm.duprId.value }); }, 'Connected to DUPR ✓'),
+      }, 'Connect with DUPR') : null));
+
+    const notMe = (entryId) => confirm('Take yourself off this entry? Its results and points leave your profile.')
+      && act(async () => { S.profile = await api('POST', `/me/entries/${entryId}/not-me`, {}); }, 'Removed from your profile');
+
+    return [
+      h('div', { class: 'org-edit-head' },
+        p.photo ? h('img', { class: 'org-edit-logo round', src: p.photo, alt: '' }) : h('span', { class: 'org-edit-logo round initials' }, initialsOf(p.name)),
+        h('div', { class: 'org-edit-title' },
+          h('h1', {}, p.name),
+          h('p', { class: 'muted small' }, [`tonament.com/p/${p.handle}`, [p.city, p.region].filter(Boolean).join(', ')].filter(Boolean).join(' · '))),
+        h('div', { class: 'actions' },
+          h('a', { class: 'btn btn-small', href: `/p/${p.handle}?me=1`, target: '_blank', rel: 'noopener' }, 'View page'),
+          p.public ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => (navigator.share ? navigator.share({ title: p.name, url }).catch(() => {}) : copy(url, 'Link copied')) }, 'Share') : null)),
+      h('div', { class: `card org-status ${p.public ? 'live' : 'draft'}` },
+        h('label', { class: 'check-field switch-field', style: 'margin:0' },
+          h('input', { type: 'checkbox', role: 'switch', checked: p.public, onchange: (e) => act(async () => { S.profile = await api('PATCH', '/me/profile', { public: e.target.checked }); }, e.target.checked ? 'Your profile is public' : 'Your profile is private') }),
+          h('span', {}, h('strong', {}, p.public ? 'Public profile' : 'Private profile'),
+            h('small', {}, p.public
+              ? 'Anyone can see your results and rankings. Your email and phone are never shown.'
+              : 'Only you can see it, and you\'re left out of rankings. Your name still shows in draws you play in.')))),
+      p.rankings.length ? h('div', { class: 'card' }, h('h2', {}, 'Your rankings'),
+        h('ul', { class: 'org-t-list' }, p.rankings.map((r) => h('li', {},
+          h('a', { href: `/rankings/${r.sport}/${r.category}` }, `#${r.rank} ${r.name}`),
+          h('span', { class: 'muted small' }, [r.sportName, `${r.points} pts`, r.results > 6 ? `best 6 of ${r.results} results` : `${r.results} result${r.results === 1 ? '' : 's'}`, r.cityRank && r.city ? `#${r.cityRank} in ${r.city}` : null].filter(Boolean).join(' · ')))))) : null,
+      p.entries.length ? h('div', { class: 'card' }, h('h2', {}, 'Your entries'),
+        h('ul', { class: 'org-t-list' }, p.entries.map((x) => h('li', {},
+          h('a', { href: `/t/${x.tournamentId}` }, x.tournament),
+          h('span', { class: 'muted small' }, [x.event, x.startsOn ? fmtDates(x.startsOn) : null, x.mine ? null : 'entered by your partner'].filter(Boolean).join(' · ')),
+          x.mine ? null : h('button', { class: 'btn btn-small btn-ghost', onclick: () => notMe(x.entryId) }, 'Not me'))))) : null,
+      panel(key, 'details', 'Profile · name, city, sports', details),
+      panel(key, 'photo', p.photo ? 'Photo' : 'Photo · add one', photo),
+      panel(key, 'dupr', `DUPR${D.doubles != null ? ` · ${Number(D.doubles).toFixed(3)}` : D.id ? ` · ${D.id}` : ''}`, duprForm),
+      h('div', { class: 'card' }, h('h2', {}, `Results (${p.results.length})`),
+        p.results.length
+          ? h('ol', { class: 'result-list' }, p.results.map((r) => h('li', {},
+            h('div', { class: 'result-head' }, h('span', { class: `finish finish-${r.finish.toLowerCase()}` }, FINISH_NAMES[r.finish] || r.finish), h('a', { href: `/t/${r.tournamentId}` }, r.tournament)),
+            h('p', { class: 'muted small' }, [r.event, r.city, `${r.won}–${r.lost}`, r.points ? `${r.points} ranking pts` : 'no ranking points'].filter(Boolean).join(' · ')),
+            r.mine === false ? h('button', { class: 'link-btn small', onclick: () => notMe(r.entryId) }, 'Not me') : null)))
+          : empty('Your results appear here when events you play in finish.')),
+    ];
   }
 
   // ---------- academy, venue and club pages (tonament.com/@slug)
@@ -4224,7 +4470,7 @@
         A.orgs.list = r.orgs;
         A.orgs.siteBranding = r.siteBranding;
       } else if (tab === 'settings') {
-        A.settings = await api('GET', '/admin/settings');
+        [A.settings, A.dupr] = await Promise.all([api('GET', '/admin/settings'), api('GET', '/admin/dupr').catch(() => null)]);
       }
     } catch (e) {
       toast(e.message, true);
@@ -4314,7 +4560,7 @@
     'org.extend': (x) => `added ${x.detail.days} days · ${x.detail.name}`,
     'org.unpublish': (x) => `unpublished academy page · ${x.detail.name}`,
     'org.delete': (x) => `deleted academy page ${x.detail.name}`,
-    'setting.change': (x) => `${x.target === 'orgIncludesBranding' ? 'academy pages include branding' : x.target}: ${x.detail.to ? 'on' : 'off'}`,
+    'setting.change': (x) => `${({ orgIncludesBranding: 'academy pages include branding', duprSubmit: 'send results to DUPR' })[x.target] || x.target}: ${x.detail.to ? 'on' : 'off'}`,
   };
 
   function adminOverview() {
@@ -4596,12 +4842,26 @@
           h('small', {}, A.settings.orgIncludesBranding
             ? 'On: every tournament linked to a paid academy page gets the logo, sponsors and organiser-led venue display, without buying Open. Entry limits still follow the tournament\'s plan.'
             : 'Off: tournaments need their own Open or Championship plan for branding, even when linked to an academy page.'))),
-      h('p', { class: 'hint' }, 'You can override this for a single academy on the Academies tab. Changes show within a minute and are recorded in the admin log.'));
+      h('p', { class: 'hint' }, 'You can override this for a single academy on the Academies tab. Changes show within a minute and are recorded in the admin log.'),
+      h('h2', {}, 'DUPR'),
+      A.dupr && A.dupr.enabled ? [
+        h('label', { class: 'check-field switch-field' },
+          h('input', { type: 'checkbox', role: 'switch', checked: A.settings.duprSubmit, onchange: (e) => toggle('duprSubmit', e.target.checked, e.target.checked ? 'Results now go to DUPR' : 'Results no longer go to DUPR') }),
+          h('span', {}, h('strong', {}, 'Send results to DUPR'), h('small', {}, 'Finished pickleball matches go to DUPR when every player is verified with DUPR.'))),
+        A.dupr.submissions.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'admin-pay' },
+          h('thead', {}, h('tr', {}, ['When', 'Tournament', 'Match', 'Status', ''].map((c) => h('th', {}, c)))),
+          h('tbody', {}, A.dupr.submissions.map((x) => h('tr', {},
+            h('td', {}, new Date(x.updatedAt).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })),
+            h('td', { class: 'name' }, h('a', { href: `/t/${x.tournamentId}` }, x.tournamentName)),
+            h('td', {}, `#${x.matchId}`),
+            h('td', {}, x.status === 'sent' ? pill('done', 'Sent') : x.status === 'failed' ? pill('withdrawn', `Failed${x.error ? ` · ${x.error}` : ''}`) : pill('waiting', 'Queued')),
+            h('td', {}, x.status !== 'sent' ? h('button', { class: 'btn btn-small', onclick: () => act(async () => { await api('POST', `/admin/dupr/${x.matchId}/retry`, {}); await adminLoad('settings'); }, 'Sent to DUPR') }, 'Retry') : null)))))) : h('p', { class: 'muted small' }, 'Nothing sent yet.'),
+      ] : h('p', { class: 'muted small' }, 'Not connected. Players add their DUPR ID and ratings themselves (shown as self-reported), and organisers download results for their DUPR club. Automatic sending switches on here once DUPR gives Tonament partner keys (DUPR_CLIENT_ID and DUPR_CLIENT_SECRET in Vercel).'));
   }
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|signin$|signup$|forgot$|reset$|admin$|academy\/new$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|signin$|signup$|forgot$|reset$|admin$|academy\/new$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

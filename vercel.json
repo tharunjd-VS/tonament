@@ -33,6 +33,22 @@
       "destination": "/index.html"
     },
     {
+      "source": "/me/profile",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/p/:handle",
+      "destination": "/api/index?__path=player/:handle"
+    },
+    {
+      "source": "/rankings",
+      "destination": "/api/index?__path=rankings"
+    },
+    {
+      "source": "/rankings/:path*",
+      "destination": "/api/index?__path=rankings/:path*"
+    },
+    {
       "source": "/:page(new|signin|signup|forgot|reset|admin)",
       "destination": "/index.html"
     },

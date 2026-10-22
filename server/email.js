@@ -233,4 +233,24 @@ function feeMissingEmail({ tournament, event, url }) {
   };
 }
 
-module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail };
+// To a doubles partner, when someone enters them with their email.
+function partnerEmail({ player, tournament, event, url, hasAccount }) {
+  const what = event ? `${tournament} (${event})` : tournament;
+  return {
+    subject: `${player} entered you in ${tournament}`,
+    html: layout({
+      heading: 'You\'re in a doubles entry',
+      body: [
+        `<strong>${esc(player)}</strong> entered you as their partner in <strong>${esc(what)}</strong>.`,
+        hasAccount
+          ? 'It\'s on your Tonament profile, and your results and ranking points will be added there too.'
+          : 'Sign up with this email address to see it on your Tonament profile and collect your results and ranking points.',
+      ],
+      button: hasAccount ? 'See the tournament' : 'Sign up free',
+      url,
+    }),
+    text: `${player} entered you as their partner in ${what}.\n\n${hasAccount ? 'See it' : 'Sign up with this email to collect your results and ranking points'}: ${url}`,
+  };
+}
+
+module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };

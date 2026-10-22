@@ -7,6 +7,7 @@ const { createService } = require('./service');
 const { createAuth } = require('./auth');
 const { HttpError } = require('./errors');
 const pages = require('./pages');
+const rankings = require('./rankings');
 const catalog = require('../public/sports/events');
 const { SPORTS: SPORT_PAGES } = require('./sport-pages');
 const { createMailer } = require('./email');
@@ -14,7 +15,7 @@ const { billingConfig, publicBillingConfig } = require('./billing');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|signin|signup|forgot|reset|admin|academy\/new|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|signin|signup|forgot|reset|admin|academy\/new|me\/profile|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -260,6 +261,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     }],
     ['POST', '/api/auth/signup', async (c) => {
       const { user, cookie } = await auth.signup(c.req, c.body);
+      await svc.players.ensureHandle(db.query, user).catch((err) => console.error('Handle failed:', err.message));
       c.setCookie(cookie);
       return { user };
     }],
@@ -274,6 +276,16 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     }],
     ['GET', '/api/me/tournaments', (c) => svc.myTournaments(c.actor)],
     ['GET', '/api/me/entries', (c) => svc.myEntries(c.actor)],
+    // Player profiles
+    ['GET', '/api/me/profile', (c) => svc.players.myProfile(c.actor)],
+    ['PATCH', '/api/me/profile', (c) => svc.players.updateProfile(c.actor, c.body)],
+    ['POST', '/api/me/profile/media', (c) => svc.players.uploadPhoto(c.actor, c.body)],
+    ['DELETE', '/api/me/profile/media', (c) => svc.players.deletePhoto(c.actor)],
+    ['POST', `/api/me/entries/${N}/not-me`, (c, id) => svc.players.notMe(c.actor, id)],
+    ['POST', '/api/me/dupr', (c) => svc.connectDupr(c.actor, c.body)],
+    ['DELETE', '/api/me/dupr', (c) => svc.disconnectDupr(c.actor)],
+    ['GET', '/api/admin/dupr', (c) => svc.adminDupr(c.actor)],
+    ['POST', `/api/admin/dupr/${N}/retry`, (c, id) => svc.adminDuprRetry(c.actor, id)],
     ['GET', '/api/admin/users', (c) => auth.listUsers(c.actor, Object.fromEntries(c.query))],
     ['GET', `/api/admin/users/${N}`, (c, id) => svc.adminUserDetail(c.actor, id)],
     ['POST', `/api/admin/users/${N}/admin`, (c, id) => auth.setAdmin(c.actor, id, c.body.on)],
@@ -297,6 +309,12 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${O}/members`, (c, slug) => svc.orgs.addMember(slug, c.actor, c.body)],
     ['DELETE', `${O}/members/([^/]+)`, (c, slug, email) => svc.orgs.removeMember(slug, c.actor, decodeURIComponent(email))],
     ['POST', `${O}/checkout`, (c, slug) => svc.orgs.checkout(slug, c.actor)],
+    ['PUT', `${T}/entries/${N}/players`, (c, id, eid) => svc.setEntryPlayers(id, c.actor, eid, c.body)],
+    ['POST', `${T}/seed-dupr`, (c, id) => svc.seedByDupr(id, c.actor, { event: ev(c) })],
+    ['GET', `${T}/dupr.csv`, async (c, id) => {
+      const r = await svc.duprCsv(id, c.actor, { event: ev(c) });
+      return { download: { type: 'text/csv; charset=utf-8', name: r.filename, body: r.csv } };
+    }],
     ['POST', `${T}/org`, (c, id) => svc.orgs.linkTournament(id, c.actor, c.body.org || null)],
     ['GET', '/api/admin/orgs', (c) => svc.orgs.adminOrgs(c.actor, Object.fromEntries(c.query))],
     ['PATCH', `/api/admin/orgs/${N}`, (c, id) => svc.orgs.adminUpdate(c.actor, id, c.body)],
@@ -410,10 +428,60 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     return res.end(req.method === 'HEAD' ? undefined : html);
   }
 
+  const htmlHeaders = (cacheable) => ({
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': cacheable ? 'public, max-age=0, s-maxage=600' : 'no-store',
+    ...(cacheable && { 'Vercel-CDN-Cache-Control': 'max-age=600, stale-while-revalidate=86400' }),
+    'X-Content-Type-Options': 'nosniff',
+  });
+  async function notFound(req, res) {
+    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(req.method === 'HEAD' ? undefined : await fs.readFile(path.join(PUBLIC_DIR, '404.html')));
+  }
+
+  // /p/<handle> (on Vercel, /api/player/<handle>): a player's public profile.
+  // ?me=1 is the player's own (uncached) view, which also works while private.
+  async function playerPage(req, res, handle, me) {
+    const base = baseUrl(req) || SITE;
+    const user = me ? await auth.userFromRequest(req) : null;
+    const p = await svc.players.profile(handle, user ? { user } : null);
+    if (!p) return notFound(req, res);
+    const cacheable = !p.own;
+    let html = pages.playerHtml({ base, p });
+    if (!p.public) html = html.replace('<meta name="theme-color"', '<meta name="robots" content="noindex">\n  <meta name="theme-color"');
+    res.writeHead(200, htmlHeaders(cacheable));
+    return res.end(req.method === 'HEAD' ? undefined : html);
+  }
+
+  // /rankings, /rankings/<sport>, /rankings/<sport>/<category>?state=&city=&page=
+  async function rankingsPage(req, res, sportId, category, params) {
+    const base = baseUrl(req) || SITE;
+    let html;
+    if (!sportId) {
+      html = pages.rankingsHubHtml({ base, sports: await svc.players.sportCounts() });
+    } else {
+      const sport = sports.get(sportId);
+      if (!sport) return notFound(req, res);
+      if (!category) {
+        html = pages.rankingsSportHtml({ base, sport, categories: await svc.players.overview(sport.id) });
+      } else {
+        const name = rankings.categoryName(category, catalog.agesFor(sport.id));
+        if (!name) return notFound(req, res);
+        const scope = { region: (params.get('state') || '').slice(0, 60), city: (params.get('city') || '').slice(0, 60) };
+        const pageSize = 50;
+        const offset = (Math.max(1, Math.min(200, Number(params.get('page')) || 1)) - 1) * pageSize;
+        const [table, places] = await Promise.all([svc.players.table(sport.id, category, { ...scope, offset }), svc.players.places(sport.id, category)]);
+        html = pages.rankingsTableHtml({ base, sport, category, name, table, places, scope, offset, pageSize });
+      }
+    }
+    res.writeHead(200, htmlHeaders(true));
+    return res.end(req.method === 'HEAD' ? undefined : html);
+  }
+
   async function sitemapXml(req, res) {
     const base = baseUrl(req) || SITE;
     const fixed = ['/', '/features', '/sports', ...livePages().map((x) => `/${x.id}`), '/how-it-works', '/faq', '/pricing', '/contact', '/terms', '/privacy', '/refunds', '/delivery'].map((p) => ({ path: p }));
-    const xml = pages.sitemap(base, [...fixed, ...await svc.orgs.sitemapOrgs(), ...await svc.sitemapTournaments()]);
+    const xml = pages.sitemap(base, [...fixed, ...await svc.orgs.sitemapOrgs(), ...await svc.players.sitemapPlayers(), ...await svc.sitemapTournaments()]);
     res.writeHead(200, {
       'Content-Type': 'application/xml; charset=utf-8',
       'Cache-Control': 'public, max-age=0, s-maxage=3600',
@@ -498,6 +566,11 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       // Academy / venue pages: /@slug (on Vercel, /api/org/<slug>).
       const orgPath = pathname.match(/^\/(?:@|api\/org\/)([a-z0-9-]{3,30})\/?$/);
       if (orgPath && read) return await orgPage(req, res, orgPath[1], url.searchParams.has('preview'));
+      // Player profiles and rankings.
+      const playerPath = pathname.match(/^\/(?:p|api\/player)\/([a-z0-9-]{3,40})\/?$/);
+      if (playerPath && read) return await playerPage(req, res, playerPath[1], url.searchParams.has('me'));
+      const rankPath = pathname.match(/^\/(?:api\/)?rankings(?:\/([a-z-]{1,40}))?(?:\/([a-z0-9-]{2,20}))?\/?$/);
+      if (rankPath && read) return await rankingsPage(req, res, rankPath[1] || null, rankPath[2] || null, url.searchParams);
       // Sport landing pages: /badminton, /pickleball, … and the /sports hub.
       const sportPath = pathname.match(/^\/(?:api\/sport(?:\/([a-z-]{1,40}))?|sports|([a-z-]{1,40}))\/?$/);
       if (sportPath && read && (sportPath[1] || sportPath[2] || /sport/.test(pathname)) && await sportPage(req, res, sportPath[1] || sportPath[2] || null)) return;

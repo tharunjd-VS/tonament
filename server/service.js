@@ -11,6 +11,8 @@ const pages = require('./pages');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
 const { createOrgs, createSettings } = require('./orgs');
+const { createPlayers } = require('./players');
+const dupr = require('./dupr');
 const { inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
 const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
 
@@ -24,9 +26,9 @@ const VISIBILITY = ['private', 'link', 'public'];
 // Settings that belong to the tournament as a whole; everything else in a
 // config (format details, scoring, caps) belongs to each event.
 const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
-const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level'];
+const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level', 'ranked', 'dupr', 'duprMin', 'duprMax'];
 // Event settings that can still change once the event has started.
-const LIVE_EVENT_KEYS = ['lateEntry', 'prizes'];
+const LIVE_EVENT_KEYS = ['lateEntry', 'prizes', 'ranked'];
 const MAX_PRIZE = 10000000; // ₹1 crore
 
 // Prizes for one event: [{ place, cash (whole rupees), reward }].
@@ -207,6 +209,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // Site-wide settings the admin changes, and academy / venue pages (set up at the end).
   const settings = createSettings(db);
   let orgs;
+  let profiles;
 
   // ---------- queries (q is db.query or a transaction's query)
 
@@ -366,6 +369,20 @@ function createService(db, { mailer, fetchImpl } = {}) {
     await q('UPDATE events SET status = $1 WHERE id = $2', [status, t.eventId]);
     t.status = status;
     await syncTournament(q, t.id);
+    // Results and ranking points exist while an event is finished.
+    if (status === 'completed') await recordResults(q, t);
+    else await profiles.clearEvent(q, t.eventId);
+  }
+
+  // Writes each linked player's finish, points and matches for a finished event.
+  async function recordResults(q, t) {
+    const entries = await entriesOf(q, t);
+    const rows = await q(`SELECT * FROM matches WHERE event_id = $1 ORDER BY ${MATCH_ORDER}`, [t.eventId]);
+    const names = new Map(entries.map((e) => [e.id, e.name]));
+    const scored = rows.map((row) => ({ row, score: scoreOf(t, row) }));
+    const standings = groupStandings(t, entries, scored, names).map((g) => g.standings.map((r) => r.id));
+    const summaries = new Map(scored.map(({ row, score }) => [row.id, row.walkover ? 'Walkover' : t.sportDef.summary(score)]));
+    await profiles.recordEvent(q, { t, entries, matches: rows, standings, summaries, names });
   }
 
   // ---------- access
@@ -632,7 +649,23 @@ function createService(db, { mailer, fetchImpl } = {}) {
   }
 
   // One event's draw, results and entries.
-  function eventView(t, allRows, rows, access) {
+  // The people behind an entry: names, public profile links, DUPR (pickleball)
+  // and, for organisers, the emails they're linked by.
+  function peopleView(t, list = [], access) {
+    const pickleball = t.sportDef.id === 'pickleball';
+    return list.map((p) => ({
+      name: p.name,
+      handle: p.userId && p.public ? p.handle : null,
+      ...(pickleball && {
+        dupr: p.duprId || p.entryDupr || p.duprDoubles || p.duprSingles
+          ? { id: p.duprId || p.entryDupr || null, singles: p.duprSingles == null ? null : Number(p.duprSingles), doubles: p.duprDoubles == null ? null : Number(p.duprDoubles), verified: Boolean(p.duprVerified) }
+          : null,
+      }),
+      ...(access.can.manage && { email: p.email, linked: Boolean(p.userId) }),
+    }));
+  }
+
+  function eventView(t, allRows, rows, access, people = new Map()) {
     // Entries still paying are only shown to organisers; paired solo players
     // appear as members of their pair.
     const visible = access.can.manage ? allRows : allRows.filter((e) => e.fee_status !== 'pending');
@@ -686,6 +719,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
         confirmed: e.confirmed,
         solo: e.solo,
         side: e.solo_side,
+        people: peopleView(t, people.get(e.id), access),
+        ...(t.sportDef.id === 'pickleball' && { rating: dupr.entryRating(peopleView(t, people.get(e.id), access).map((p) => ({ duprSingles: p.dupr?.singles, duprDoubles: p.dupr?.doubles })), t.event.discipline) }),
         ...(e.source === 'drawn' && {
           members: membersOf(e.id).sort((x, y) => e.name.indexOf(x.name) - e.name.indexOf(y.name)).map((m) => ({
             id: m.id,
@@ -709,16 +744,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const { org } = await withOrgBranding(q, t);
     const events = await eventsOf(q, t.id); // first: it may attach stray entries to a new event
     const media = await q('SELECT id, kind, caption, position FROM media WHERE tournament_id = $1 ORDER BY kind, position, created_at', [t.id]);
-    const [entries, rows, access] = await Promise.all([
+    const [entries, rows, access, people] = await Promise.all([
       q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE tournament_id = $1 ORDER BY seed, id`, [t.id]),
       q(`SELECT * FROM matches WHERE tournament_id = $1 ORDER BY ${MATCH_ORDER}`, [t.id]),
       accessFields(q, t, actor),
+      profiles.peopleOf(q, t.id),
     ]);
     const evs = events.map((row) => eventView(
       eventContext(t, row),
       entries.filter((e) => e.event_id === row.id),
       rows.filter((m) => m.event_id === row.id),
       access,
+      people,
     ));
     const first = evs[0];
     return {
@@ -935,7 +972,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
        FROM media m JOIN tournaments t ON t.id = m.tournament_id WHERE m.id = $1`,
       [mediaId],
     );
-    if (!m) return (await orgs.getMedia(mediaId)) || fail(404, 'Not found'); // an academy page's image
+    if (!m) return (await orgs.getMedia(mediaId)) || (await profiles.getMedia(mediaId)) || fail(404, 'Not found'); // an academy page's or a player's image
     if (m.visibility === 'private') {
       const access = await accessOf(db.query, { id: m.tid, admin_key: m.admin_key, scorer_key: m.scorer_key }, await actorOf());
       if (!access.score) fail(404, 'Not found');
@@ -1204,6 +1241,17 @@ function createService(db, { mailer, fetchImpl } = {}) {
       config.partners = input.partners;
     }
     if (input.balancePairs !== undefined) config.balancePairs = Boolean(input.balancePairs);
+    if (input.ranked !== undefined) config.ranked = Boolean(input.ranked);
+    if (input.dupr !== undefined || input.duprMin !== undefined || input.duprMax !== undefined) {
+      if (ev.sportDef.id !== 'pickleball') fail(400, 'DUPR settings are for pickleball events');
+      if (input.dupr !== undefined) {
+        if (!['off', 'ask', 'required'].includes(input.dupr)) fail(400, 'dupr must be off, ask or required');
+        config.dupr = input.dupr;
+      }
+      if (input.duprMin !== undefined) config.duprMin = dupr.checkRating(input.duprMin, fail);
+      if (input.duprMax !== undefined) config.duprMax = dupr.checkRating(input.duprMax, fail);
+      if (config.duprMin != null && config.duprMax != null && config.duprMin > config.duprMax) fail(400, 'The lowest DUPR rating must be below the highest');
+    }
     if (input.prizes !== undefined) config.prizes = prizesOf(input.prizes);
     if (input.fee !== undefined) {
       const fee = int(input.fee === '' || input.fee === null ? 0 : input.fee, 0, MAX_FEE, 0, 'Entry fee (in paise)');
@@ -1215,6 +1263,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       [format, JSON.stringify(eventConfigOf(config)), f.discipline, f.gender, f.age, f.level, f.name, ev.eventId],
     );
     await syncTournament(q, ev.id);
+    if (input.ranked !== undefined && ev.status === 'completed') await recordResults(q, { ...ev, config }); // points on or off
     // A higher (or no) maximum makes room for players who were waiting.
     if (input.maxEntries !== undefined) await confirmWaiting(q, ev);
   }
@@ -1332,6 +1381,39 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return phone;
   }
 
+  const multiEventLabel = (t) => eventLabel(t);
+
+  // Pickleball events can ask for (or require) DUPR IDs and limit ratings.
+  // Returns the DUPR IDs to keep with the entry.
+  async function duprCheck(q, t, actor, input, { partnerMail }) {
+    if (t.sportDef.id !== 'pickleball') return { own: null, partner: null };
+    const mode = t.config.dupr || 'off';
+    const [me] = await q('SELECT dupr_id, dupr_singles, dupr_doubles FROM users WHERE id = $1', [actor.user.id]);
+    const own = given(input.duprId) ? dupr.checkId(input.duprId, fail) : me?.dupr_id || null;
+    const [mate] = partnerMail ? await q('SELECT dupr_id, dupr_singles, dupr_doubles FROM users WHERE email = $1', [partnerMail]) : [];
+    const partner = given(input.partnerDuprId) ? dupr.checkId(input.partnerDuprId, fail) : mate?.dupr_id || null;
+    const doubles = t.event.discipline === 'doubles' && !input.solo && t.config.partners !== 'drawn';
+    if (mode === 'required') {
+      if (!own) fail(400, `${eventLabel(t)} needs your DUPR ID`, 'dupr');
+      if (doubles && !partner) fail(400, `${eventLabel(t)} needs your partner's DUPR ID too`, 'dupr');
+    }
+    if (mode !== 'off' && own && own !== me?.dupr_id && !me?.dupr_id) await q('UPDATE users SET dupr_id = $1 WHERE id = $2', [own, actor.user.id]);
+    const { duprMin: lo, duprMax: hi } = t.config;
+    if (lo != null || hi != null) {
+      const key = t.event.discipline === 'singles' ? 'dupr_singles' : 'dupr_doubles';
+      const word = t.event.discipline === 'singles' ? 'singles' : 'doubles';
+      const range = lo != null && hi != null ? `${lo.toFixed(2)}–${hi.toFixed(2)}` : lo != null ? `${lo.toFixed(2)} and above` : `up to ${hi.toFixed(2)}`;
+      const check = (row, who) => {
+        const r = row && row[key] != null ? Number(row[key]) : null;
+        if (r == null) fail(400, `${eventLabel(t)} is for DUPR ${range} — add ${who === 'you' ? 'your' : 'your partner\'s'} ${word} rating to ${who === 'you' ? 'your' : 'their'} Tonament profile first`, 'dupr');
+        if ((lo != null && r < lo) || (hi != null && r > hi)) fail(400, `${eventLabel(t)} is for DUPR ${range} — ${who === 'you' ? 'your' : 'your partner\'s'} ${word} rating is ${r.toFixed(2)}`, 'dupr');
+      };
+      check(me, 'you');
+      if (doubles && mate) check(mate, 'partner');
+    }
+    return { own, partner };
+  }
+
   // Public self-entry ("Enter this tournament"): players sign in first, and
   // the entry belongs to their account (one per event); the account email is
   // the contact. Closes at the deadline or when the draw is made. Past the
@@ -1351,6 +1433,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const player = text(given(input.name) || team ? input.name : actor.user.name, team ? 'Team name' : 'Your name', { max: 40 });
       const partner = text(input.partner, 'Partner name', { max: 40, optional: true });
       if (team && partner) fail(400, `${eventLabel(t)} is a team event — enter your team's name`);
+      const partnerMail = given(input.partnerEmail) ? normalizeEmail(input.partnerEmail) : null;
+      if (partnerMail && !validEmail(partnerMail)) fail(400, 'Partner\'s email: enter a valid email address');
+      if (partnerMail && partnerMail === contact) fail(400, 'Partner\'s email: that\'s your own email');
       const players = team ? playersOf(input.players) : null;
       const doubles = t.event.discipline === 'doubles';
       const drawn = doubles && t.config.partners === 'drawn';
@@ -1372,6 +1457,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (doubles && !solo && !partner) fail(400, `${eventLabel(t)} is a doubles event — add your partner's name, or ask us to find you one`);
       const name = partner && !solo && t.event.discipline !== 'singles' ? `${player} / ${partner}` : player;
       if (t.status !== 'setup') fail(409, 'Entries are closed — the draw has been made');
+      const duprIds = await duprCheck(q, t, actor, input, { partnerMail: partner && !solo ? partnerMail : null });
+      const people = team ? [] : [
+        { name: player, email: contact, duprId: duprIds.own },
+        ...(partner && !solo && doubles ? [{ name: partner, email: partnerMail, duprId: duprIds.partner }] : []),
+      ];
+      const linkPeople = async (rowsOrId) => profiles.setPeople(q, Array.isArray(rowsOrId) ? rowsOrId[0].id : rowsOrId, people);
       if (!t.config.selfEntry) fail(409, 'This tournament doesn\'t take entries online — contact the organiser');
       if (!entriesOpen(t)) fail(409, 'Entries are closed');
       const existing = await entriesOf(q, t);
@@ -1387,29 +1478,33 @@ function createService(db, { mailer, fetchImpl } = {}) {
         // Paid events never take a payment for a place that isn't there.
         if (!room) fail(409, `${eventLabel(t)} is full`);
         const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee, solo, side, players, userId, phone });
+        await linkPeople(entryId);
         const [pay] = await q(
           `INSERT INTO payments (tournament_id, tournament_name, user_email, amount, currency, kind, entry_id, event_id, event_name, player)
            VALUES ($1, $2, $3, $4, $5, 'entry', $6, $7, $8, $9) RETURNING id`,
           [t.id, t.name, contact, fee, billingConfig().currency, entryId, t.eventId, eventLabel(t), name],
         );
-        return { t, name, entryId, paymentId: pay.id, fee, player, contact, solo };
+        return { t, name, entryId, paymentId: pay.id, fee, player, contact, solo, partnerMail: people[1]?.email };
       }
       if (fee) {
         // Paid to the organiser: the place is held for a while (if there is
         // one) and confirmed when the organiser has the money.
         const holdUntil = room ? holdTime(t) : new Date(); // no room: straight to the waitlist
-        await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'due', feeAmount: fee, solo, side, players, userId, phone, holdUntil });
-        return { t, name, confirmed: false, owners: [], eventId: t.eventId, solo, due: fee, holding: room };
+        await linkPeople(await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'due', feeAmount: fee, solo, side, players, userId, phone, holdUntil }));
+        return { t, name, confirmed: false, owners: [], eventId: t.eventId, solo, due: fee, holding: room, partnerMail: people[1]?.email, player };
       }
       const confirmed = room;
-      await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side, players, userId, phone });
+      await linkPeople(await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side, players, userId, phone }));
       let owners = [];
       if (!confirmed && !t.waiting_notified) {
         await q('UPDATE tournaments SET waiting_notified = true WHERE id = $1', [t.id]);
         owners = (await q(`SELECT email FROM members WHERE tournament_id = $1 AND role = 'owner'`, [t.id])).map((r) => r.email);
       }
-      return { t, name, confirmed, owners, eventId: t.eventId, solo };
+      return { t, name, confirmed, owners, eventId: t.eventId, solo, partnerMail: people[1]?.email, player };
     });
+    if (result.partnerMail && mailer?.enabled && baseUrl) {
+      await profiles.notifyPartner({ email: result.partnerMail, player: result.player, tournament: result.t.name, event: multiEventLabel(result.t), tournamentId: result.t.id, baseUrl });
+    }
     if (result.paymentId) return startEntryPayment(result);
     const { t, name: entered, confirmed, owners, eventId } = result;
     if (owners.length && mailer?.enabled && baseUrl) {
@@ -1445,6 +1540,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       checkedIn: a.checked_in && b.checked_in,
     });
     await q('UPDATE entries SET paired_into = $1 WHERE id = ANY($2::int[])', [id, [a.id, b.id]]);
+    await profiles.copyToPair(q, id, [a.id, b.id]);
     return id;
   }
 
@@ -1711,8 +1807,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
          ev.id AS "eventId", ev.status AS "eventStatus", ev.discipline, ev.gender, ev.age, ev.level, ev.name AS "eventCustomName",
          (SELECT COUNT(*)::int FROM events x WHERE x.tournament_id = t.id) AS "eventCount"
        FROM entries e JOIN tournaments t ON t.id = e.tournament_id JOIN events ev ON ev.id = e.event_id
-       WHERE e.user_id = $1 ORDER BY e.created_at DESC LIMIT 100`,
-      [actor.user.id],
+       WHERE e.user_id = $1 OR e.id IN (SELECT entry_id FROM entry_players WHERE email = $2) ORDER BY e.created_at DESC LIMIT 100`,
+      [actor.user.id, actor.user.email],
     );
     return rows.map(({ entryId, entryName, confirmed, feeStatus, solo, paired, withdrawn, enteredAt, eventId, eventStatus, discipline, gender, age, level, eventCustomName, eventCount, ...card }) => ({
       ...cardOf(card),
@@ -1732,6 +1828,72 @@ function createService(db, { mailer, fetchImpl } = {}) {
                 : confirmed ? 'entered' : 'waiting',
       },
     }));
+  }
+
+  // Organisers link an entry's players to accounts by email (walk-ins,
+  // imported lists). A drawn pair is linked through its two players.
+  async function setEntryPlayers(id, actor, entryId, input = {}) {
+    return mutate(id, actor, async (q, row) => {
+      const [e] = await q('SELECT * FROM entries WHERE id = $1 AND tournament_id = $2', [Number(entryId) || 0, row.id]);
+      if (!e) fail(404, 'Entry not found');
+      const t = await eventFor(q, row, e.event_id);
+      if (t.event.discipline === 'team') fail(400, 'Team entries aren\'t linked to players');
+      if (e.source === 'drawn') fail(409, 'Link the two players of a drawn pair one at a time');
+      const doubles = t.event.discipline === 'doubles' && !e.solo;
+      const names = doubles ? e.name.split(' / ') : [e.name];
+      const people = profiles.readPeople(input.players, { names, max: doubles ? 2 : 1 });
+      await profiles.setPeople(q, e.id, people);
+      if (e.paired_into) {
+        const solos = (await q('SELECT id FROM entries WHERE paired_into = $1 ORDER BY id', [e.paired_into])).map((r) => r.id);
+        await profiles.copyToPair(q, e.paired_into, solos);
+      }
+      if (t.status === 'completed') await recordResults(q, t);
+    });
+  }
+
+  // Pickleball: seed by DUPR rating (singles, or a pair's doubles ratings added up).
+  async function seedByDupr(id, actor, { event } = {}) {
+    return mutateEvent(id, actor, event, async (q, t) => {
+      requireSetup(t);
+      if (t.sportDef.id !== 'pickleball') fail(400, 'Seeding by DUPR is for pickleball events');
+      const entries = await entriesOf(q, t);
+      const people = await profiles.peopleOf(q, t.id);
+      const rated = entries.map((e) => ({ e, r: dupr.entryRating(people.get(e.id) || [], t.event.discipline) }));
+      rated.sort((x, y) => (y.r ?? -1) - (x.r ?? -1) || x.e.seed - y.e.seed);
+      for (const [i, { e }] of rated.entries()) await q('UPDATE entries SET seed = $1 WHERE id = $2', [i + 1, e.id]);
+    });
+  }
+
+  // Pickleball: finished matches as a CSV for the DUPR club match upload.
+  async function duprCsv(id, actor, { event } = {}) {
+    const row = await load(db.query, id);
+    const access = await accessOf(db.query, row, actor);
+    if (!access.manage) fail(403, 'Only organisers can download results');
+    const t = await eventFor(db.query, row, event);
+    if (t.sportDef.id !== 'pickleball') fail(400, 'DUPR results are for pickleball events');
+    const people = await profiles.peopleOf(db.query, t.id);
+    const entries = await entriesOf(db.query, t);
+    const names = new Map(entries.map((e) => [e.id, e.name]));
+    const rows = await db.query(`SELECT * FROM matches WHERE event_id = $1 AND status = 'done' AND NOT walkover AND a_id IS NOT NULL AND b_id IS NOT NULL ORDER BY ${MATCH_ORDER}`, [t.eventId]);
+    const side = (entryId) => {
+      const list = people.get(entryId) || [];
+      if (list.length) return list.map((p) => ({ name: p.name, duprId: p.duprId || p.entryDupr || '' }));
+      return (names.get(entryId) || '').split(' / ').map((name) => ({ name, duprId: '' }));
+    };
+    const date = (m) => (m.updated_at ? new Date(m.updated_at) : new Date()).toISOString().slice(0, 10);
+    const matches = rows.map((m) => {
+      const score = scoreOf(t, m);
+      return {
+        doubles: t.event.discipline === 'doubles',
+        event: `${t.name} — ${eventLabel(t)}`,
+        date: date(m),
+        a: side(m.a_id),
+        b: side(m.b_id),
+        games: (score.games || []).filter((g) => g.a || g.b).map((g) => [g.a, g.b]),
+      };
+    });
+    const missing = matches.filter((m) => [...m.a, ...m.b].some((p) => !p.duprId)).length;
+    return { csv: dupr.csv(matches), filename: `${t.name}-${eventLabel(t)}-dupr.csv`.replace(/[^\w.-]+/g, '-'), missing, matches: matches.length };
   }
 
   async function reorderEntries(id, actor, ids, { event } = {}) {
@@ -1986,7 +2148,93 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (!open) fail(409, `This ${m.stage} match cannot be played right now`);
   }
 
+  // A finished pickleball match goes to DUPR (when connected) after it's saved.
   async function rally(id, actor, mid, side, at) {
+    const m = await rallyIn(id, actor, mid, side, at);
+    if (m.status === 'done' && dupr.enabled()) await sendToDupr(m.id).catch((err) => console.error('DUPR:', err.message));
+    return m;
+  }
+
+  // ---------- DUPR partner API (only when DUPR_CLIENT_ID/SECRET are set)
+  const duprClient = dupr.createClient({ fetchImpl });
+
+  // Sends one finished match when every player is verified with DUPR and the
+  // admin has switched sending on. Returns the submission, or null if skipped.
+  async function sendToDupr(matchId) {
+    if (!dupr.enabled() || !(await settings.get('duprSubmit'))) return null;
+    const [m] = await db.query('SELECT * FROM matches WHERE id = $1', [Number(matchId) || 0]);
+    if (!m || m.status !== 'done' || m.walkover || m.a_id == null || m.b_id == null) return null;
+    const row = await load(db.query, m.tournament_id);
+    const t = await eventFor(db.query, row, m.event_id);
+    if (t.sportDef.id !== 'pickleball') return null;
+    const people = await profiles.peopleOf(db.query, t.id);
+    const side = (entryId) => people.get(entryId) || [];
+    const all = [...side(m.a_id), ...side(m.b_id)];
+    const size = t.event.discipline === 'doubles' ? 4 : 2;
+    if (all.length !== size || !all.every((p) => p.duprVerified && p.duprId)) return null;
+    const [done] = await db.query(`SELECT status FROM dupr_submissions WHERE match_id = $1`, [m.id]);
+    if (done && done.status === 'sent') return done;
+    await db.query(`INSERT INTO dupr_submissions (match_id) VALUES ($1) ON CONFLICT (match_id) DO UPDATE SET status = 'queued', updated_at = now()`, [m.id]);
+    const score = scoreOf(t, m);
+    const team = (list) => ({ player1: list[0].duprId, ...(list[1] && { player2: list[1].duprId }) });
+    try {
+      const duprMatch = await duprClient.submitMatch({
+        identifier: `tonament-${m.id}`,
+        event: `${row.name} — ${eventLabel(t)}`,
+        format: size === 4 ? 'DOUBLES' : 'SINGLES',
+        matchDate: (m.updated_at ? new Date(m.updated_at) : new Date()).toISOString().slice(0, 10),
+        location: [row.venue, row.city].filter(Boolean).join(', ') || undefined,
+        teamA: team(side(m.a_id)),
+        teamB: team(side(m.b_id)),
+        games: (score.games || []).filter((g) => g.a || g.b).map((g) => ({ teamA: g.a, teamB: g.b })),
+      });
+      const [r] = await db.query(`UPDATE dupr_submissions SET status = 'sent', dupr_match = $2, error = NULL, attempts = attempts + 1, updated_at = now() WHERE match_id = $1 RETURNING *`, [m.id, duprMatch]);
+      return r;
+    } catch (err) {
+      const [r] = await db.query(`UPDATE dupr_submissions SET status = 'failed', error = $2, attempts = attempts + 1, updated_at = now() WHERE match_id = $1 RETURNING *`, [m.id, String(err.message).slice(0, 300)]);
+      return r;
+    }
+  }
+
+  // Connect DUPR: checks the ID with DUPR and takes the real ratings.
+  async function connectDupr(actor, input = {}) {
+    if (!actor?.user) fail(401, 'Sign in first');
+    if (!dupr.enabled()) fail(503, 'DUPR isn\'t connected to Tonament yet');
+    const id = dupr.checkId(input.duprId, fail);
+    let p;
+    try {
+      p = await duprClient.player(id);
+    } catch (err) {
+      fail(502, `DUPR didn't recognise that ID (${err.message})`);
+    }
+    await db.query(
+      'UPDATE users SET dupr_id = $1, dupr_singles = $2, dupr_doubles = $3, dupr_verified = true, dupr_synced_at = now() WHERE id = $4',
+      [id, p.singles == null ? null : dupr.checkRating(p.singles, fail), p.doubles == null ? null : dupr.checkRating(p.doubles, fail), actor.user.id],
+    );
+    return profiles.myProfile(actor);
+  }
+  async function disconnectDupr(actor) {
+    if (!actor?.user) fail(401, 'Sign in first');
+    await db.query('UPDATE users SET dupr_verified = false, dupr_synced_at = NULL WHERE id = $1', [actor.user.id]);
+    return profiles.myProfile(actor);
+  }
+
+  async function adminDupr(actor) {
+    requireSiteAdmin(actor);
+    const rows = await db.query(
+      `SELECT d.match_id AS "matchId", d.status, d.dupr_match AS "duprMatch", d.error, d.attempts, d.updated_at AS "updatedAt", t.id AS "tournamentId", t.name AS "tournamentName"
+       FROM dupr_submissions d JOIN matches m ON m.id = d.match_id JOIN tournaments t ON t.id = m.tournament_id ORDER BY d.updated_at DESC LIMIT 100`,
+    );
+    return { enabled: dupr.enabled(), submissions: rows };
+  }
+  async function adminDuprRetry(actor, matchId) {
+    requireSiteAdmin(actor);
+    const r = await sendToDupr(matchId);
+    if (!r) fail(409, 'This match can\'t be sent: DUPR is off, or a player isn\'t verified with DUPR');
+    return r;
+  }
+
+  async function rallyIn(id, actor, mid, side, at) {
     if (side !== 'a' && side !== 'b') fail(400, 'side must be "a" or "b"');
     return db.tx(async (q) => {
       const { t: tournament } = await lockWith(q, id, actor, 'score');
@@ -2727,6 +2975,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     });
   }
 
+  profiles = createPlayers({ db, fail, text, imageType, maxImageBytes: MAX_IMAGE_BYTES, mediaUrl, mailer: mailer?.enabled ? mailer : null, baseUrl: process.env.BASE_URL || '' });
+
   orgs = createOrgs({
     db, fail, text, imageType, maxImageBytes: MAX_IMAGE_BYTES, mediaUrl, billingConfig, razorpay, adminLog, requireSiteAdmin, settings, orgCards,
     tournamentAccess: (q, id, actor) => lockWith(q, id, actor, 'manage'),
@@ -2734,6 +2984,15 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   return {
     orgs,
+    players: profiles,
+    connectDupr,
+    disconnectDupr,
+    adminDupr,
+    adminDuprRetry,
+    sendToDupr,
+    setEntryPlayers,
+    seedByDupr,
+    duprCsv,
     settings,
     adminSettings,
     setAdminSettings,

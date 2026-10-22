@@ -318,11 +318,77 @@ CREATE TABLE IF NOT EXISTS site_settings (
 );
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS org_id INTEGER;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS org_id INTEGER;
+
+-- v23: player profiles (tonament.com/p/<handle>), the people behind each
+-- entry (matched to accounts by email, like members), ranking results and DUPR.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS handle TEXT UNIQUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sports TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_public BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS dupr_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS dupr_singles NUMERIC(4,3);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS dupr_doubles NUMERIC(4,3);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS dupr_verified BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS dupr_synced_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS user_media (
+  id          TEXT PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  mime        TEXT NOT NULL,
+  bytes       BYTEA NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Slot 0 is the player who entered (or the first named), slot 1 their partner.
+CREATE TABLE IF NOT EXISTS entry_players (
+  entry_id    INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+  slot        INTEGER NOT NULL,
+  name        TEXT NOT NULL,
+  email       TEXT,
+  dupr_id     TEXT,
+  PRIMARY KEY (entry_id, slot)
+);
+CREATE INDEX IF NOT EXISTS entry_players_email ON entry_players(email);
+INSERT INTO entry_players (entry_id, slot, name, email)
+  SELECT e.id, 0, split_part(e.name, ' / ', 1), u.email FROM entries e JOIN users u ON u.id = e.user_id
+  ON CONFLICT DO NOTHING;
+INSERT INTO entry_players (entry_id, slot, name, email)
+  SELECT s.paired_into, ROW_NUMBER() OVER (PARTITION BY s.paired_into ORDER BY s.id) - 1, s.name, u.email
+  FROM entries s JOIN users u ON u.id = s.user_id WHERE s.paired_into IS NOT NULL
+  ON CONFLICT DO NOTHING;
+-- One row per player per finished event (rewritten if a result changes).
+CREATE TABLE IF NOT EXISTS event_results (
+  event_id      INTEGER NOT NULL,
+  email         TEXT NOT NULL,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  entry_id      INTEGER NOT NULL,
+  sport         TEXT NOT NULL,
+  category      TEXT,                          -- ms, xd-u19, … (null: not ranked)
+  finish        TEXT NOT NULL,                 -- W F SF QF R16 R32 G
+  points        INTEGER NOT NULL DEFAULT 0,
+  entries       INTEGER NOT NULL,
+  won           INTEGER NOT NULL DEFAULT 0,
+  lost          INTEGER NOT NULL DEFAULT 0,
+  matches       JSONB,                         -- [{ round, opponent, won, draw, score }]
+  finished_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (event_id, email)
+);
+CREATE INDEX IF NOT EXISTS event_results_rank ON event_results(sport, category, finished_at);
+CREATE INDEX IF NOT EXISTS event_results_email ON event_results(email);
+CREATE TABLE IF NOT EXISTS dupr_submissions (
+  match_id    INTEGER PRIMARY KEY,
+  status      TEXT NOT NULL DEFAULT 'queued',  -- queued | sent | failed
+  dupr_match  TEXT,
+  error       TEXT,
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 22;
+const SCHEMA_VERSION = 23;
 
 async function migrate(db) {
   try {

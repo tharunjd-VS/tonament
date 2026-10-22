@@ -458,7 +458,7 @@ function createOrgs({ db, fail, text, imageType, maxImageBytes, mediaUrl, billin
 
 // Site-wide settings the admin can change, cached for a minute per instance.
 function createSettings(db) {
-  const DEFAULTS = { orgIncludesBranding: false };
+  const DEFAULTS = { orgIncludesBranding: false, duprSubmit: false };
   let cache = null;
   let at = 0;
   // q: a transaction's query, when called inside one.

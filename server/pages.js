@@ -204,7 +204,7 @@ ${pages.map(url).join('\n')}
 
 // ---------- sport landing pages (/badminton, /pickleball, …) and /sports
 
-const SITE_LINKS = [['/features', 'Features'], ['/sports', 'Sports'], ['/how-it-works', 'How it works'], ['/faq', 'FAQ'], ['/pricing', 'Pricing'],
+const SITE_LINKS = [['/features', 'Features'], ['/sports', 'Sports'], ['/rankings', 'Rankings'], ['/how-it-works', 'How it works'], ['/faq', 'FAQ'], ['/pricing', 'Pricing'],
   ['/contact', 'Contact'], ['/terms', 'Terms'], ['/privacy', 'Privacy'], ['/refunds', 'Refunds'], ['/delivery', 'Delivery']];
 const SIGN_UP = '/signup?next=%2Fnew';
 const iconSvg = (id, cls = 'icon') => `<span class="${cls}" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="/icons.svg#${esc(id)}"></use></svg></span>`;
@@ -318,6 +318,7 @@ function sportHtml({ base, sport, content, tournaments, others }) {
     <section id="tournaments">
       <h2 class="features-title">Upcoming ${esc(lower)} tournaments</h2>
       ${list}
+      <p><a href="/rankings/${esc(sport.id)}">${esc(sport.name)} player rankings →</a></p>
     </section>
 
     <section>
@@ -493,4 +494,118 @@ ${list('Past tournaments', past)}
   return sitePage({ base, path, title: `${o.name}${L.city ? ` — ${o.kindName} in ${L.city}` : ''} | Tonament`, description, ld, body });
 }
 
-module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, sitemap, esc, sportHtml, sportsHubHtml, orgHtml };
+// ---------- players and rankings
+
+const FINISH_SHORT = { W: 'Winner', F: 'Runner-up', SF: 'Semi-final', QF: 'Quarter-final', R16: 'Last 16', R32: 'Last 32', G: 'Group stage' };
+const initials = (name) => String(name || '?').split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+const avatar = (p, cls = 'player-avatar') => (p.photo
+  ? `<img class="${cls}" src="${esc(p.photo)}" alt="" width="96" height="96" loading="lazy">`
+  : `<span class="${cls} initials" aria-hidden="true">${esc(initials(p.name))}</span>`);
+const shortDate = (d) => {
+  const x = new Date(d);
+  return Number.isNaN(x.getTime()) ? '' : `${x.getUTCDate()} ${MON[x.getUTCMonth()]} ${x.getUTCFullYear()}`;
+};
+
+function playerHtml({ base, p }) {
+  const path = `/p/${p.handle}`;
+  const where = [p.city, p.region].filter(Boolean).join(', ');
+  const titles = p.results.filter((r) => r.finish === 'W');
+  const rankings = p.rankings.length
+    ? `<section><h2 class="features-title">Rankings</h2><div class="rank-chips">${p.rankings.map((r) => `<a class="rank-chip" href="/rankings/${esc(r.sport)}/${esc(r.category)}">
+        <strong>#${r.rank}</strong><span>${esc(r.name)} · ${esc(r.sportName)}</span><small>${r.points} pts${r.cityRank && r.city ? ` · #${r.cityRank} in ${esc(r.city)}` : ''}</small></a>`).join('')}</div></section>` : '';
+  const records = p.records.length
+    ? `<div class="stat-row">${p.records.map((r) => `<div class="stat"><span class="stat-label">${esc(r.sportName)}</span><strong>${r.won}–${r.lost}</strong><small>${r.titles ? `${r.titles} title${r.titles === 1 ? '' : 's'} · ` : ''}${r.events} event${r.events === 1 ? '' : 's'}</small></div>`).join('')}</div>` : '';
+  const dupr = p.dupr ? `<p class="dupr-line"><span class="pill">DUPR</span> ${[p.dupr.doubles != null ? `Doubles <strong>${p.dupr.doubles.toFixed(3)}</strong>` : '', p.dupr.singles != null ? `Singles <strong>${p.dupr.singles.toFixed(3)}</strong>` : '', p.dupr.id ? `ID ${esc(p.dupr.id)}` : ''].filter(Boolean).join(' · ')}${p.dupr.verified ? '' : ' <small class="muted">self-reported</small>'}</p>` : '';
+  const results = p.results.length
+    ? `<section><h2 class="features-title">Results</h2><ol class="result-list">${p.results.map((r) => `<li>
+        <div class="result-head"><span class="finish finish-${esc(r.finish.toLowerCase())}">${esc(FINISH_SHORT[r.finish] || r.finish)}</span>
+          <a href="/t/${esc(r.tournamentId)}">${esc(r.tournament)}</a></div>
+        <p class="muted small">${[esc(r.event), r.city ? esc(r.city) : '', shortDate(r.date), `${r.won}–${r.lost}`, r.points ? `${r.points} ranking pts` : ''].filter(Boolean).join(' · ')}</p>
+        ${r.matches.length ? `<details><summary>Matches</summary><ul class="match-lines">${r.matches.map((m) => `<li><span class="${m.won ? 'won' : m.draw ? 'drew' : 'lost'}">${m.won ? 'W' : m.draw ? 'D' : 'L'}</span> ${esc(m.round)} v ${esc(m.opponent)} <span class="muted">${esc(m.score)}</span></li>`).join('')}</ul></details>` : ''}
+      </li>`).join('')}</ol></section>`
+    : '<section><p class="muted">No results yet. Results from public tournaments on Tonament appear here.</p></section>';
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <a href="/rankings">Rankings</a> › <span>${esc(p.name)}</span></nav>
+    ${p.own && !p.public ? '<p class="banner">Only you can see this page — your profile is private. <a href="/me/profile">Change</a></p>' : ''}
+    <section class="player-hero">
+      ${avatar(p)}
+      <div>
+        <h1>${esc(p.name)}</h1>
+        <p class="muted">${[where, p.sports.map((x) => x.name).join(', ')].filter(Boolean).map(esc).join(' · ')}</p>
+        ${titles.length ? `<p class="player-titles">🏆 ${titles.length} title${titles.length === 1 ? '' : 's'}</p>` : ''}
+        ${dupr}
+        ${p.own ? '<p class="actions"><a class="btn btn-small" href="/me/profile">Edit profile</a></p>' : ''}
+      </div>
+    </section>
+    ${p.bio ? `<section class="org-about">${String(p.bio).split('\n').filter(Boolean).map((x) => `<p>${esc(x)}</p>`).join('')}</section>` : ''}
+    ${records}
+    ${rankings}
+    ${results}
+    <section class="hero hero-end">
+      <h2>Play tournaments on Tonament</h2>
+      <p class="lead">Enter online, follow live scores and collect ranking points.</p>
+      <p class="actions"><a class="btn btn-primary btn-lg" href="/signup">Sign up free</a> <a class="btn btn-ghost btn-lg" href="/rankings">See rankings</a></p>
+    </section>`;
+  const ld = [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'Person',
+      name: p.name,
+      url: base + path,
+      ...(p.photo && { image: base + p.photo }),
+      ...(p.bio && { description: p.bio.slice(0, 300) }),
+      ...(p.city && { homeLocation: { '@type': 'Place', name: [p.city, p.region].filter(Boolean).join(', ') } }),
+      ...(p.sports.length && { knowsAbout: p.sports.map((x) => x.name) }),
+    },
+    crumbs(base, [['Home', '/'], ['Rankings', '/rankings'], [p.name, path]]),
+  ];
+  const sportsText = p.sports.map((x) => x.name.toLowerCase()).join(', ');
+  const description = `${p.name}${p.city ? ` from ${p.city}` : ''}${sportsText ? ` — ${sportsText} player` : ''}: tournament results${p.rankings.length ? ', rankings' : ''} and match scores on Tonament.`;
+  return sitePage({ base, path, title: `${p.name}${p.city ? ` — ${p.city}` : ''} | Tonament player`, description, ld, body });
+}
+
+const rankRow = (r) => `<li class="rank-row"><span class="rank-no">${r.rank}</span>${avatar(r, 'rank-avatar')}<span class="rank-name"><a href="/p/${esc(r.handle)}">${esc(r.name)}</a><small class="muted">${esc([r.city, r.region].filter(Boolean).join(', '))}</small></span><span class="rank-pts"><strong>${r.points}</strong><small>pts</small></span></li>`;
+const rankLd = (base, name, path, players, offset = 0) => ({ '@context': 'https://schema.org', '@type': 'ItemList', name, url: base + path, itemListElement: players.map((r, i) => ({ '@type': 'ListItem', position: offset + i + 1, url: `${base}/p/${r.handle}`, name: r.name })) });
+const RULES = (best, weeks) => `<p class="muted small">Ranking points come from public tournaments on Tonament: how far you got, times the size of the draw (Winner 100, Runner-up 70, Semi-final 45, Quarter-final 25 … ×2 for draws of 32+). Your best ${best} results in the last ${weeks} weeks count. Players with private profiles aren't listed.</p>`;
+
+function rankingsHubHtml({ base, sports }) {
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <span>Rankings</span></nav>
+    <section class="hero">
+      <p class="eyebrow">Play. Win. <b>Climb.</b></p>
+      <h1>Player <span class="accent">rankings.</span></h1>
+      <p class="lead">From tournaments played on Tonament — by sport, event, state and city.</p>
+    </section>
+    ${sports.length ? `<div class="choice-group tiles sports-hub">${sports.map((x) => `<a class="choice" href="/rankings/${esc(x.id)}">${iconSvg(x.id)}<span class="choice-label">${esc(x.name)}</span><small>${x.players} ranked player${x.players === 1 ? '' : 's'}</small></a>`).join('')}</div>`
+    : '<p class="muted">Rankings appear once public tournaments on Tonament finish.</p>'}
+    ${RULES(6, 52)}`;
+  return sitePage({ base, path: '/rankings', title: 'Player rankings — badminton, pickleball and more | Tonament', description: 'Player rankings from tournaments on Tonament: badminton, pickleball, table tennis, tennis and more — by event, state and city.', ld: [crumbs(base, [['Home', '/'], ['Rankings', '/rankings']])], body });
+}
+
+function rankingsSportHtml({ base, sport, categories }) {
+  const path = `/rankings/${sport.id}`;
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <a href="/rankings">Rankings</a> › <span>${esc(sport.name)}</span></nav>
+    <section class="rank-head">${iconSvg(sport.id)}<div><h1>${esc(sport.name)} rankings</h1><p class="muted">Top players by event, from ${esc(sport.name.toLowerCase())} tournaments on Tonament.</p></div></section>
+    ${categories.length ? `<div class="rank-grid">${categories.map((c) => `<section class="card rank-card"><h2><a href="${path}/${esc(c.slug)}">${esc(c.name)}</a></h2><ol class="rank-list">${c.top.map(rankRow).join('')}</ol><p><a href="${path}/${esc(c.slug)}">All ${c.players} player${c.players === 1 ? '' : 's'} →</a></p></section>`).join('')}</div>`
+    : `<p class="muted">No ranked ${esc(sport.name.toLowerCase())} results yet. <a href="/${esc(sport.id)}">Run a tournament</a></p>`}
+    ${RULES(6, 52)}`;
+  return sitePage({ base, path, title: `${sport.name} rankings — India | Tonament`, description: `${sport.name} player rankings in India from tournaments on Tonament: singles, doubles and mixed, by state and city.`, ld: [crumbs(base, [['Home', '/'], ['Rankings', '/rankings'], [sport.name, path]])], body });
+}
+
+function rankingsTableHtml({ base, sport, category, name, table, places, scope, offset, pageSize }) {
+  const path = `/rankings/${sport.id}/${category}`;
+  const qs = (o) => { const u = new URLSearchParams(Object.entries(o).filter(([, v]) => v)); const x = u.toString(); return x ? `?${x}` : ''; };
+  const where = scope.city || scope.region || 'India';
+  const chip = (label, o, on) => `<a class="chip${on ? ' on' : ''}" href="${path}${qs(o)}">${esc(label)}</a>`;
+  const filters = `<nav class="rank-filters" aria-label="Where">${chip('India', {}, !scope.city && !scope.region)}${places.regions.map((r) => chip(r, { state: r }, scope.region === r && !scope.city)).join('')}${places.cities.map((c) => chip(c, { city: c }, scope.city === c)).join('')}</nav>`;
+  const more = offset + table.players.length < table.total;
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <a href="/rankings">Rankings</a> › <a href="/rankings/${esc(sport.id)}">${esc(sport.name)}</a> › <span>${esc(name)}</span></nav>
+    <section class="rank-head">${iconSvg(sport.id)}<div><h1>${esc(sport.name)} ${esc(name)} — ${esc(where)}</h1><p class="muted">${table.total} ranked player${table.total === 1 ? '' : 's'} · best ${6} results in the last 52 weeks</p></div></section>
+    ${filters}
+    ${table.players.length ? `<ol class="rank-list rank-table">${table.players.map(rankRow).join('')}</ol>` : '<p class="muted">No ranked players here yet.</p>'}
+    <p class="actions">${offset ? `<a class="btn btn-small" href="${path}${qs({ state: scope.region, city: scope.city, page: offset / pageSize > 1 ? offset / pageSize : '' })}">← Previous</a>` : ''}${more ? ` <a class="btn btn-small" href="${path}${qs({ state: scope.region, city: scope.city, page: offset / pageSize + 2 })}">Next →</a>` : ''}</p>
+    ${RULES(6, 52)}`;
+  const title = `${sport.name} ${name} rankings — ${where} | Tonament`;
+  const ld = [rankLd(base, `${sport.name} ${name} rankings — ${where}`, path, table.players, offset), crumbs(base, [['Home', '/'], ['Rankings', '/rankings'], [sport.name, `/rankings/${sport.id}`], [name, path]])];
+  return sitePage({ base, path: path + qs({ state: scope.region, city: scope.city }), title, description: `${sport.name} ${name} player rankings in ${where}, from tournaments on Tonament. ${table.players.slice(0, 3).map((r) => `#${r.rank} ${r.name}`).join(', ')}`, ld, body });
+}
+
+module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, sitemap, esc, sportHtml, sportsHubHtml, orgHtml, playerHtml, rankingsHubHtml, rankingsSportHtml, rankingsTableHtml };
