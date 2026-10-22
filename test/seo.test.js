@@ -219,3 +219,49 @@ test('How it works and FAQ pages', async () => {
     assert.ok(q.acceptedAnswer.text.length > 20 && !/</.test(q.acceptedAnswer.text), q.name); // plain text
   }
 });
+
+test('sport landing pages: one per sport, its own copy, upcoming public tournaments only', async () => {
+  const sports = require('../server/sports');
+  const { SPORTS } = require('../server/sport-pages');
+  const live = sports.list().filter((s) => s.status === 'live').map((s) => s.id);
+  assert.deepEqual(Object.keys(SPORTS).sort(), [...live].sort()); // every live sport has a page, and only those
+
+  const pub = await diwali({ name: 'Pickle Smash Open', sport: 'pickleball', startsOn: '2031-01-10', endsOn: null });
+  const hidden = await diwali({ name: 'Secret Pickle Night', sport: 'pickleball', visibility: 'link', startsOn: '2031-01-11', endsOn: null });
+  const past = await diwali({ name: 'Old Pickle Cup', sport: 'pickleball', startsOn: '2020-01-01', endsOn: null });
+  const other = await diwali({ name: 'Tennis Thing', sport: 'tennis', startsOn: '2031-01-12', endsOn: null });
+
+  const titles = new Set();
+  for (const id of live) {
+    const { res, html } = await get(`/${id}`);
+    assert.equal(res.status, 200, id);
+    assert.match(res.headers.get('cache-control'), /s-maxage=600/);
+    const title = html.match(/<title>([^<]*)<\/title>/)[1];
+    titles.add(title);
+    assert.match(html, new RegExp(`<link rel="canonical" href="https://tonament\\.com/${id}">|<link rel="canonical" href="${base.replace(/[.]/g, '\\.')}/${id}">`), id);
+    assert.match(html, /<h1>Run your [a-z ]+ tournament\./, id);
+    assert.ok(html.includes('href="/signup?next=%2Fnew"'), id);
+    const blocks = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)].map((m) => JSON.parse(m[1]));
+    const faq = blocks.find((b) => b['@type'] === 'FAQPage');
+    assert.ok(faq && faq.mainEntity.length >= 3, id);
+    assert.ok(blocks.some((b) => b['@type'] === 'BreadcrumbList'), id);
+  }
+  assert.equal(titles.size, live.length); // no two pages share a title
+
+  const { html } = await get('/pickleball');
+  assert.ok(html.includes(`href="/t/${pub}"`));
+  for (const id of [hidden, past, other]) assert.ok(!html.includes(`/t/${id}`), id);
+  assert.match(await (await get('/table-tennis')).html, /Draws &amp; tables/);
+
+  // The hub, the Vercel route, the sitemap, and links from tournament pages.
+  const hub = await get('/sports');
+  assert.equal(hub.res.status, 200);
+  for (const id of live) assert.ok(hub.html.includes(`href="/${id}"`), id);
+  assert.match((await get('/api/sport/padel')).html, /Padel Tournament App/);
+  const xml = (await get('/sitemap.xml')).html;
+  for (const p of ['/sports', ...live.map((id) => `/${id}`)]) assert.ok(xml.includes(`${p}</loc>`), p);
+  assert.ok((await get(`/t/${pub}`)).html.includes('<a href="/pickleball">More pickleball tournaments</a>'));
+  // Unknown sports are still a real 404; other pages are untouched.
+  assert.equal((await get('/curling')).res.status, 404);
+  assert.match((await get('/pricing')).html, /<title>Pricing/);
+});

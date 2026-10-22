@@ -13,6 +13,14 @@
       "destination": "/api/index?__path=sitemap"
     },
     {
+      "source": "/:sport(badminton|pickleball|table-tennis|squash|tennis|padel|volleyball|beach-volleyball|throwball|sepak-takraw)",
+      "destination": "/api/index?__path=sport/:sport"
+    },
+    {
+      "source": "/sports",
+      "destination": "/api/index?__path=sport"
+    },
+    {
       "source": "/:page(new|signin|signup|forgot|reset|admin)",
       "destination": "/index.html"
     },

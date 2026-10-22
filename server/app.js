@@ -7,6 +7,8 @@ const { createService } = require('./service');
 const { createAuth } = require('./auth');
 const { HttpError } = require('./errors');
 const pages = require('./pages');
+const catalog = require('../public/sports/events');
+const { SPORTS: SPORT_PAGES } = require('./sport-pages');
 const { createMailer } = require('./email');
 const { billingConfig, publicBillingConfig } = require('./billing');
 
@@ -315,9 +317,44 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     res.end(req.method === 'HEAD' ? undefined : html);
   }
 
+  // Live sports in catalogue order, with what their landing pages need.
+  const livePages = () => sports.list().filter((x) => x.status === 'live' && SPORT_PAGES[x.id]).map((x) => ({
+    id: x.id,
+    name: x.name,
+    presets: catalog.presetsFor(x.id).map((p) => p.label),
+    courtWord: catalog.courtWord(x.id),
+    blurb: SPORT_PAGES[x.id].rules[0],
+  }));
+
+  // /<sport> (on Vercel, rewritten to /api/sport/<sport>) and /sports.
+  async function sportPage(req, res, slug) {
+    const base = baseUrl(req) || SITE;
+    const all = livePages();
+    const sport = slug && all.find((x) => x.id === slug);
+    if (slug && !sport) return false;
+    const html = sport
+      ? pages.sportHtml({
+        base,
+        sport,
+        content: SPORT_PAGES[sport.id],
+        tournaments: (await svc.listTournaments({ sport: sport.id, when: 'upcoming' })).slice(0, 8),
+        others: all.filter((x) => x.id !== sport.id),
+      })
+      : pages.sportsHubHtml({ base, sports: all });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      // The tournament list changes: briefly cached at the CDN.
+      'Cache-Control': 'public, max-age=0, s-maxage=600',
+      'Vercel-CDN-Cache-Control': 'max-age=600, stale-while-revalidate=86400',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(req.method === 'HEAD' ? undefined : html);
+    return true;
+  }
+
   async function sitemapXml(req, res) {
     const base = baseUrl(req) || SITE;
-    const fixed = ['/', '/features', '/how-it-works', '/faq', '/pricing', '/contact', '/terms', '/privacy', '/refunds', '/delivery'].map((p) => ({ path: p }));
+    const fixed = ['/', '/features', '/sports', ...livePages().map((x) => `/${x.id}`), '/how-it-works', '/faq', '/pricing', '/contact', '/terms', '/privacy', '/refunds', '/delivery'].map((p) => ({ path: p }));
     const xml = pages.sitemap(base, [...fixed, ...await svc.sitemapTournaments()]);
     res.writeHead(200, {
       'Content-Type': 'application/xml; charset=utf-8',
@@ -400,6 +437,9 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         return await tournamentPage(req, res, shared[1], shared[2], url.search.replace(/[?&]__path=[^&]*/, '').replace(/^&/, '?'));
       }
       if ((pathname === '/sitemap.xml' || pathname === '/api/sitemap') && read) return await sitemapXml(req, res);
+      // Sport landing pages: /badminton, /pickleball, … and the /sports hub.
+      const sportPath = pathname.match(/^\/(?:api\/sport(?:\/([a-z-]{1,40}))?|sports|([a-z-]{1,40}))\/?$/);
+      if (sportPath && read && (sportPath[1] || sportPath[2] || /sport/.test(pathname)) && await sportPage(req, res, sportPath[1] || sportPath[2] || null)) return;
       if (pathname === '/api' || pathname.startsWith('/api/')) {
         let pathMatched = false;
         for (const route of routes) {

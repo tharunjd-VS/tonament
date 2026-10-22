@@ -143,6 +143,7 @@ ${card('Prizes', prizes)}
 ${card('What\'s included', list(perks.map(esc)) + (t.notes ? `<h3>Other details</h3>${para(t.notes)}` : ''))}
 ${card('About', t.about ? para(t.about) : '')}
 ${card('Results', list(results))}
+<p><a href="/${esc(t.sport.id)}">More ${esc(t.sport.name.toLowerCase())} tournaments</a></p>
 </div>`;
 }
 
@@ -201,4 +202,190 @@ ${pages.map(url).join('\n')}
 `;
 }
 
-module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, sitemap, esc };
+// ---------- sport landing pages (/badminton, /pickleball, …) and /sports
+
+const SITE_LINKS = [['/features', 'Features'], ['/sports', 'Sports'], ['/how-it-works', 'How it works'], ['/faq', 'FAQ'], ['/pricing', 'Pricing'],
+  ['/contact', 'Contact'], ['/terms', 'Terms'], ['/privacy', 'Privacy'], ['/refunds', 'Refunds'], ['/delivery', 'Delivery']];
+const SIGN_UP = '/signup?next=%2Fnew';
+const iconSvg = (id, cls = 'icon') => `<span class="${cls}" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="/icons.svg#${esc(id)}"></use></svg></span>`;
+const isoDate = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : d || null);
+
+// A whole page in the static pages' frame (theme, header, footer, site.js).
+function sitePage({ base, path, title, description, ld, body }) {
+  const url = base + path;
+  const image = `${base}/brand/og-features.png`;
+  const meta = (attr, name, content) => `<meta ${attr}="${name}" content="${esc(content)}">`;
+  return `<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${esc(title)}</title>
+  ${meta('name', 'description', description)}
+  <link rel="canonical" href="${esc(url)}">
+  ${meta('property', 'og:type', 'website')}
+  ${meta('property', 'og:site_name', 'Tonament')}
+  ${meta('property', 'og:title', title)}
+  ${meta('property', 'og:description', description)}
+  ${meta('property', 'og:url', url)}
+  ${meta('property', 'og:image', image)}
+  ${meta('property', 'og:image:width', 1200)}
+  ${meta('property', 'og:image:height', 630)}
+  ${meta('name', 'twitter:card', 'summary_large_image')}
+  ${meta('name', 'twitter:image', image)}
+  <meta name="theme-color" content="#0B1220">
+  <script>
+    (function () {
+      var pref = 'auto';
+      try { pref = localStorage.getItem('tonament:theme') || 'auto'; } catch (e) {}
+      var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+      document.documentElement.setAttribute('data-theme', pref === 'auto' ? (light ? 'light' : 'dark') : pref);
+    })();
+  </script>
+  <link rel="preload" href="/fonts/Outfit-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+  ${(ld || []).map((x) => `<script type="application/ld+json">${jsonScript(x)}</script>`).join('\n  ')}
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand" aria-label="Tonament home"><img src="/brand/logo-white.svg" alt="Tonament" width="190" height="26"></a>
+      <nav class="nav"><a class="btn btn-small btn-primary" href="${SIGN_UP}">Sign up free</a></nav>
+    </div>
+  </header>
+  <main class="container guide features-page sport-page">
+${body}
+  </main>
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="/brand/mark-white.svg" class="on-dark" alt="" width="31" height="22">
+        <img src="/brand/mark.svg" class="on-light" alt="" width="31" height="22">
+        <span class="eyebrow">One platform. Every sport. <b>Every tournament.</b></span>
+      </div>
+      <nav class="footer-links" aria-label="Policies">
+        ${SITE_LINKS.map(([href, label]) => `<a href="${href}">${label}</a>`).join('')}
+      </nav>
+    </div>
+    <p class="footer-legal">© <span data-year>${new Date().getFullYear()}</span> <span data-biz="name">Tonament</span>. Payments are processed securely by Razorpay.</p>
+  </footer>
+  <script src="/site.js"></script>
+</body>
+</html>
+`;
+}
+
+const crumbs = (base, items) => ({
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: items.map(([name, path], i) => ({ '@type': 'ListItem', position: i + 1, name, item: base + path })),
+});
+
+// One upcoming tournament as a card (cards from service.listTournaments).
+function tournamentCardHtml(t) {
+  const date = t.startsOn ? dateRange(isoDate(t.startsOn), isoDate(t.endsOn)) : null;
+  const place = [t.venue, t.city].filter(Boolean).join(', ');
+  const tags = [t.entriesOpen ? '<span class="pill done">Entries open</span>' : '', t.prizeTotal ? `<span class="pill org">🏆 ${esc(rupees(t.prizeTotal))}</span>` : ''].join(' ');
+  return `<a class="card t-card" href="/t/${esc(t.id)}">
+        <div class="card-head"><h3>${esc(t.name)}</h3><span>${tags}</span></div>
+        ${date || place ? `<div class="t-card-when">${esc([date, place].filter(Boolean).join(' · '))}</div>` : ''}
+        ${t.events && t.events.length ? `<div class="t-card-events">${t.events.slice(0, 6).map((e) => `<span class="event-tag">${esc(e)}</span>`).join('')}</div>` : ''}
+      </a>`;
+}
+
+// sport: { id, name, presets: [label], courtWord }, content: server/sport-pages.js entry,
+// tournaments: upcoming public cards, others: [{ id, name }].
+function sportHtml({ base, sport, content, tournaments, others }) {
+  const path = `/${sport.id}`;
+  const lower = sport.name.toLowerCase();
+  const courts = `${sport.courtWord.toLowerCase()}s`;
+  const list = tournaments.length
+    ? `<div class="card-list sport-list">${tournaments.map(tournamentCardHtml).join('\n      ')}</div>
+    <p><a href="/?sport=${esc(sport.id)}">Search all ${esc(lower)} tournaments</a></p>`
+    : `<div class="card empty-list"><p><strong>No ${esc(lower)} tournaments listed yet.</strong> Run the first one — it's free for up to 16 entries.</p>
+      <p class="actions"><a class="btn btn-primary" href="${SIGN_UP}">Create a ${esc(lower)} tournament</a></p></div>`;
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <a href="/sports">Sports</a> › <span>${esc(sport.name)}</span></nav>
+    <section class="hero">
+      <p class="eyebrow">${iconSvg(sport.id, 'icon hero-icon')} ${esc(sport.name)} tournaments</p>
+      <h1>Run your ${esc(lower)} tournament. <span class="accent">Score it live.</span></h1>
+      <p class="lead">${esc(content.lead)}</p>
+      <p class="actions"><a class="btn btn-primary btn-lg" href="${SIGN_UP}">Sign up free</a> <a class="btn btn-lg btn-ghost" href="#tournaments">Find ${esc(lower)} tournaments</a></p>
+      <p class="hero-note">Free for up to <span data-free-limit>16</span> entries · no card needed</p>
+    </section>
+
+    <section id="tournaments">
+      <h2 class="features-title">Upcoming ${esc(lower)} tournaments</h2>
+      ${list}
+    </section>
+
+    <section>
+      <h2 class="features-title">Built for ${esc(lower)}</h2>
+      <div class="feature-groups">
+        <section><h3>Scoring</h3><ul>${content.rules.map((r) => `<li>${esc(r)}</li>`).join('')}</ul></section>
+        <section><h3>Events</h3><ul>${sport.presets.map((p) => `<li>${esc(p)}</li>`).join('')}<li>Age groups and levels — U13, 35+, Beginner, Advanced…</li></ul></section>
+        <section><h3>Formats</h3><p class="muted">${esc(content.formats)}</p></section>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="features-title">Everything else you need</h2>
+      <div class="feature-groups">
+        <section><h3>Entries &amp; fees</h3><ul><li><strong>Online entries</strong> from one link, with partner finder and waitlist</li><li><strong>Entry fees by UPI</strong>, paid straight to you and confirmed in one tap</li><li><strong>Check-in</strong> on the day</li></ul></section>
+        <section><h3>Draws &amp; ${esc(courts)}</h3><ul><li><strong>Groups and knockouts</strong> made in one tap, seeded</li><li><strong>An order of play</strong> across your ${esc(courts)}, with estimated times</li><li><strong>Nobody double-booked</strong> across events</li></ul></section>
+        <section><h3>Live on the day</h3><ul><li><strong>Umpires score</strong> on their own phones</li><li><strong>Live scores</strong> for players and spectators</li><li><strong>Venue display</strong> for the TV in the hall</li></ul></section>
+      </div>
+      <figure class="tv-shot"><img src="/guide/display.jpg" width="1440" height="810" loading="lazy" alt="The venue display: live scores on every ${esc(sport.courtWord.toLowerCase())}, who's up next and the latest results"></figure>
+    </section>
+
+    <section>
+      <h2 class="features-title">${esc(sport.name)} tournament questions</h2>
+      <div class="faq-list">
+        ${content.faqs.map(([q, a]) => `<details class="faq"><summary>${esc(q)}</summary><p>${esc(a)}</p></details>`).join('\n        ')}
+      </div>
+    </section>
+
+    <section class="hero hero-end">
+      <h2>Your next ${esc(lower)} tournament, sorted.</h2>
+      <p class="lead">Pick ${esc(lower)}, choose your events, name it — and you're ready for entries.</p>
+      <p class="actions"><a class="btn btn-primary btn-lg" href="${SIGN_UP}">Sign up free</a> <a class="btn btn-lg btn-ghost" href="/features">All features</a></p>
+    </section>
+
+    <nav class="sport-strip" aria-label="Other sports">${others.map((o) => `<a href="/${esc(o.id)}">${esc(o.name)}</a>`).join('')}</nav>`;
+  const ld = [
+    { '@context': 'https://schema.org', '@type': 'WebPage', name: content.title, description: content.description, url: base + path },
+    crumbs(base, [['Home', '/'], ['Sports', '/sports'], [sport.name, path]]),
+    { '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: content.faqs.map(([q, a]) => ({ '@type': 'Question', name: q, acceptedAnswer: { '@type': 'Answer', text: a } })) },
+    ...(tournaments.length ? [{ '@context': 'https://schema.org', '@type': 'ItemList', name: `Upcoming ${lower} tournaments`, itemListElement: tournaments.map((t, i) => ({ '@type': 'ListItem', position: i + 1, url: `${base}/t/${t.id}`, name: t.name })) }] : []),
+  ];
+  return sitePage({ base, path, title: `${content.title} | Tonament`, description: content.description, ld, body });
+}
+
+// /sports: every sport, each linking to its page.
+function sportsHubHtml({ base, sports }) {
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <span>Sports</span></nav>
+    <section class="hero">
+      <p class="eyebrow">One platform. Every sport. <b>Every tournament.</b></p>
+      <h1>Tournaments for <span class="accent">${sports.length} sports.</span></h1>
+      <p class="lead">Each with its own scoring rules built in — rally points, side-out, deuce and tie-breaks, sets to 25. Pick yours.</p>
+      <p class="actions"><a class="btn btn-primary btn-lg" href="${SIGN_UP}">Sign up free</a></p>
+    </section>
+    <div class="choice-group tiles sports-hub">
+      ${sports.map((x) => `<a class="choice" href="/${esc(x.id)}">${iconSvg(x.id)}<span class="choice-label">${esc(x.name)}</span><small>${esc(x.blurb)}</small></a>`).join('\n      ')}
+    </div>`;
+  const ld = [
+    { '@context': 'https://schema.org', '@type': 'CollectionPage', name: 'Sports on Tonament', url: `${base}/sports` },
+    crumbs(base, [['Home', '/'], ['Sports', '/sports']]),
+  ];
+  return sitePage({
+    base,
+    path: '/sports',
+    title: 'Tournament software for badminton, pickleball, tennis and more | Tonament',
+    description: `Run tournaments for ${sports.map((x) => x.name.toLowerCase()).join(', ')} — online entries, draws, court schedules and live scoring. Free for up to 16 entries.`,
+    ld,
+    body,
+  });
+}
+
+module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, sitemap, esc, sportHtml, sportsHubHtml };

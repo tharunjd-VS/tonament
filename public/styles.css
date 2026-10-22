@@ -757,7 +757,8 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .features-page .hero .actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
 .hero-note { margin: 14px 0 0; font-size: 0.9rem; }
 .sport-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 40px; }
-.sport-strip span { border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; font-size: 0.9rem; background: var(--surface); }
+.sport-strip span, .sport-strip a { border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; font-size: 0.9rem; background: var(--surface); color: var(--text); text-decoration: none; }
+.sport-strip a:hover { border-color: var(--accent); }
 .spotlights { gap: 56px; margin-bottom: 56px; }
 .spotlights .step-text h2 { margin: 4px 0 10px; font-size: clamp(1.5rem, 4vw, 2rem); }
 .spotlights .eyebrow { color: var(--accent-text); margin: 0; }
@@ -830,3 +831,16 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .check-row .check-text small { color: var(--muted); font-weight: 400; }
 .check-row.optional:not(.done) .tick { border-style: dashed; }
 .check-row .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* ---------- sport landing pages (/badminton, …) and /sports */
+.crumbs { font-size: 0.85rem; color: var(--muted); margin: 4px 0 10px; }
+.crumbs a { color: var(--muted); }
+.sport-page > section { margin-bottom: 40px; }
+.sport-page .hero { margin-bottom: 32px; }
+.hero .hero-icon { width: 20px; height: 20px; vertical-align: -4px; color: var(--lime); }
+.sport-list { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); margin-bottom: 10px; }
+.sport-page .feature-groups p { margin: 0; }
+.sport-page .empty-list p { margin: 0 0 10px; }
+.choice-group.tiles.sports-hub { margin-bottom: 40px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); }
+.sports-hub .choice { text-decoration: none; }
+.sports-hub .choice small { margin-top: 4px; }
