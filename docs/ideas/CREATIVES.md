@@ -155,3 +155,21 @@ So every moment can produce a **ready-to-post image or short video for WhatsApp 
 - Do players need consent before their photo is used in a winners poster? (Probably: use profile photos only if the profile is public.)
 - Do we need regional languages (Tamil, Hindi, …) for poster text?
 - Should we add AI-generated backgrounds or captions later?
+
+## Rendering: how images and videos get made (notes, 22 Oct 2026)
+
+The promo images and the 30 s video from 22 Oct were HTML pages. Images were captured with a headless browser (Chromium screenshots); the video was rendered frame by frame (900 frames) and joined with ffmpeg. The app can do the same:
+
+| Where | How | Good for | Limits |
+|---|---|---|---|
+| Phone (browser) | Layout drawn to a canvas, saved as PNG, shared with the share sheet straight to WhatsApp / Instagram | Free player share cards, instant previews | Small differences between phones; in-browser video recording varies by phone |
+| Server: Satori + resvg | HTML-like layout → SVG → PNG in milliseconds (the approach Vercel uses for link-preview images) | Fast, cheap images | Supports only part of CSS |
+| Server: headless Chromium | A slimmed-down Chromium on Vercel; pixel-perfect and identical everywhere | AI-designed HTML posters | A second or two per image |
+| Render worker (background job) | Chromium + ffmpeg on a small separate worker; "your video is ready" notification | Videos (motion and AI) | Needs a worker outside Vercel's function time limits |
+
+**Plan:**
+- AI posters are rendered on the server (consistent everywhere);
+- videos are rendered by a background worker;
+- free player share cards are rendered on the phone.
+
+**Prototype to try first:** a "Share poster" button on a tournament that makes an "Entries open" image from its real details.
