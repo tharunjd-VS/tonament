@@ -425,7 +425,7 @@ function orgHtml({ base, o }) {
   const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <span>${esc(o.name)}</span></nav>
     <section class="org-hero${o.cover ? ' has-cover' : ''}"${o.cover ? ` style="--cover:url('${esc(o.cover)}')"` : ''}>
       <div class="org-hero-inner">
-        ${o.logo ? `<img class="org-logo" src="${esc(o.logo)}" alt="${esc(o.name)} logo" width="96" height="96">` : ''}
+        ${o.logo ? `<img class="org-hero-logo" src="${esc(o.logo)}" alt="${esc(o.name)} logo" width="96" height="96">` : ''}
         <div>
           <p class="eyebrow">${esc(where)}</p>
           <h1>${esc(o.name)}</h1>
@@ -440,7 +440,7 @@ ${list(upcoming.some((t) => t.entriesOpen) ? 'Upcoming tournaments — entries o
     ${facts.length ? `<div class="feature-groups org-facts">${facts.join('')}</div>` : ''}
     ${o.coaching.length ? `<section><h2 class="features-title">Coaching</h2><div class="feature-groups">${o.coaching.map((c) => `<section><h3>${esc(c.title)}</h3><ul>${[c.who && `<li><strong>For</strong> ${esc(c.who)}</li>`, c.when && `<li><strong>When</strong> ${esc(c.when)}</li>`, c.fee && `<li><strong>Fee</strong> ${esc(c.fee)}</li>`].filter(Boolean).join('')}</ul></section>`).join('')}</div></section>` : ''}
     ${o.photos.length ? `<section><h2 class="features-title">Photos</h2><div class="org-gallery">${o.photos.map((ph, i) => `<a href="${esc(ph.url)}" data-photo="${i}"><img src="${esc(ph.url)}" alt="${esc(ph.caption || `${o.name} photo ${i + 1}`)}" loading="lazy"></a>`).join('')}</div>
-    <dialog class="lightbox" aria-label="Photo"><img alt=""><button class="btn btn-small" type="button" aria-label="Close">✕</button></dialog></section>` : ''}
+    <dialog class="org-lightbox" aria-label="Photo"><img alt=""><button class="btn btn-small" type="button" aria-label="Close">✕</button></dialog></section>` : ''}
 ${list('Past tournaments', past)}
     <section class="hero hero-end">
       <h2>Run your tournaments on Tonament</h2>
@@ -449,7 +449,7 @@ ${list('Past tournaments', past)}
     </section>
     <script>
       (function () {
-        var box = document.querySelector('.lightbox');
+        var box = document.querySelector('.org-lightbox');
         if (!box || !box.showModal) return;
         var img = box.querySelector('img');
         document.querySelectorAll('[data-photo]').forEach(function (a) {

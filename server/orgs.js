@@ -76,7 +76,7 @@ function createOrgs({ db, fail, text, imageType, maxImageBytes, mediaUrl, billin
   function instagram(value) {
     const s = text(value, 'Instagram', { max: 120, optional: true });
     if (!s) return null;
-    const handle = s.replace(/^https?:\/\/(www\.)?instagram\.com\//i, '').replace(/^@/, '').replace(/[/?#].*$/, '');
+    const handle = s.replace(/^(https?:\/\/)?(www\.)?instagram\.com\//i, '').replace(/^@/, '').replace(/[/?#].*$/, '');
     if (!/^[A-Za-z0-9._]{1,30}$/.test(handle)) fail(400, 'Instagram: enter your handle, like @smashpoint');
     return handle;
   }
@@ -95,7 +95,9 @@ function createOrgs({ db, fail, text, imageType, maxImageBytes, mediaUrl, billin
     const one = (kind) => rows.find((m) => m.kind === kind);
     return {
       logo: one('logo') ? mediaUrl(one('logo').id) : null,
+      logoId: one('logo') ? one('logo').id : null,
       cover: one('cover') ? mediaUrl(one('cover').id) : null,
+      coverId: one('cover') ? one('cover').id : null,
       photos: rows.filter((m) => m.kind === 'photo').map((m) => ({ id: m.id, url: mediaUrl(m.id), caption: m.caption })),
     };
   }

@@ -481,6 +481,29 @@
       } else if (parts[0] === 'reset') {
         S.route = { name: 'reset', token: params.get('token') || '' };
         history.replaceState(null, '', '/reset'); // keep the token out of history
+      } else if (parts[0] === 'academy' && parts[1] === 'new') {
+        if (!S.me) {
+          navigate('/signin?next=/academy/new', { replace: true });
+          return;
+        }
+        S.route = { name: 'orgNew' };
+      } else if (/^@[a-z0-9-]{3,30}$/.test(parts[0] || '') && parts[1] === 'edit') {
+        const slug = parts[0].slice(1);
+        if (!S.me) {
+          navigate(`/signin?next=/@${slug}/edit`, { replace: true });
+          return;
+        }
+        S.route = { name: 'org', slug };
+        if (!S.org || S.org.slug !== slug) {
+          S.org = null;
+          render();
+          try {
+            S.org = await api('GET', orgPath(slug));
+          } catch (e) {
+            S.error = e.message;
+            S.errorCode = e.code;
+          }
+        }
       } else if (parts[0] === 'admin') {
         const tab = ADMIN_TABS.some(([id]) => id === params.get('tab')) ? params.get('tab') : 'overview';
         S.route = { name: 'admin', tab };
@@ -502,7 +525,7 @@
         ]);
       }
     }
-    if (S.route.name === 'new' || S.route.name === 'tournament') ensurePlaces(); // city suggestions
+    if (['new', 'tournament', 'orgNew', 'org'].includes(S.route.name)) ensurePlaces(); // city suggestions
     render();
     if (prev.name !== S.route.name || prev.mid !== S.route.mid || prev.id !== S.route.id) window.scrollTo(0, 0);
   }
@@ -603,6 +626,8 @@
     else if (S.route.name === 'forgot') view = viewForgot();
     else if (S.route.name === 'reset') view = viewReset();
     else if (S.route.name === 'admin') view = viewAdmin();
+    else if (S.route.name === 'orgNew') view = viewOrgNew();
+    else if (S.route.name === 'org') view = viewOrgEdit();
     else if (S.route.name === 'tournament') view = S.t ? viewTournament() : loading();
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
     else if (S.route.name === 'display') view = S.t ? viewDisplay() : loading();
@@ -1396,6 +1421,7 @@
       h('header', { class: 't-header' },
         h('div', { class: 't-title' }, h('h1', {}, tt.name), pill(tt.status, STATUS[tt.status]), tt.can.score ? visibilityPill(tt.visibility) : null,
           tt.official ? pill('org', 'Organised by Tonament') : null,
+          tt.org && tt.org.public ? h('a', { class: 't-byline', href: `/@${tt.org.slug}` }, `by ${tt.org.name}`) : null,
           tt.visibility !== 'private' ? h('button', { class: 'btn btn-small btn-ghost t-share', onclick: () => shareTournament(tt) }, 'Share') : null),
         h('p', { class: 'muted small' },
           [fmtSchedule(tt), placeLine(tt.venue, tt.location.city), tt.sport.name, multiEvent(tt) ? `${tt.events.length} events` : t.formatName, statusLine]
@@ -3513,6 +3539,7 @@
 
     return [
       visibilityCard(t),
+      orgLinkCard(t),
       pageCard(t),
       h('div', { class: 'card' },
         h('h2', {}, 'Team'),
@@ -3592,6 +3619,7 @@
   const nav = document.getElementById('nav');
   let navFor;
   function renderNav() {
+    ensureMyOrgs();
     const who = S.me ? `${S.me.id}` : '';
     if (!nav || navFor === who) return; // re-rendering would close an open menu
     navFor = who;
@@ -3604,6 +3632,8 @@
           h('div', { class: 'menu-panel' },
             h('div', { class: 'menu-head' }, h('strong', {}, S.me.name), h('div', { class: 'muted small' }, S.me.email)),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
+            (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
+            S.myOrgs && !S.myOrgs.length ? h('a', { href: '/academy/new', onclick: closeMenu }, 'Create an academy page') : null,
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
             h('button', { onclick: signOut }, 'Sign out'),
             h('div', { class: 'menu-theme' }, 'Theme', themeSwitch()))),
@@ -3761,14 +3791,409 @@
     btn);
   }
 
+  // ---------- academy, venue and club pages (tonament.com/@slug)
+  const ORG_KINDS = [
+    { value: 'academy', label: 'Academy', icon: 'academy', hint: 'Coaching and training' },
+    { value: 'venue', label: 'Venue', icon: 'venue', hint: 'Courts to book and play' },
+    { value: 'club', label: 'Club', icon: 'club', hint: 'Members who play together' },
+  ];
+  const orgPrice = () => money((S.billing && S.billing.orgPrice) || 299900);
+  const fmtDate = (iso) => new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+  const orgPath = (slug) => `/orgs/${encodeURIComponent(slug)}`;
+
+  // The pages I belong to (for the account menu and the tournament picker).
+  async function loadMyOrgs() {
+    if (!S.me) { S.myOrgs = []; return; }
+    const who = S.me.id;
+    S.myOrgsFor = who;
+    const list = await api('GET', '/orgs/mine').catch(() => []);
+    if (!S.me || S.me.id !== who) return;
+    S.myOrgs = list;
+    navFor = null; // the menu shows "Your academy"
+    render();
+  }
+  const ensureMyOrgs = () => { if (S.me && S.myOrgsFor !== S.me.id) loadMyOrgs(); };
+
+  // Create: kind -> name and address -> sports, then the editor opens.
+  function viewOrgNew() {
+    document.title = 'Create your academy page · Tonament';
+    const d = (S.orgDraft ||= { step: 1, kind: null, name: '', slug: '', slugEdited: false, city: '', address: '', sports: [], check: null });
+    const go = (step) => { d.step = step; render(); window.scrollTo(0, 0); };
+    const head = h('div', { class: 'new-head' },
+      d.step > 1 ? h('button', { type: 'button', class: 'back-link', onclick: () => go(d.step - 1) }, '← Back') : h('span'),
+      h('span', { class: 'new-progress', 'aria-label': `Step ${d.step} of 3` }, `Step ${d.step} of 3`,
+        h('span', { class: 'dots', 'aria-hidden': 'true' }, [1, 2, 3].map((n) => h('span', { class: n <= d.step ? 'on' : '' })))));
+
+    if (d.step === 1) {
+      return h('div', { class: 'card new-flow' }, head,
+        h('h1', {}, 'Your page on Tonament'),
+        h('p', { class: 'muted' }, `A page of your own at tonament.com/@yourname: your profile, contact buttons, courts and coaching, photos and every tournament you run. ${orgPrice()} a year — build it free, pay when you publish.`),
+        h('h2', {}, 'What are you?'),
+        choiceGroup({
+          name: 'kind', label: 'Kind', value: d.kind, tiles: true, options: ORG_KINDS,
+          onchange: (e) => { d.kind = e.target.value; go(2); },
+        }));
+    }
+
+    if (d.step === 2) {
+      const kindName = ORG_KINDS.find((k) => k.value === d.kind).label.toLowerCase();
+      const status = h('small', { class: 'hint slug-status', 'aria-live': 'polite' });
+      const slugInput = h('input', { name: 'slug', required: true, maxlength: 30, value: d.slug, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Page address' });
+      const next = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Next');
+      let timer;
+      const check = () => {
+        clearTimeout(timer);
+        const value = slugInput.value.trim();
+        if (!value) { status.textContent = ''; return; }
+        timer = setTimeout(async () => {
+          const r = await api('GET', `/orgs/slug?name=${encodeURIComponent(value)}`).catch(() => null);
+          if (!r || slugInput.value.trim() !== value) return;
+          d.check = r;
+          if (r.slug !== value && !d.slugEdited) slugInput.value = r.slug;
+          status.textContent = r.available ? `✓ tonament.com/@${r.slug} is free` : `tonament.com/@${r.slug}: ${r.reason}`;
+          status.className = `hint slug-status ${r.available ? 'ok' : 'bad'}`;
+        }, 250);
+      };
+      const slugify = (s) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/g, '');
+      const form = h('form', {
+        class: 'card new-flow form',
+        onsubmit: (e) => {
+          e.preventDefault();
+          const fd = new FormData(form);
+          Object.assign(d, { name: fd.get('name').trim(), slug: slugify(fd.get('slug')), city: fd.get('city').trim(), address: fd.get('address').trim() });
+          if (d.check && d.check.slug === d.slug && !d.check.available) { toast(`tonament.com/@${d.slug}: ${d.check.reason}`, true); return; }
+          go(3);
+        },
+      }, head,
+      h('h2', {}, `About your ${kindName}`),
+      field('Name', h('input', {
+        name: 'name', required: true, maxlength: 80, value: d.name, autocomplete: 'off', placeholder: d.kind === 'venue' ? 'e.g. Smashpoint Sports Arena' : 'e.g. Smashpoint Badminton Academy',
+        oninput: (e) => { d.name = e.target.value; if (!d.slugEdited) { slugInput.value = slugify(e.target.value); d.slug = slugInput.value; check(); } },
+      })),
+      field('Page address', h('div', { class: 'slug-input' }, h('span', { class: 'muted' }, 'tonament.com/@'), slugInput), null, null),
+      status,
+      h('div', { class: 'grid-2' },
+        field('City', h('input', { name: 'city', required: true, maxlength: 60, value: d.city, list: 'org-cities', autocomplete: 'address-level2' })),
+        field('Area or street (optional)', h('input', { name: 'address', maxlength: 160, value: d.address, autocomplete: 'street-address' }))),
+      h('datalist', { id: 'org-cities' }, cityOptions(REGIONS.defaultCountry).map((c) => h('option', { value: c }))),
+      h('div', { class: 'actions' }, next));
+      slugInput.addEventListener('input', () => { d.slugEdited = true; d.slug = slugInput.value; check(); });
+      if (d.slug) check();
+      return form;
+    }
+
+    const live = liveSports();
+    const create = h('button', { type: 'button', class: 'btn btn-primary btn-lg', disabled: !d.sports.length }, 'Create my page');
+    const picks = choiceGroup({
+      name: 'sports', label: 'Sports', value: d.sports, multiple: true, tiles: true,
+      options: S.sports.map((x) => ({ value: x.id, label: x.name, icon: x.id })),
+      onchange: () => {
+        d.sports = [...picks.querySelectorAll('input:checked')].map((x) => x.value);
+        create.disabled = !d.sports.length;
+      },
+    });
+    create.onclick = async () => {
+      create.disabled = true;
+      try {
+        const o = await api('POST', '/orgs', { kind: d.kind, name: d.name, slug: d.slug, city: d.city, address: d.address, country: REGIONS.defaultCountry, sports: d.sports });
+        S.orgDraft = null;
+        S.org = o;
+        S.myOrgsFor = null;
+        toast('Page created — add your details, then publish');
+        navigate(`/@${o.slug}/edit`);
+      } catch (err) {
+        toast(err.message, true);
+        create.disabled = false;
+        if (err.status === 409 || /address/i.test(err.message)) go(2);
+      }
+    };
+    return h('div', { class: 'card new-flow' }, head,
+      h('h2', {}, 'Which sports?'),
+      h('p', { class: 'muted small' }, `Tap all that ${d.name || 'you'} ${d.kind === 'venue' ? 'has courts for' : 'offers'}.`),
+      picks,
+      live.length < S.sports.length ? h('p', { class: 'muted small' }, 'Tournaments run for the sports marked live; the rest can still be on your page.') : null,
+      h('div', { class: 'actions' }, create));
+  }
+
+  // The editor: status and payment, then a panel per part of the page.
+  function viewOrgEdit() {
+    const o = S.org;
+    if (!o) return loading();
+    document.title = `${o.name} · Edit page · Tonament`;
+    if (!o.can.edit) return errorView('Only this page\'s team can edit it.');
+    const key = { id: `org-${o.slug}` }; // panels remember which are open
+    const pageUrl = `${location.origin}/@${o.slug}`;
+    const save = (form, body, msg) => saveForm(form, async () => { S.org = await api('PATCH', orgPath(o.slug), body); }, msg);
+
+    // Status: draft, live, in its grace period or hidden.
+    const now = Date.now();
+    const paidUntil = o.paidUntil ? Date.parse(o.paidUntil) : null;
+    const state = !paidUntil ? 'draft' : o.live ? 'live' : o.public ? 'grace' : 'lapsed';
+    const pay = async () => {
+      if (S.paying) return;
+      S.paying = true;
+      render();
+      try {
+        const order = await api('POST', `${orgPath(o.slug)}/checkout`, {});
+        const result = await payEntry(order);
+        if (result === 'paid') {
+          S.org = await api('GET', orgPath(o.slug));
+          S.myOrgsFor = null;
+          toast(state === 'draft' ? 'Paid — your page is live ✓' : 'Paid — renewed for another year ✓');
+        } else if (result === 'failed') toast('The payment didn\'t go through — nothing was charged', true);
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        S.paying = false;
+        render();
+      }
+    };
+    const payBtn = (label) => (o.can.own
+      ? h('button', { class: 'btn btn-primary', disabled: S.paying || null, onclick: pay }, S.paying ? 'Opening payment…' : label)
+      : h('p', { class: 'muted small' }, 'Only the page owner can pay.'));
+    const soon = paidUntil && paidUntil - now < 30 * 86400000;
+    const status = h('div', { class: `card org-status ${state}` },
+      state === 'draft' ? [
+        h('h2', {}, 'Draft · only your team can see it'),
+        h('p', { class: 'muted small' }, `Publish to put it on tonament.com/@${o.slug}, in search results and on Google. ${orgPrice()} for a year.`),
+        h('div', { class: 'actions' }, payBtn(`Publish for ${orgPrice()}/year`)),
+      ] : state === 'live' ? [
+        h('h2', {}, `Live · until ${fmtDate(o.paidUntil)}`),
+        h('p', { class: 'muted small' }, soon ? 'Renew now: the new year starts when this one ends.' : 'Renewing early adds a year to the end.'),
+        h('div', { class: 'actions' }, soon ? payBtn(`Renew for ${orgPrice()}`) : (o.can.own ? h('button', { class: 'btn btn-small', disabled: S.paying || null, onclick: pay }, `Renew early · ${orgPrice()}`) : null)),
+      ] : state === 'grace' ? [
+        h('h2', {}, `Expired on ${fmtDate(o.paidUntil)}`),
+        h('p', { class: 'muted small' }, `Still public until ${fmtDate(o.graceUntil)}. Renew to keep it up.`),
+        h('div', { class: 'actions' }, payBtn(`Renew for ${orgPrice()}`)),
+      ] : [
+        h('h2', {}, 'Hidden · the year has ended'),
+        h('p', { class: 'muted small' }, `It expired on ${fmtDate(o.paidUntil)}. Your details and photos are kept — renew to publish it again.`),
+        h('div', { class: 'actions' }, payBtn(`Renew for ${orgPrice()}`)),
+      ],
+      o.brandingIncluded ? h('p', { class: 'hint org-perk' }, '✓ Includes your branding on every tournament linked to this page: logo, sponsors and your name on the venue display.') : null);
+
+    // Profile: name, kind, sports, about.
+    const profile = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(profile);
+        save(profile, { name: fd.get('name'), kind: fd.get('kind'), sports: fd.getAll('sports'), about: fd.get('about') }, 'Profile saved');
+      },
+    },
+    field('Name', h('input', { name: 'name', required: true, maxlength: 80, value: o.name })),
+    groupField('Kind', choiceGroup({ name: 'kind', label: 'Kind', value: o.kind, options: ORG_KINDS.map((k) => ({ value: k.value, label: k.label, icon: k.icon })) })),
+    groupField('Sports', choiceGroup({ name: 'sports', label: 'Sports', value: o.sports.map((x) => x.id), multiple: true, options: S.sports.map((x) => ({ value: x.id, label: x.name, icon: x.id })) })),
+    field('About', h('textarea', { name: 'about', rows: 6, maxlength: 3000, value: o.about || '', placeholder: 'Who you are, since when, your coaches, achievements, what makes you different…' }), null, 'Links become clickable. Up to 3,000 characters.'),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
+
+    // Contact and location: the buttons on the page.
+    const L = o.location;
+    const C = o.contact;
+    const contact = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(contact);
+        const body = Object.fromEntries(['phone', 'whatsapp', 'email', 'website', 'instagram', 'address', 'city', 'region', 'postcode'].map((k) => [k, fd.get(k) || '']));
+        save(contact, body, 'Contact details saved');
+      },
+    },
+    h('div', { class: 'grid-2' },
+      field('Phone', h('input', { name: 'phone', type: 'tel', maxlength: 20, value: C.phone || '', autocomplete: 'tel' }), null, 'Shown as a Call button.'),
+      field('WhatsApp', h('input', { name: 'whatsapp', type: 'tel', maxlength: 20, value: C.whatsapp || '', placeholder: '+91…' }), null, 'Players can message you in one tap.')),
+    h('div', { class: 'grid-2' },
+      field('Email', h('input', { name: 'email', type: 'email', maxlength: 120, value: C.email || '' })),
+      field('Website', h('input', { name: 'website', maxlength: 200, value: C.website || '', placeholder: 'yoursite.com' }))),
+    field('Instagram', h('input', { name: 'instagram', maxlength: 120, value: C.instagram ? `@${C.instagram}` : '', placeholder: '@yourhandle' })),
+    field('Address', h('input', { name: 'address', maxlength: 160, value: L.address || '', autocomplete: 'street-address' }), null, 'Used for the Directions button (Google Maps).'),
+    h('div', { class: 'grid-2' },
+      field('City', h('input', { name: 'city', maxlength: 60, value: L.city || '', list: 'org-cities' })),
+      field('State', h('input', { name: 'region', maxlength: 60, value: L.region || '' }))),
+    field('PIN code', h('input', { name: 'postcode', maxlength: 12, value: L.postcode || '', inputmode: 'numeric' }), 'narrow'),
+    h('datalist', { id: 'org-cities' }, cityOptions(REGIONS.defaultCountry).map((c) => h('option', { value: c }))),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
+
+    const courts = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(courts);
+        save(courts, { courts: fd.get('courts'), timings: fd.get('timings') }, 'Courts and timings saved');
+      },
+    },
+    field('Courts', h('textarea', { name: 'courts', rows: 2, maxlength: 300, value: o.courts || '', placeholder: 'e.g. 6 wooden courts with mats, 2 synthetic. Shuttles provided.' })),
+    field('Timings', h('textarea', { name: 'timings', rows: 2, maxlength: 300, value: o.timings || '', placeholder: 'e.g. Mon–Sat 5–10 am and 4–10 pm, Sun 6 am–12 pm' })),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
+
+    // Coaching programmes: a short list of cards.
+    const coachRow = (c = {}) => h('li', { class: 'coach-row' },
+      h('div', { class: 'grid-2' },
+        field('Programme', h('input', { 'data-k': 'title', maxlength: 80, value: c.title || '', placeholder: 'e.g. Beginners batch' })),
+        field('Who it\'s for', h('input', { 'data-k': 'who', maxlength: 120, value: c.who || '', placeholder: 'e.g. Ages 6–12' }))),
+      h('div', { class: 'grid-2' },
+        field('When', h('input', { 'data-k': 'when', maxlength: 120, value: c.when || '', placeholder: 'e.g. Mon, Wed, Fri 5–6 pm' })),
+        field('Fee', h('input', { 'data-k': 'fee', maxlength: 60, value: c.fee || '', placeholder: 'e.g. ₹3,000/month' }))),
+      h('button', { type: 'button', class: 'btn btn-small btn-ghost', onclick: (e) => { const f = e.target.form; e.target.closest('li').remove(); f.setAttribute('data-dirty', ''); syncAdd(f); } }, 'Remove'));
+    const coachList = h('ol', { class: 'coach-list' }, (o.coaching.length ? o.coaching : [{}]).map(coachRow));
+    const addBtn = h('button', { type: 'button', class: 'btn btn-small' }, '+ Add a programme');
+    const syncAdd = () => { addBtn.disabled = coachList.children.length >= 10; };
+    addBtn.onclick = () => { coachList.append(coachRow()); syncAdd(); coachList.lastChild.querySelector('input').focus(); };
+    syncAdd();
+    const coaching = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const list = [...coachList.children].map((li) => Object.fromEntries([...li.querySelectorAll('[data-k]')].map((x) => [x.dataset.k, x.value.trim()])))
+          .filter((c) => c.title || c.who || c.when || c.fee);
+        if (list.some((c) => !c.title)) { toast('Give each programme a name', true); return; }
+        save(coaching, { coaching: list }, 'Coaching saved');
+      },
+    }, coachList, h('div', { class: 'actions' }, addBtn, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
+
+    // Logo, cover and photos upload as soon as they're chosen.
+    const upload = (kind, files) => {
+      const list = [...files];
+      if (!list.length) return;
+      S.uploading = (S.uploading || 0) + list.length;
+      render();
+      (async () => {
+        for (const file of list) {
+          try {
+            const data = await prepareImage(file, kind);
+            S.org = await api('POST', `${orgPath(o.slug)}/media`, { kind, data });
+            toast(kind === 'photo' ? 'Photo added ✓' : kind === 'cover' ? 'Cover updated ✓' : 'Logo updated ✓');
+          } catch (e) {
+            toast(e.message, true);
+          } finally {
+            S.uploading -= 1;
+            render();
+          }
+        }
+      })();
+    };
+    const fileButton = (label, kind, multiple, disabled) => h('label', { class: `btn btn-small${disabled ? ' disabled' : ''}` },
+      label,
+      h('input', { type: 'file', accept: 'image/*', multiple: multiple || null, hidden: true, disabled: disabled || null, onchange: (e) => { upload(kind, e.target.files); e.target.value = ''; } }));
+    const removeMedia = (id, msg) => act(async () => { S.org = await api('DELETE', `${orgPath(o.slug)}/media/${id}`); }, msg);
+    const limit = o.photoLimit || 24;
+    const photos = h('div', { class: 'form' },
+      h('fieldset', { class: 'details-set' }, h('legend', {}, 'Logo'),
+        h('div', { class: 'brand-row' },
+          o.logo ? h('img', { class: 'logo-preview', src: o.logo, alt: 'Logo' }) : h('span', { class: 'logo-preview empty' }, 'Logo'),
+          h('div', { class: 'actions' },
+            fileButton(o.logo ? 'Replace logo' : 'Upload logo', 'logo'),
+            o.logo ? h('button', { type: 'button', class: 'btn btn-small btn-ghost', onclick: () => removeMedia(o.logoId, 'Logo removed') }, 'Remove') : null))),
+      h('fieldset', { class: 'details-set' }, h('legend', {}, 'Cover photo'),
+        o.cover ? h('img', { class: 'cover-preview', src: o.cover, alt: 'Cover' }) : h('p', { class: 'hint', style: 'margin:0' }, 'A wide photo of your courts or players — across the top of the page.'),
+        h('div', { class: 'actions' },
+          fileButton(o.cover ? 'Replace cover' : 'Upload cover', 'cover'),
+          o.cover ? h('button', { type: 'button', class: 'btn btn-small btn-ghost', onclick: () => removeMedia(o.coverId, 'Cover removed') }, 'Remove') : null)),
+      h('fieldset', { class: 'details-set' }, h('legend', {}, `Gallery (${o.photos.length} of ${limit})`),
+        o.photos.length
+          ? h('ul', { class: 'org-photo-grid' }, o.photos.map((p) => h('li', {},
+            h('img', { src: p.url, alt: p.caption || '' }),
+            h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Delete photo', onclick: () => confirm('Delete this photo?') && removeMedia(p.id, 'Photo deleted') }, '✕'))))
+          : h('p', { class: 'hint', style: 'margin:0' }, 'Courts, coaching sessions, tournaments, trophies.'),
+        h('div', { class: 'actions' }, fileButton('Add photos', 'photo', true, o.photos.length >= limit))),
+      S.uploading ? h('p', { class: 'hint uploading', role: 'status' }, `Uploading ${S.uploading} image${S.uploading > 1 ? 's' : ''}…`) : null);
+
+    // Team: the owner adds editors by email.
+    const emailInput = h('input', { name: 'email', type: 'email', required: true, placeholder: 'name@example.com', autocomplete: 'off', 'aria-label': 'Email' });
+    const team = h('div', { class: 'form' },
+      h('ul', { class: 'members' }, (o.members || []).map((m) => h('li', {},
+        h('div', { class: 'name' }, m.email),
+        pill(m.role === 'owner' ? 'org' : '', m.role === 'owner' ? 'Owner' : 'Editor'),
+        o.can.own && m.role !== 'owner' ? h('button', {
+          class: 'icon-btn', 'aria-label': `Remove ${m.email}`,
+          onclick: () => confirm(`Remove ${m.email}?`) && act(async () => { S.org = await api('DELETE', `${orgPath(o.slug)}/members/${encodeURIComponent(m.email)}`); }, 'Removed'),
+        }, '✕') : null))),
+      o.can.own ? h('form', {
+        class: 'team-form',
+        onsubmit: (e) => {
+          e.preventDefault();
+          const email = emailInput.value;
+          act(async () => { S.org = await api('POST', `${orgPath(o.slug)}/members`, { email }); }, `${email} can now edit this page`);
+        },
+      }, emailInput, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add editor')) : null,
+      h('p', { class: 'hint', style: 'margin:0' }, 'Editors can change the page and link their tournaments to it. Only the owner pays and manages the team.'));
+
+    // Tournaments: linked ones, and a quick way to link more.
+    if (S.mine === undefined || S.mineFor !== S.me.id) {
+      S.mineFor = S.me.id;
+      S.mine = null;
+      api('GET', '/me/tournaments').then((l) => { S.mine = l; render(); }, () => { S.mine = []; render(); });
+    }
+    const linked = new Set(o.tournaments.map((t) => t.id));
+    const unlinked = (S.mine || []).filter((t) => !linked.has(t.id) && ['owner', 'organiser'].includes(t.role));
+    const link = (id, slug, msg) => act(async () => { await api('POST', `/tournaments/${encodeURIComponent(id)}/org`, { org: slug }, id); S.org = await api('GET', orgPath(o.slug)); }, msg);
+    const picker = h('select', { 'aria-label': 'Tournament to add' }, h('option', { value: '' }, 'Choose a tournament…'), unlinked.map((t) => h('option', { value: t.id }, t.name)));
+    const tournaments = h('div', { class: 'card' },
+      h('h2', {}, `Tournaments (${o.tournaments.length})`),
+      h('p', { class: 'muted small' }, 'Public tournaments linked here show on your page: upcoming ones first, then live and past results.'),
+      o.tournaments.length ? h('ul', { class: 'org-t-list' }, o.tournaments.map((t) => h('li', {},
+        h('a', { href: `/t/${t.id}` }, t.name),
+        h('span', { class: 'muted small' }, [fmtSchedule(t), t.visibility === 'public' ? null : 'not public — hidden on the page'].filter(Boolean).join(' · ')),
+        h('button', { class: 'btn btn-small btn-ghost', onclick: () => link(t.id, null, `${t.name} removed from the page`) }, 'Remove')))) : null,
+      unlinked.length ? h('div', { class: 'search-row' }, picker,
+        h('button', { class: 'btn btn-primary', onclick: () => picker.value && link(picker.value, o.slug, 'Added to your page') }, 'Add')) : null,
+      h('p', { class: 'hint', style: 'margin:0' }, unlinked.length ? 'Or link one from its Team tab.' : h('span', {}, 'New tournaments can be linked from their Team tab. ', h('a', { href: '/new' }, 'Create a tournament'))));
+
+    return [
+      h('div', { class: 'org-edit-head' },
+        o.logo ? h('img', { class: 'org-edit-logo', src: o.logo, alt: '' }) : null,
+        h('div', { class: 'org-edit-title' },
+          h('h1', {}, o.name),
+          h('p', { class: 'muted small' }, [`tonament.com/@${o.slug}`, o.kindName, o.location.city].filter(Boolean).join(' · '))),
+        h('div', { class: 'actions' },
+          h('a', { class: 'btn btn-small', href: o.public ? `/@${o.slug}` : `/@${o.slug}?preview=1`, target: '_blank', rel: 'noopener' }, o.public ? 'View page' : 'Preview'),
+          o.public ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => copy(pageUrl, 'Link copied') }, 'Copy link') : null)),
+      status,
+      panel(key, 'profile', 'Profile · name, sports, about', profile),
+      panel(key, 'photos', `Logo and photos · ${[o.logo ? 'logo' : null, o.cover ? 'cover' : null, `${o.photos.length} photo${o.photos.length === 1 ? '' : 's'}`].filter(Boolean).join(', ')}`, photos),
+      panel(key, 'contact', 'Contact and location · WhatsApp, call, directions', contact),
+      panel(key, 'courts', 'Courts and timings', courts),
+      panel(key, 'coaching', `Coaching programmes${o.coaching.length ? ` · ${o.coaching.length}` : ''}`, coaching),
+      tournaments,
+      panel(key, 'team', `Team · ${(o.members || []).length} ${(o.members || []).length === 1 ? 'person' : 'people'}`, team),
+    ];
+  }
+
+  // On a tournament's Team tab: show it on one of my academy pages.
+  function orgLinkCard(t) {
+    if (!t.can.manage) return null;
+    ensureMyOrgs();
+    const mine = S.myOrgs || [];
+    if (!mine.length && !t.org) {
+      return h('div', { class: 'card' },
+        h('h2', {}, 'Academy page'),
+        h('p', { class: 'muted small' }, `Run an academy, venue or club? Get a page of your own at tonament.com/@yourname with all your tournaments, contact buttons, coaching and photos — ${orgPrice()} a year.`),
+        h('div', { class: 'actions' }, h('a', { class: 'btn btn-small', href: '/academy/new' }, 'Create your page')));
+    }
+    const link = (slug) => act(async () => {
+      const r = await api('POST', `${tPath(t)}/org`, { org: slug || null }, t.id);
+      await load(t.id);
+      toast(r.org ? `Shown on ${r.org.name}'s page` : 'Removed from the academy page');
+    });
+    const options = [{ value: '', label: 'None' }, ...mine.map((x) => ({ value: x.slug, label: x.name }))];
+    if (t.org && !mine.some((x) => x.slug === t.org.slug)) options.push({ value: t.org.slug, label: t.org.name, disabled: true });
+    return h('div', { class: 'card' },
+      h('h2', {}, 'Academy page'),
+      h('p', { class: 'muted small' }, 'Show this tournament on your academy, venue or club page (when it\'s public).'),
+      choiceGroup({ name: 'org', label: 'Academy page', value: t.org ? t.org.slug : '', options, onchange: (e) => link(e.target.value) }),
+      t.org ? h('p', { class: 'hint' }, h('a', { href: `/@${t.org.slug}`, target: '_blank', rel: 'noopener' }, `tonament.com/@${t.org.slug}`)) : null);
+  }
+
   const PLAN_LABELS = { pass: 'Event Pass', club: 'Club', open: 'Open', championship: 'Championship' };
 
   // ---------- site admin dashboard (/admin?tab=…)
-  const ADMIN_TABS = [['overview', 'Overview'], ['tournaments', 'Tournaments'], ['users', 'Users'], ['payments', 'Payments']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['tournaments', 'Tournaments'], ['users', 'Users'], ['payments', 'Payments'], ['orgs', 'Academies'], ['settings', 'Settings']];
   const adminState = () => (S.admin ||= {
     tournaments: { filters: {}, list: null, total: 0 },
     users: { q: '', list: null, total: 0, open: null, detail: null, reset: null },
     payments: { filters: {}, list: null, revenue: null, refund: null },
+    orgs: { q: '', list: null, siteBranding: false },
+    settings: null,
   });
   const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
 
@@ -3794,6 +4219,12 @@
         const r = await api('GET', `/admin/payments?${qs(P.filters)}`);
         P.list = r.payments;
         P.revenue = r.revenue;
+      } else if (tab === 'orgs') {
+        const r = await api('GET', `/admin/orgs?${qs({ q: A.orgs.q })}`);
+        A.orgs.list = r.orgs;
+        A.orgs.siteBranding = r.siteBranding;
+      } else if (tab === 'settings') {
+        A.settings = await api('GET', '/admin/settings');
       }
     } catch (e) {
       toast(e.message, true);
@@ -3805,7 +4236,7 @@
     document.title = 'Admin · Tonament';
     if (!S.me || !S.me.isAdmin) return errorView('Site admins only.');
     const tab = S.route.tab || 'overview';
-    const views = { overview: adminOverview, tournaments: adminTournaments, users: adminUsers, payments: adminPayments };
+    const views = { overview: adminOverview, tournaments: adminTournaments, users: adminUsers, payments: adminPayments, orgs: adminOrgs, settings: adminSettingsTab };
     return [
       h('h1', {}, 'Admin'),
       h('nav', { class: 'tabs' }, ADMIN_TABS.map(([id, label]) => h('a', { href: `/admin?tab=${id}`, class: id === tab ? 'active' : '' }, label))),
@@ -3878,7 +4309,12 @@
     'user.enable': (x) => `enabled ${x.target}`,
     'user.reset': (x) => `reset link for ${x.target}`,
     'user.delete': (x) => `deleted account ${x.target}`,
-    'payment.refund': (x) => `refunded ${money(x.detail.amount)} · ${x.detail.tournament}${x.detail.plan ? ` (now ${PLAN_LABELS[x.detail.plan] || 'Free'})` : ''}`,
+    'payment.refund': (x) => `refunded ${money(x.detail.amount)} · ${x.detail.tournament}${x.detail.plan === 'org' ? ' (year taken back)' : x.detail.plan ? ` (now ${PLAN_LABELS[x.detail.plan] || 'Free'})` : ''}`,
+    'org.branding': (x) => `academy branding ${x.detail.to == null ? 'follows the site' : x.detail.to ? 'included' : 'not included'} · ${x.detail.name}`,
+    'org.extend': (x) => `added ${x.detail.days} days · ${x.detail.name}`,
+    'org.unpublish': (x) => `unpublished academy page · ${x.detail.name}`,
+    'org.delete': (x) => `deleted academy page ${x.detail.name}`,
+    'setting.change': (x) => `${x.target === 'orgIncludesBranding' ? 'academy pages include branding' : x.target}: ${x.detail.to ? 'on' : 'off'}`,
   };
 
   function adminOverview() {
@@ -4043,7 +4479,7 @@
         options: [{ value: '', label: 'All' }, { value: 'paid', label: 'Paid' }, { value: 'partial', label: 'Part refunded' }, { value: 'refunded', label: 'Refunded' }, { value: 'created', label: 'Started' }, { value: 'failed', label: 'Failed' }],
         onchange: (e) => set('status', e.target.value) })),
       groupField('For', choiceGroup({ name: 'f-kind', label: 'For', value: P.filters.kind || '',
-        options: [{ value: '', label: 'All' }, { value: 'plan', label: 'Plans' }, { value: 'entry', label: 'Entry fees' }], onchange: (e) => set('kind', e.target.value) })),
+        options: [{ value: '', label: 'All' }, { value: 'plan', label: 'Plans' }, { value: 'entry', label: 'Entry fees' }, { value: 'org', label: 'Academy pages' }], onchange: (e) => set('kind', e.target.value) })),
       h('div', { class: 'grid-2' }, date('from', 'From'), date('to', 'To')));
     if (!P.list) return [filters, loading()];
 
@@ -4061,16 +4497,17 @@
           e.preventDefault();
           const paise = Math.round(Number(amount.value) * 100);
           act(async () => {
-            const r = await api('POST', `/admin/payments/${p.id}/refund`, { amount: paise, downgrade: p.kind === 'plan' && down.checked });
+            const r = await api('POST', `/admin/payments/${p.id}/refund`, { amount: paise, downgrade: ['plan', 'org'].includes(p.kind) && down.checked });
             P.refund = null;
             await adminLoad('payments');
-            if (r.plan) toast(`Refunded ${money(paise)} — ${p.tournamentName} is now on ${PLAN_LABELS[r.plan] || 'Free'}`);
+            if (r.plan && r.plan !== 'org') toast(`Refunded ${money(paise)} — ${p.tournamentName} is now on ${PLAN_LABELS[r.plan] || 'Free'}`);
           }, `Refunded ${money(paise)}`);
         },
       },
       h('h3', {}, `Refund ${p.tournamentName}`),
       h('p', { class: 'muted small' }, `${money(p.amount)} paid by ${p.email || 'unknown'}${p.refundedAmount ? `, ${money(p.refundedAmount)} already refunded` : ''}. The money goes back through Razorpay to how they paid.`),
       field('Amount to refund (₹)', amount, null, `Up to ${money(left)}.`),
+      p.kind === 'org' ? h('label', { class: 'check-field' }, down, h('span', {}, h('strong', {}, 'Also take the year away'), h('small', {}, 'Their page loses a year of paid time (and goes down if that was all of it).'))) : null,
       p.kind === 'plan' ? h('label', { class: 'check-field' }, down, h('span', {}, h('strong', {}, 'Also take the plan away'), h('small', {}, 'The tournament goes back to the plan it still has paid for, or Free.'))) : null,
       h('div', { class: 'actions' },
         h('button', { class: 'btn btn-primary', type: 'submit' }, 'Refund'),
@@ -4088,7 +4525,7 @@
           h('td', {}, new Date(p.paidAt || p.createdAt).toLocaleDateString()),
           h('td', { class: 'name' }, p.tournamentId ? h('a', { href: `/t/${p.tournamentId}` }, p.tournamentName) : p.tournamentName),
           h('td', {}, p.email || '—'),
-          h('td', {}, p.kind === 'entry' ? `Entry · ${p.eventName || ''}${p.player ? ` (${p.player})` : ''}` : PLAN_LABELS[p.tier || 'pass'] || p.tier),
+          h('td', {}, p.kind === 'entry' ? `Entry · ${p.eventName || ''}${p.player ? ` (${p.player})` : ''}` : p.kind === 'org' ? 'Academy page · 1 year' : PLAN_LABELS[p.tier || 'pass'] || p.tier),
           h('td', { class: 'num' }, money(p.amount)),
           h('td', { class: 'num' }, p.refundedAmount ? money(p.refundedAmount) : '—'),
           h('td', {}, statusPill(p)),
@@ -4098,9 +4535,73 @@
             : null))))))) : empty('No payments match.')];
   }
 
+  // ----- academy pages: branding, extend, unpublish, delete
+  function adminOrgs() {
+    const O = adminState().orgs;
+    const search = h('input', { type: 'search', value: O.q, placeholder: 'Name, address or city', 'aria-label': 'Search academy pages' });
+    const filters = h('form', { class: 'card admin-filters', onsubmit: (e) => { e.preventDefault(); O.q = search.value.trim(); adminLoad('orgs'); } },
+      h('div', { class: 'search-row' }, search, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Search')));
+    if (!O.list) return [filters, loading()];
+    const update = (o, body, msg) => act(async () => { await api('PATCH', `/admin/orgs/${o.id}`, body); await adminLoad('orgs'); }, msg);
+    const row = (o) => {
+      const state = !o.paidUntil ? pill('waiting', 'Draft') : o.live ? pill('done', `Live until ${fmtDate(o.paidUntil)}`) : o.public ? pill('waiting', `Expired ${fmtDate(o.paidUntil)} · grace`) : pill('withdrawn', `Hidden since ${fmtDate(o.paidUntil)}`);
+      const extend = () => {
+        const days = prompt(`Give ${o.name} extra days (e.g. 30, or 365 for a year). Counts from today or from the end of their paid time, whichever is later.`, '30');
+        if (days == null) return;
+        if (!/^-?\d+$/.test(days.trim()) || !Number(days)) { toast('Enter a number of days', true); return; }
+        update(o, { extendDays: Number(days) }, `${o.name}: ${Number(days)} days added`);
+      };
+      const remove = () => {
+        const typed = prompt(`Delete the page for "${o.name}"? Its tournaments are kept. This can't be undone.\n\nType the name to confirm:`);
+        if (typed == null) return;
+        if (typed.trim() !== o.name) { toast('The name didn\'t match — nothing was deleted', true); return; }
+        act(async () => { await api('DELETE', `/admin/orgs/${o.id}`); O.list = O.list.filter((x) => x.id !== o.id); }, `${o.name} deleted`);
+      };
+      return h('li', { class: 'card admin-row' },
+        h('div', { class: 'admin-row-head' },
+          h('div', {},
+            h('a', { href: o.public ? `/@${o.slug}` : `/@${o.slug}/edit`, class: 'admin-name' }, o.name),
+            h('div', { class: 'muted small' }, [`@${o.slug}`, o.kindName, o.city, o.owner || 'No owner', `${o.tournaments} tournament${o.tournaments === 1 ? '' : 's'}`, `created ${new Date(o.createdAt).toLocaleDateString()}`].filter(Boolean).join(' · '))),
+          h('span', { class: 'admin-pills' }, state)),
+        groupField('Tournament branding', choiceGroup({
+          name: `branding-${o.id}`, label: `Tournament branding for ${o.name}`, value: o.brandingOverride == null ? 'site' : String(o.brandingOverride),
+          options: [
+            { value: 'site', label: `Site default (${O.siteBranding ? 'included' : 'not included'})` },
+            { value: 'true', label: 'Included' },
+            { value: 'false', label: 'Not included' },
+          ],
+          onchange: (e) => update(o, { brandingOverride: e.target.value === 'site' ? null : e.target.value === 'true' }, `${o.name}: branding ${e.target.value === 'site' ? 'follows the site setting' : e.target.value === 'true' ? 'included' : 'not included'}`),
+        }), null, o.brandingIncluded ? 'Their linked tournaments get logo, sponsors and the organiser-led display now.' : o.live ? null : 'Only applies while the page is paid for.'),
+        h('div', { class: 'actions admin-actions' },
+          h('button', { class: 'btn btn-small', onclick: extend }, 'Add days'),
+          o.public ? h('button', { class: 'btn btn-small', onclick: () => confirm(`Take ${o.name}'s page down now? They can renew to publish it again.`) && update(o, { unpublish: true }, `${o.name} unpublished`) }, 'Unpublish') : null,
+          h('button', { class: 'btn btn-small btn-ghost danger', onclick: remove }, 'Delete')));
+    };
+    return [filters,
+      h('p', { class: 'muted small' }, `${O.list.length} page${O.list.length === 1 ? '' : 's'}${O.list.length >= 200 ? ' (first 200)' : ''}`),
+      O.list.length ? h('ul', { class: 'admin-list' }, O.list.map(row)) : empty('No academy pages yet.')];
+  }
+
+  // ----- site settings
+  function adminSettingsTab() {
+    const A = adminState();
+    if (!A.settings) return loading();
+    const toggle = (key, on, msg) => act(async () => { A.settings = await api('PATCH', '/admin/settings', { [key]: on }); }, msg);
+    return h('div', { class: 'card settings-card' },
+      h('h2', {}, 'Academy pages'),
+      h('label', { class: 'check-field switch-field' },
+        h('input', { type: 'checkbox', role: 'switch', checked: A.settings.orgIncludesBranding, onchange: (e) => toggle('orgIncludesBranding', e.target.checked, e.target.checked ? 'Academy pages now include tournament branding' : 'Academy pages no longer include tournament branding') }),
+        h('span', {},
+          h('strong', {}, 'Academy page includes branding on all their tournaments'),
+          h('small', {}, A.settings.orgIncludesBranding
+            ? 'On: every tournament linked to a paid academy page gets the logo, sponsors and organiser-led venue display, without buying Open. Entry limits still follow the tournament\'s plan.'
+            : 'Off: tournaments need their own Open or Championship plan for branding, even when linked to an academy page.'))),
+      h('p', { class: 'hint' }, 'You can override this for a single academy on the Academies tab. Changes show within a minute and are recorded in the admin log.'));
+  }
+
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|signin$|signup$|forgot$|reset$|admin$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|signin$|signup$|forgot$|reset$|admin$|academy\/new$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

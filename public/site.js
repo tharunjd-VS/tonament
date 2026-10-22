@@ -33,6 +33,8 @@
         var t = tiers[el.getAttribute('data-tier-limit')];
         if (t) el.textContent = String(t.limit);
       });
+      if (cfg.orgPrice) document.querySelectorAll('[data-org-price]').forEach(function (el) { el.textContent = inr(cfg.orgPrice); });
+      document.querySelectorAll('[data-org-branding]').forEach(function (el) { el.hidden = !cfg.orgIncludesBranding; });
       document.querySelectorAll('[data-tier-diff]').forEach(function (el) {
         var ids = el.getAttribute('data-tier-diff').split(':');
         if (tiers[ids[0]] && tiers[ids[1]]) el.textContent = inr(tiers[ids[1]].price - tiers[ids[0]].price);
