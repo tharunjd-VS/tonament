@@ -1,5 +1,7 @@
 # What will get people hooked: an honest assessment (22 Oct 2026)
 
+> **Superseded:** the latest, simplified plan is in `ECOSYSTEM.md`, and the reasoning behind every cut is in `REVIEW.md`. This file is kept for history.
+
 ## The core truth: habit comes from frequency
 - **Tournaments are rare.** An organiser runs a few a year; a keen player enters one every month or two. However good the tournament tools are, they're opened only occasionally.
 - **What happens every day:** casual-competitive play. The morning group, the club night, the academy batch. Whatever owns that daily moment becomes the app people open every day.
