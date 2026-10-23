@@ -595,6 +595,14 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         return await tournamentPage(req, res, shared[1], shared[2], url.search.replace(/[?&]__path=[^&]*/, '').replace(/^&/, '?'));
       }
       if ((pathname === '/sitemap.xml' || pathname === '/api/sitemap') && read) return await sitemapXml(req, res);
+      // The app's own pages (/groups, /g/…, /signin, …). On Vercel they're
+      // rewritten here (/api/index?__path=app): with cleanUrls on, a rewrite
+      // straight to /index.html finds no file and 404s.
+      if (pathname === '/api/app' && read) {
+        const html = await fs.readFile(path.join(PUBLIC_DIR, 'index.html'));
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+        return res.end(req.method === 'HEAD' ? undefined : html);
+      }
       // Academy / venue pages: /@slug (on Vercel, /api/org/<slug>).
       const orgPath = pathname.match(/^\/(?:@|api\/org\/)([a-z0-9-]{3,30})\/?$/);
       if (orgPath && read) return await orgPage(req, res, orgPath[1], url.searchParams.has('preview'));

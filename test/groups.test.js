@@ -269,3 +269,16 @@ test('HTTP: group routes need sign-in; sign in with an emailed link', async () =
   // Unknown emails still "send" (no account enumeration); bad emails don't.
   assert.equal((await post('/api/auth/link', { email: 'nope' })).status, 400);
 });
+
+test('Vercel: the app\'s own pages are served by the function (cleanUrls breaks rewrites to /index.html)', async () => {
+  const cfg = require('../vercel.json');
+  const toFile = cfg.rewrites.filter((r) => r.destination.endsWith('.html'));
+  assert.deepEqual(toFile, [], 'with cleanUrls on, rewrite app pages to /api/index?__path=app instead');
+  for (const src of ['/g/:path*', '/groups', '/groups/:path*', '/me/profile', '/@:slug/edit']) {
+    assert.ok(cfg.rewrites.some((r) => r.source === src && r.destination === '/api/index?__path=app'), src);
+  }
+  const r = await fetch(`${base}/api/index?__path=app&path=some-group&join=abc`);
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-type'), /text\/html/);
+  assert.ok((await r.text()).includes('/app.js'));
+});

@@ -22,7 +22,7 @@
     },
     {
       "source": "/@:slug/edit",
-      "destination": "/index.html"
+      "destination": "/api/index?__path=app"
     },
     {
       "source": "/@:slug",
@@ -30,23 +30,23 @@
     },
     {
       "source": "/academy/new",
-      "destination": "/index.html"
+      "destination": "/api/index?__path=app"
     },
     {
       "source": "/me/profile",
-      "destination": "/index.html"
+      "destination": "/api/index?__path=app"
     },
     {
       "source": "/groups/:path*",
-      "destination": "/index.html"
+      "destination": "/api/index?__path=app"
     },
     {
       "source": "/groups",
-      "destination": "/index.html"
+      "destination": "/api/index?__path=app"
     },
     {
       "source": "/g/:path*",
-      "destination": "/index.html"
+      "destination": "/api/index?__path=app"
     },
     {
       "source": "/p/:handle",
@@ -62,7 +62,7 @@
     },
     {
       "source": "/:page(new|signin|signup|forgot|reset|link|admin)",
-      "destination": "/index.html"
+      "destination": "/api/index?__path=app"
     },
     {
       "source": "/api/:path*",
