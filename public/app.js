@@ -4621,6 +4621,14 @@
         h('ul', { class: 'org-t-list' }, p.rankings.map((r) => h('li', {},
           h('a', { href: `/rankings/${r.sport}/${r.category}` }, `#${r.rank} ${r.name}`),
           h('span', { class: 'muted small' }, [r.sportName, `${r.points} pts`, r.results > 6 ? `best 6 of ${r.results} results` : `${r.results} result${r.results === 1 ? '' : 's'}`, r.cityRank && r.city ? `#${r.cityRank} in ${r.city}` : null].filter(Boolean).join(' · ')))))) : null,
+      h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, 'Your groups'), h('a', { class: 'btn btn-small btn-ghost', href: '/groups/new' }, 'Create a group')),
+        (p.groups || []).length
+          ? h('ul', { class: 'org-t-list' }, p.groups.map((x) => h('li', {},
+            h('a', { href: `/g/${x.slug}` }, x.name),
+            h('span', { class: 'muted small' }, x.games
+              ? [x.sportName, `rating ${x.rating}`, x.rank ? `#${x.rank} of ${x.ranked}` : null, `${x.wins}–${x.games - x.wins}`].filter(Boolean).join(' · ')
+              : `${x.sportName} · no games yet`))))
+          : h('p', { class: 'muted small', style: 'margin:0' }, 'Play with the same people regularly? A group handles RSVPs, fair games and live scores — and gives everyone a rating.')),
       p.entries.length ? h('div', { class: 'card' }, h('h2', {}, 'Your entries'),
         h('ul', { class: 'org-t-list' }, p.entries.map((x) => h('li', {},
           h('a', { href: `/t/${x.tournamentId}` }, x.tournament),

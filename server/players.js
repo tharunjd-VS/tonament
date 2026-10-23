@@ -275,7 +275,33 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
         : null,
     };
   }
-  function summarise(results) {
+  // A player's group play: rating, record and place in each group they're in.
+  async function groupPlayOf(userId) {
+    const rows = await db.query(
+      `SELECT g.slug, g.name, g.sport, m.rating, m.games, m.wins,
+              (SELECT COUNT(*)::int + 1 FROM group_members x WHERE x.group_id = g.id AND x.status = 'active' AND x.games > 0 AND x.rating > m.rating) AS rank,
+              (SELECT COUNT(*)::int FROM group_members x WHERE x.group_id = g.id AND x.status = 'active' AND x.games > 0) AS ranked
+       FROM group_members m JOIN groups g ON g.id = m.group_id
+       WHERE m.user_id = $1 AND m.status = 'active' ORDER BY m.games DESC, g.name`,
+      [userId],
+    );
+    return rows.map((r) => ({ ...r, sportName: sports.get(r.sport)?.name || r.sport, rank: r.games ? r.rank : null }));
+  }
+  // For other people: totals per sport, without naming the (private) groups.
+  function groupPlayPublic(groups) {
+    const bySport = new Map();
+    for (const g of groups.filter((x) => x.games)) {
+      const s = bySport.get(g.sport) || { sport: g.sport, sportName: g.sportName, games: 0, wins: 0, rating: 0, top: false };
+      s.games += g.games;
+      s.wins += g.wins;
+      s.rating = Math.max(s.rating, g.rating);
+      s.top = s.top || (g.rank === 1 && g.ranked > 1);
+      bySport.set(g.sport, s);
+    }
+    return [...bySport.values()];
+  }
+
+  function summarise(results, groups = []) {
     const bySport = new Map();
     for (const r of results) {
       const s = bySport.get(r.sport) || { sport: r.sport, sportName: sports.get(r.sport)?.name || r.sport, won: 0, lost: 0, titles: 0, finals: 0, events: 0 };
@@ -283,6 +309,14 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
       if (r.finish === 'W') s.titles += 1;
       if (r.finish === 'F') s.finals += 1;
       bySport.set(r.sport, s);
+    }
+    // Confirmed group games count in the win–loss record too.
+    for (const g of groups.filter((x) => x.games)) {
+      const s = bySport.get(g.sport) || { sport: g.sport, sportName: g.sportName, won: 0, lost: 0, titles: 0, finals: 0, events: 0 };
+      s.won += g.wins;
+      s.lost += g.games - g.wins;
+      s.groupGames = (s.groupGames || 0) + g.games;
+      bySport.set(g.sport, s);
     }
     return [...bySport.values()];
   }
@@ -294,7 +328,11 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
     const own = viewer?.user?.id === u.id;
     if (!u.profile_public && !own) return null;
     const results = await resultsOf(u.email);
-    return { ...profileFields(u), public: u.profile_public, own, results, records: summarise(results), rankings: await positions(u) };
+    const groups = await groupPlayOf(u.id);
+    return {
+      ...profileFields(u), public: u.profile_public, own, results, records: summarise(results, groups), rankings: await positions(u),
+      groupPlay: own ? groups : groupPlayPublic(groups),
+    };
   }
 
   // The signed-in player's own profile, for the editor.
@@ -303,6 +341,7 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
     const [u] = await db.query('SELECT * FROM users WHERE id = $1', [actor.user.id]);
     u.handle = await ensureHandle(db.query, u);
     const results = await resultsOf(u.email, { all: true, userId: u.id });
+    const groups = await groupPlayOf(u.id);
     const upcoming = await db.query(
       `SELECT DISTINCT ON (e.id) e.id AS "entryId", t.id, t.name, t.starts_on AS "startsOn", ev.discipline, ev.gender, ev.age, ev.level, ev.name AS "eventName", e.user_id = $2 AS mine
        FROM entry_players ep JOIN entries e ON e.id = ep.entry_id JOIN tournaments t ON t.id = e.tournament_id JOIN events ev ON ev.id = e.event_id
@@ -315,8 +354,9 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
       sportIds: u.sports || [],
       duprConnect: dupr.enabled(),
       results,
-      records: summarise(results),
+      records: summarise(results, groups),
       rankings: await positions(u),
+      groups,
       entries: upcoming.map((x) => ({ entryId: x.entryId, tournamentId: x.id, tournament: x.name, startsOn: x.startsOn, mine: x.mine, event: catalog.eventName({ discipline: x.discipline, gender: x.gender, age: x.age, level: x.level, name: x.eventName }) })),
     };
   }

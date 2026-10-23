@@ -514,7 +514,16 @@ function playerHtml({ base, p }) {
     ? `<section><h2 class="features-title">Rankings</h2><div class="rank-chips">${p.rankings.map((r) => `<a class="rank-chip" href="/rankings/${esc(r.sport)}/${esc(r.category)}">
         <strong>#${r.rank}</strong><span>${esc(r.name)} · ${esc(r.sportName)}</span><small>${r.points} pts${r.cityRank && r.city ? ` · #${r.cityRank} in ${esc(r.city)}` : ''}</small></a>`).join('')}</div></section>` : '';
   const records = p.records.length
-    ? `<div class="stat-row">${p.records.map((r) => `<div class="stat"><span class="stat-label">${esc(r.sportName)}</span><strong>${r.won}–${r.lost}</strong><small>${r.titles ? `${r.titles} title${r.titles === 1 ? '' : 's'} · ` : ''}${r.events} event${r.events === 1 ? '' : 's'}</small></div>`).join('')}</div>` : '';
+    ? `<div class="stat-row">${p.records.map((r) => `<div class="stat"><span class="stat-label">${esc(r.sportName)}</span><strong>${r.won}–${r.lost}</strong><small>${[r.titles ? `${r.titles} title${r.titles === 1 ? '' : 's'}` : '', r.events ? `${r.events} tournament event${r.events === 1 ? '' : 's'}` : '', r.groupGames ? `${r.groupGames} group game${r.groupGames === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ')}</small></div>`).join('')}</div>` : '';
+  // Group play: the player sees each group; others see totals per sport (groups are private).
+  const played = (p.groupPlay || []).filter((g) => g.games);
+  const groupPlay = played.length
+    ? `<section><h2 class="features-title">Group play</h2><div class="rank-chips">${played.map((g) => (p.own
+      ? `<a class="rank-chip" href="/g/${esc(g.slug)}"><strong>${g.rating}</strong><span>${esc(g.name)} · ${esc(g.sportName)}</span><small>${g.rank ? `#${g.rank} of ${g.ranked} · ` : ''}${g.wins}–${g.games - g.wins} (${Math.round((g.wins / g.games) * 100)}%)</small></a>`
+      : `<div class="rank-chip"><strong>${g.rating}</strong><span>${esc(g.sportName)} group rating</span><small>${g.games} games · ${g.wins} wins (${Math.round((g.wins / g.games) * 100)}%)${g.top ? ' · #1 in their group' : ''}</small></div>`)).join('')}</div></section>` : '';
+  const missing = !p.photo && !p.city && !p.bio && !p.sports.length;
+  const setup = p.own && missing
+    ? `<div class="card setup-card"><h2>Finish your profile</h2><p class="muted">Add your city, sports, a photo and a line about you, so players can find you and know who they're playing.</p><p class="actions"><a class="btn btn-primary" href="/me/profile">Edit profile</a></p></div>` : '';
   const dupr = p.dupr ? `<p class="dupr-line"><span class="pill">DUPR</span> ${[p.dupr.doubles != null ? `Doubles <strong>${p.dupr.doubles.toFixed(3)}</strong>` : '', p.dupr.singles != null ? `Singles <strong>${p.dupr.singles.toFixed(3)}</strong>` : '', p.dupr.id ? `ID ${esc(p.dupr.id)}` : ''].filter(Boolean).join(' · ')}${p.dupr.verified ? '' : ' <small class="muted">self-reported</small>'}</p>` : '';
   const results = p.results.length
     ? `<section><h2 class="features-title">Results</h2><ol class="result-list">${p.results.map((r) => `<li>
@@ -523,7 +532,7 @@ function playerHtml({ base, p }) {
         <p class="muted small">${[esc(r.event), r.city ? esc(r.city) : '', shortDate(r.date), `${r.won}–${r.lost}`, r.points ? `${r.points} ranking pts` : ''].filter(Boolean).join(' · ')}</p>
         ${r.matches.length ? `<details><summary>Matches</summary><ul class="match-lines">${r.matches.map((m) => `<li><span class="${m.won ? 'won' : m.draw ? 'drew' : 'lost'}">${m.won ? 'W' : m.draw ? 'D' : 'L'}</span> ${esc(m.round)} v ${esc(m.opponent)} <span class="muted">${esc(m.score)}</span></li>`).join('')}</ul></details>` : ''}
       </li>`).join('')}</ol></section>`
-    : '<section><p class="muted">No results yet. Results from public tournaments on Tonament appear here.</p></section>';
+    : played.length ? '' : `<section><p class="muted">${p.own ? 'No results yet. Play in a group or enter a tournament — your games and results appear here.' : `${esc(p.name)} hasn't played rated games on Tonament yet.`}</p></section>`;
   const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <a href="/rankings">Rankings</a> › <span>${esc(p.name)}</span></nav>
     ${p.own && !p.public ? '<p class="banner">Only you can see this page — your profile is private. <a href="/me/profile">Change</a></p>' : ''}
     <section class="player-hero">
@@ -536,8 +545,10 @@ function playerHtml({ base, p }) {
         ${p.own ? '<p class="actions"><a class="btn btn-small" href="/me/profile">Edit profile</a></p>' : ''}
       </div>
     </section>
+    ${setup}
     ${p.bio ? `<section class="org-about">${String(p.bio).split('\n').filter(Boolean).map((x) => `<p>${esc(x)}</p>`).join('')}</section>` : ''}
     ${records}
+    ${groupPlay}
     ${rankings}
     ${results}
     <section class="hero hero-end">

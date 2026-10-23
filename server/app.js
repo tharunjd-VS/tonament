@@ -460,10 +460,10 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     return res.end(req.method === 'HEAD' ? undefined : html);
   }
 
-  const htmlHeaders = (cacheable) => ({
+  const htmlHeaders = (cacheable, seconds = 600) => ({
     'Content-Type': 'text/html; charset=utf-8',
-    'Cache-Control': cacheable ? 'public, max-age=0, s-maxage=600' : 'no-store',
-    ...(cacheable && { 'Vercel-CDN-Cache-Control': 'max-age=600, stale-while-revalidate=86400' }),
+    'Cache-Control': cacheable ? `public, max-age=0, s-maxage=${seconds}` : 'no-store',
+    ...(cacheable && { 'Vercel-CDN-Cache-Control': `max-age=${seconds}, stale-while-revalidate=86400` }),
     'X-Content-Type-Options': 'nosniff',
   });
   async function notFound(req, res) {
@@ -481,7 +481,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     const cacheable = !p.own;
     let html = pages.playerHtml({ base, p });
     if (!p.public) html = html.replace('<meta name="theme-color"', '<meta name="robots" content="noindex">\n  <meta name="theme-color"');
-    res.writeHead(200, htmlHeaders(cacheable));
+    res.writeHead(200, htmlHeaders(cacheable, 60)); // edits show within a minute
     return res.end(req.method === 'HEAD' ? undefined : html);
   }
 

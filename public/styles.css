@@ -1071,3 +1071,5 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .final-form label { display: grid; gap: 4px; font-size: 0.9rem; }
 .final-form button { grid-column: 1 / -1; }
 .final-score { text-align: center; font-size: 1.4rem; }
+.setup-card { border: 2px solid var(--accent); }
+.setup-card h2 { margin-top: 0; }

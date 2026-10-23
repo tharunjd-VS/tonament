@@ -308,3 +308,32 @@ test('speed: few database round trips per group page, poll and point', async () 
   n = 0; await s.groups.rally(slug, a, id, 'a', 0); assert.ok(n <= 4, `point: ${n}`);
   await counted.close?.();
 });
+
+test('profiles show group play: the player sees each group, others only totals', async () => {
+  const me = await user('Profile Player');
+  const other = await user('Profile Other');
+  const { slug } = await svc.groups.createGroup(me, { name: 'Secret Smashers', sport: 'badminton', courts: 1, scoring: { bestOf: 1, points: 11 }, ...nowSchedule() });
+  const { invite, session } = await svc.groups.view(slug, me);
+  const ps = [me, other];
+  for (const n of ['Q1', 'Q2']) { const p = await user(n); ps.push(p); }
+  for (const p of ps.slice(1)) await svc.groups.join(slug, p, { token: invite });
+  for (const p of ps) await svc.groups.checkIn(slug, p, session.id, true);
+  const sug = (await svc.groups.view(slug, me)).session.suggestion;
+  const { id } = await svc.groups.startGame(slug, me, session.id, { court: 1, a: sug.a.map((p) => p.id), b: sug.b.map((p) => p.id) });
+  await svc.groups.setResult(slug, me, id, { a: 11, b: 6 });
+  await svc.groups.confirm(slug, me, id);
+  const mine = await svc.players.myProfile(me);
+  assert.equal(mine.groups[0].name, 'Secret Smashers');
+  assert.equal(mine.groups[0].games, 1);
+  assert.equal(mine.records[0].groupGames, 1);
+  const handle = mine.handle;
+  const own = await svc.players.profile(handle, me);
+  assert.equal(own.groupPlay[0].name, 'Secret Smashers');
+  const theirs = await svc.players.profile(handle, other);
+  assert.equal(theirs.groupPlay[0].games, 1);
+  assert.equal(theirs.groupPlay[0].name, undefined); // groups are private
+  const pageRes = await fetch(`${base}/p/${handle}`);
+  const html = await pageRes.text();
+  assert.ok(html.includes('Group play') && !html.includes('Secret Smashers'));
+  assert.match(pageRes.headers.get('cache-control'), /s-maxage=60\b/);
+});
