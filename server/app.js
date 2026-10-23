@@ -600,7 +600,13 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       // straight to /index.html finds no file and 404s.
       if (pathname === '/api/app' && read) {
         const html = await fs.readFile(path.join(PUBLIC_DIR, 'index.html'));
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+        // The CDN keeps it (every deploy clears the CDN), so links open without waiting for the function.
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'public, max-age=0, must-revalidate',
+          'Vercel-CDN-Cache-Control': 'max-age=86400, stale-while-revalidate=604800',
+          'X-Content-Type-Options': 'nosniff',
+        });
         return res.end(req.method === 'HEAD' ? undefined : html);
       }
       // Academy / venue pages: /@slug (on Vercel, /api/org/<slug>).

@@ -54,13 +54,24 @@ function createGroups({ db, fail, text }) {
     return s;
   }
 
-  async function load(q, slug, { lock = false } = {}) {
-    const [g] = await q(`SELECT * FROM groups WHERE slug = $1${lock ? ' FOR UPDATE' : ''}`, [String(slug || '').toLowerCase()]);
-    if (!g) fail(404, 'Group not found');
+  // The group and the viewer's membership, in one round trip.
+  async function load(q, slug, { lock = false, actor = null } = {}) {
+    const uid = actor?.user?.id || 0;
+    const [row] = await q(
+      `SELECT g.*, m.role AS m_role, m.status AS m_status, m.rating AS m_rating, m.games AS m_games, m.user_id AS m_user
+       FROM groups g LEFT JOIN group_members m ON m.group_id = g.id AND m.user_id = $2
+       WHERE g.slug = $1${lock ? ' FOR UPDATE OF g' : ''}`,
+      [String(slug || '').toLowerCase(), uid],
+    );
+    if (!row) fail(404, 'Group not found');
+    const { m_role: role, m_status: status, m_rating: rating, m_games: games, m_user: user, ...g } = row;
+    g.member = user ? { group_id: g.id, user_id: user, role, status, rating, games } : null;
+    g.memberFor = uid;
     return g;
   }
   async function memberOf(q, g, actor) {
     if (!actor?.user) return null;
+    if (g.memberFor === actor.user.id) return g.member;
     const [m] = await q('SELECT * FROM group_members WHERE group_id = $1 AND user_id = $2', [g.id, actor.user.id]);
     return m || null;
   }
@@ -103,7 +114,7 @@ function createGroups({ db, fail, text }) {
 
   async function updateGroup(slug, actor, input = {}) {
     await db.tx(async (q) => {
-      const g = await load(q, slug, { lock: true });
+      const g = await load(q, slug, { lock: true, actor });
       await needAdmin(q, g, actor);
       const set = { settings: JSON.stringify(readSettings(input, g.settings, sportOf(g))) };
       if (input.name !== undefined) set.name = text(input.name, 'Group name', { max: 60 });
@@ -134,7 +145,7 @@ function createGroups({ db, fail, text }) {
   async function join(slug, actor, { token } = {}) {
     const user = needUser(actor);
     return db.tx(async (q) => {
-      const g = await load(q, slug, { lock: true });
+      const g = await load(q, slug, { lock: true, actor });
       const m = await memberOf(q, g, actor);
       if (m && m.status === 'active') return { joined: true };
       const ok = typeof token === 'string' && token.length > 0 && token === g.invite_token;
@@ -150,7 +161,7 @@ function createGroups({ db, fail, text }) {
   // Admins: approve / decline a request, make or unmake admins, remove.
   async function setMember(slug, actor, userId, action) {
     await db.tx(async (q) => {
-      const g = await load(q, slug, { lock: true });
+      const g = await load(q, slug, { lock: true, actor });
       await needAdmin(q, g, actor);
       const uid = Number(userId) || 0;
       const [m] = await q('SELECT * FROM group_members WHERE group_id = $1 AND user_id = $2', [g.id, uid]);
@@ -176,7 +187,7 @@ function createGroups({ db, fail, text }) {
   async function leave(slug, actor) {
     const user = needUser(actor);
     return db.tx(async (q) => {
-      const g = await load(q, slug, { lock: true });
+      const g = await load(q, slug, { lock: true, actor });
       const m = await memberOf(q, g, actor);
       if (!m) return { left: true };
       if (m.role === 'admin') {
@@ -193,10 +204,13 @@ function createGroups({ db, fail, text }) {
   // The schedule's next sessions exist (made on demand); returns the current
   // one (started up to `hours` ago, or the next) and the one after.
   async function sessionsOf(q, g, now = new Date()) {
-    const starts = L.upcomingStarts(g.settings, now, { count: 2, hours: g.settings.hours || 3 });
-    for (const s of starts) await q('INSERT INTO group_sessions (group_id, starts_at) VALUES ($1, $2) ON CONFLICT DO NOTHING', [g.id, s.toISOString()]);
+    const starts = L.upcomingStarts(g.settings, now, { count: 2, hours: g.settings.hours || 3 }).map((d) => d.toISOString());
     if (!starts.length) return [];
-    return q('SELECT * FROM group_sessions WHERE group_id = $1 AND starts_at = ANY($2::timestamptz[]) ORDER BY starts_at', [g.id, starts.map((s) => s.toISOString())]);
+    const find = () => q('SELECT * FROM group_sessions WHERE group_id = $1 AND starts_at = ANY($2::timestamptz[]) ORDER BY starts_at', [g.id, starts]);
+    const rows = await find();
+    if (rows.length === starts.length) return rows;
+    for (const at of starts) await q('INSERT INTO group_sessions (group_id, starts_at) VALUES ($1, $2) ON CONFLICT DO NOTHING', [g.id, at]);
+    return find();
   }
   async function sessionOf(q, g, sessionId) {
     const [s] = await q('SELECT * FROM group_sessions WHERE id = $1 AND group_id = $2', [Number(sessionId) || 0, g.id]);
@@ -209,7 +223,7 @@ function createGroups({ db, fail, text }) {
   async function rsvp(slug, actor, sessionId, status) {
     if (!['in', 'out'].includes(status)) fail(400, 'status must be in or out');
     await db.tx(async (q) => {
-      const g = await load(q, slug, { lock: true });
+      const g = await load(q, slug, { lock: true, actor });
       await needMember(q, g, actor);
       const s = await sessionOf(q, g, sessionId);
       const max = g.settings.maxPlayers;
@@ -236,7 +250,7 @@ function createGroups({ db, fail, text }) {
   // I'm here (or leaving). Checking in also counts as an RSVP.
   async function checkIn(slug, actor, sessionId, here = true, userId = null) {
     await db.tx(async (q) => {
-      const g = await load(q, slug, { lock: true });
+      const g = await load(q, slug, { lock: true, actor });
       const m = await needMember(q, g, actor);
       const s = await sessionOf(q, g, sessionId);
       const uid = userId && Number(userId) !== actor.user.id ? Number(userId) : actor.user.id;
@@ -271,24 +285,30 @@ function createGroups({ db, fail, text }) {
   }
 
   // Who's free to play, with what the suggestion needs to be fair.
-  async function freePlayers(q, g, s) {
-    const here = await q(`SELECT user_id, checked_in_at FROM session_players WHERE session_id = $1 AND status = 'in' AND checked_in_at IS NOT NULL`, [s.id]);
-    const games = await q(`SELECT * FROM group_games WHERE session_id = $1 AND status <> 'void' ORDER BY started_at`, [s.id]);
+  // players: the session's session_players rows; games: its games (not void).
+  function freeFrom(players, games, info) {
+    const here = players.filter((p) => p.status === 'in' && p.checked_in_at);
     const busy = new Set(games.filter((x) => x.status === 'live').flatMap((x) => [x.a1, x.a2, x.b1, x.b2]));
-    const info = await playersInfo(q, g, here.map((h) => h.user_id));
     return here.filter((h) => !busy.has(h.user_id)).map((h) => {
       const mine = games.filter((x) => [x.a1, x.a2, x.b1, x.b2].includes(h.user_id));
       const last = mine.filter((x) => x.ended_at).map((x) => Date.parse(x.ended_at)).sort((a, b) => b - a)[0];
       const partners = new Set(mine.map((x) => ([x.a1, x.a2].includes(h.user_id) ? [x.a1, x.a2] : [x.b1, x.b2]).find((id) => id && id !== h.user_id)).filter(Boolean));
       const p = info.get(h.user_id) || { rating: L.START, games: 0 };
-      return { id: h.user_id, name: p.name, rating: p.rating, games: mine.length, waitingSince: last || Date.parse(h.checked_in_at), partners };
+      return { id: h.user_id, name: p.name || h.name, rating: p.rating ?? L.START, games: mine.length, waitingSince: last || Date.parse(h.checked_in_at), partners };
     });
+  }
+  async function freePlayers(q, g, s) {
+    const [players, games] = await Promise.all([
+      q('SELECT * FROM session_players WHERE session_id = $1', [s.id]),
+      q(`SELECT * FROM group_games WHERE session_id = $1 AND status <> 'void' ORDER BY started_at`, [s.id]),
+    ]);
+    return freeFrom(players, games, await playersInfo(q, g, players.map((p) => p.user_id)));
   }
 
   // Starts a game on a free court. Players: { a: [ids], b: [ids] } (2 or 4).
   async function startGame(slug, actor, sessionId, input = {}) {
     return db.tx(async (q) => {
-      const g = await load(q, slug, { lock: true });
+      const g = await load(q, slug, { lock: true, actor });
       const m = await needMember(q, g, actor);
       const s = await sessionOf(q, g, sessionId);
       const [me] = await q('SELECT checked_in_at FROM session_players WHERE session_id = $1 AND user_id = $2', [s.id, actor.user.id]);
@@ -332,7 +352,7 @@ function createGroups({ db, fail, text }) {
   async function rally(slug, actor, gameId, side, at) {
     if (side !== 'a' && side !== 'b') fail(400, 'side must be a or b');
     return db.tx(async (q) => {
-      const g = await load(q, slug);
+      const g = await load(q, slug, { actor });
       const m = await needMember(q, g, actor);
       const x = await gameOf(q, g, gameId, { lock: true });
       if (!canScore(m, actor, x)) fail(403, 'Only the players in this game can score it');
@@ -341,31 +361,31 @@ function createGroups({ db, fail, text }) {
       if (at !== undefined && Number(at) !== x.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
       const rallies = x.rallies + side;
       const sc = scoreOf(g, x, rallies);
-      await q(
-        `UPDATE group_games SET rallies = $1, status = $2, winner = $3, ended_at = $4 WHERE id = $5`,
+      const [row] = await q(
+        `UPDATE group_games SET rallies = $1, status = $2, winner = $3, ended_at = $4 WHERE id = $5 RETURNING *`,
         [rallies, sc.winner ? 'done' : 'live', sc.winner || null, sc.winner ? new Date().toISOString() : null, x.id],
       );
-      return gameView(q, g, await gameOf(q, g, x.id), m, actor);
+      return gameView(q, g, row, m, actor);
     });
   }
 
   async function undo(slug, actor, gameId, at) {
     return db.tx(async (q) => {
-      const g = await load(q, slug);
+      const g = await load(q, slug, { actor });
       const m = await needMember(q, g, actor);
       const x = await gameOf(q, g, gameId, { lock: true });
       if (!canScore(m, actor, x)) fail(403, 'Only the players in this game can score it');
       if (!['live', 'done'].includes(x.status) || !x.rallies) fail(409, 'Nothing to undo');
       if (at !== undefined && Number(at) !== x.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
-      await q(`UPDATE group_games SET rallies = $1, status = 'live', winner = NULL, ended_at = NULL WHERE id = $2`, [x.rallies.slice(0, -1), x.id]);
-      return gameView(q, g, await gameOf(q, g, x.id), m, actor);
+      const [row] = await q(`UPDATE group_games SET rallies = $1, status = 'live', winner = NULL, ended_at = NULL WHERE id = $2 RETURNING *`, [x.rallies.slice(0, -1), x.id]);
+      return gameView(q, g, row, m, actor);
     });
   }
 
   // Quick result: "21–17" instead of point by point.
   async function setResult(slug, actor, gameId, input = {}) {
     return db.tx(async (q) => {
-      const g = await load(q, slug);
+      const g = await load(q, slug, { actor });
       const m = await needMember(q, g, actor);
       const x = await gameOf(q, g, gameId, { lock: true });
       if (!canScore(m, actor, x)) fail(403, 'Only the players in this game can enter the score');
@@ -404,7 +424,7 @@ function createGroups({ db, fail, text }) {
   // while confirm themselves (see autoConfirm).
   async function confirm(slug, actor, gameId) {
     return db.tx(async (q) => {
-      const g = await load(q, slug, { lock: true });
+      const g = await load(q, slug, { lock: true, actor });
       const m = await needMember(q, g, actor);
       const x = await gameOf(q, g, gameId, { lock: true });
       if (!['done', 'disputed'].includes(x.status)) fail(409, x.status === 'confirmed' ? 'Already confirmed' : 'The game isn\'t finished');
@@ -418,7 +438,7 @@ function createGroups({ db, fail, text }) {
   }
   async function dispute(slug, actor, gameId) {
     return db.tx(async (q) => {
-      const g = await load(q, slug);
+      const g = await load(q, slug, { actor });
       const m = await needMember(q, g, actor);
       const x = await gameOf(q, g, gameId, { lock: true });
       if (x.status !== 'done') fail(409, 'Only a finished, unconfirmed game can be disputed');
@@ -430,7 +450,7 @@ function createGroups({ db, fail, text }) {
   // Admins: void a game (its rating changes are undone) or reopen a disputed one.
   async function voidGame(slug, actor, gameId) {
     return db.tx(async (q) => {
-      const g = await load(q, slug, { lock: true });
+      const g = await load(q, slug, { lock: true, actor });
       const m = await needAdmin(q, g, actor);
       const x = await gameOf(q, g, gameId, { lock: true });
       if (x.status === 'void') return gameView(q, g, x, m, actor);
@@ -440,6 +460,8 @@ function createGroups({ db, fail, text }) {
     });
   }
   async function autoConfirm(q, g) {
+    const [any] = await q(`SELECT 1 FROM group_games WHERE group_id = $1 AND status = 'done' AND ended_at < now() - interval '${AUTO_CONFIRM_MINUTES} minutes' LIMIT 1`, [g.id]);
+    if (!any) return;
     const due = await q(
       `SELECT * FROM group_games WHERE group_id = $1 AND status = 'done' AND ended_at < now() - interval '${AUTO_CONFIRM_MINUTES} minutes' FOR UPDATE`,
       [g.id],
@@ -450,59 +472,56 @@ function createGroups({ db, fail, text }) {
     }
   }
 
-  // ---------- views
+  // ---------- views (built in memory from a few batched queries)
 
-  function gameView(q, g, x, m, actor, info) {
-    const make = async () => {
-      const people = info || await playersInfo(q, g, [x.a1, x.a2, x.b1, x.b2]);
-      const person = (id) => (id ? { id, name: people.get(id)?.name || 'Player', handle: people.get(id)?.handle || null } : null);
-      const sc = x.final ? null : scoreOf(g, x);
-      const me = actor?.user ? sideOf(x, actor.user.id) : null;
-      const loser = x.winner ? (x.winner === 'a' ? 'b' : 'a') : null;
-      return {
-        id: x.id,
-        court: x.court,
-        status: x.status,
-        a: [person(x.a1), person(x.a2)].filter(Boolean),
-        b: [person(x.b1), person(x.b2)].filter(Boolean),
-        winner: x.winner,
-        final: x.final,
-        rallies: x.rallies.length,
-        log: x.rallies,
-        firstServer: x.first_server,
-        score: sc,
-        summary: x.final ? `${x.final.a}–${x.final.b}` : sportOf(g).summary(sc),
-        deltas: x.deltas,
-        startedAt: x.started_at,
-        endedAt: x.ended_at,
-        confirmBy: x.status === 'done' && x.ended_at ? new Date(Date.parse(x.ended_at) + AUTO_CONFIRM_MINUTES * 60000).toISOString() : null,
-        can: actor?.user ? {
-          score: x.status === 'live' && (isAdmin(m, actor) || Boolean(me)),
-          confirm: (x.status === 'done' && (me === loser || isAdmin(m, actor))) || (x.status === 'disputed' && isAdmin(m, actor)),
-          dispute: x.status === 'done' && Boolean(me || isAdmin(m, actor)),
-          void: isAdmin(m, actor) && x.status !== 'void',
-        } : {},
-      };
+  function gameViewOf(g, x, m, actor, info) {
+    const person = (id) => (id ? { id, name: info.get(id)?.name || 'Player', handle: info.get(id)?.handle || null } : null);
+    const sc = x.final ? null : scoreOf(g, x);
+    const me = actor?.user ? sideOf(x, actor.user.id) : null;
+    const loser = x.winner ? (x.winner === 'a' ? 'b' : 'a') : null;
+    return {
+      id: x.id,
+      court: x.court,
+      status: x.status,
+      a: [person(x.a1), person(x.a2)].filter(Boolean),
+      b: [person(x.b1), person(x.b2)].filter(Boolean),
+      winner: x.winner,
+      final: x.final,
+      rallies: x.rallies.length,
+      log: x.rallies,
+      firstServer: x.first_server,
+      score: sc,
+      summary: x.final ? `${x.final.a}–${x.final.b}` : sportOf(g).summary(sc),
+      deltas: x.deltas,
+      startedAt: x.started_at,
+      endedAt: x.ended_at,
+      confirmBy: x.status === 'done' && x.ended_at ? new Date(Date.parse(x.ended_at) + AUTO_CONFIRM_MINUTES * 60000).toISOString() : null,
+      can: actor?.user ? {
+        score: x.status === 'live' && (isAdmin(m, actor) || Boolean(me)),
+        confirm: (x.status === 'done' && (me === loser || isAdmin(m, actor))) || (x.status === 'disputed' && isAdmin(m, actor)),
+        dispute: x.status === 'done' && Boolean(me || isAdmin(m, actor)),
+        void: isAdmin(m, actor) && x.status !== 'void',
+      } : {},
     };
-    return make();
+  }
+  async function gameView(q, g, x, m, actor) {
+    return gameViewOf(g, x, m, actor, await playersInfo(q, g, [x.a1, x.a2, x.b1, x.b2]));
   }
 
-  async function sessionView(q, g, s, m, actor, { skip = 0 } = {}) {
-    const players = await q(
-      `SELECT sp.*, u.name, u.handle FROM session_players sp JOIN users u ON u.id = sp.user_id WHERE sp.session_id = $1 ORDER BY sp.rsvp_at`,
-      [s.id],
-    );
-    const games = await q(`SELECT * FROM group_games WHERE session_id = $1 AND status <> 'void' ORDER BY started_at DESC`, [s.id]);
-    const info = await playersInfo(q, g, [...new Set([...players.map((p) => p.user_id), ...games.flatMap((x) => [x.a1, x.a2, x.b1, x.b2])])]);
+  // players: this session's session_players rows (with name, handle);
+  // games: its games, newest first; info: members by user id.
+  function sessionViewOf(g, s, players, games, info, m, actor, { skip = 0 } = {}) {
     const live = games.filter((x) => x.status === 'live');
     const count = (uid) => games.filter((x) => [x.a1, x.a2, x.b1, x.b2].includes(uid)).length;
     const onCourt = new Set(live.flatMap((x) => [x.a1, x.a2, x.b1, x.b2]));
     const startMs = Date.parse(s.starts_at);
     const now = Date.now();
-    const free = await freePlayers(q, g, s);
+    const free = freeFrom(players, games, info);
     const pick = L.suggest(free, { singles: g.settings.singles, skip });
-    const name = (id) => ({ id, name: info.get(id)?.name || 'Player' });
+    const names = new Map(players.map((p) => [p.user_id, p.name]));
+    const name = (id) => ({ id, name: info.get(id)?.name || names.get(id) || 'Player' });
     const mine = players.find((p) => p.user_id === actor?.user?.id);
+    const ordered = [...players].sort((a, b) => Date.parse(a.rsvp_at) - Date.parse(b.rsvp_at));
     return {
       id: s.id,
       startsAt: s.starts_at,
@@ -510,33 +529,23 @@ function createGroups({ db, fail, text }) {
       today: now >= startMs - 3 * 3600000,
       started: now >= startMs,
       me: mine ? { status: mine.status, checkedIn: Boolean(mine.checked_in_at) } : null,
-      players: players.filter((p) => p.status !== 'out').map((p) => ({
+      players: ordered.filter((p) => p.status !== 'out').map((p) => ({
         id: p.user_id, name: p.name, handle: p.handle, status: p.status, checkedIn: Boolean(p.checked_in_at),
         onCourt: onCourt.has(p.user_id), games: count(p.user_id), rating: info.get(p.user_id)?.rating ?? L.START,
       })),
-      out: players.filter((p) => p.status === 'out').map((p) => ({ id: p.user_id, name: p.name })),
+      out: ordered.filter((p) => p.status === 'out').map((p) => ({ id: p.user_id, name: p.name })),
       courts: Array.from({ length: g.settings.courts }, (_, i) => i + 1).map((no) => {
         const x = live.find((y) => y.court === no);
         return { no, gameId: x ? x.id : null };
       }),
-      live: await Promise.all(live.map((x) => gameView(q, g, x, m, actor, info))),
+      live: live.map((x) => gameViewOf(g, x, m, actor, info)),
       suggestion: pick ? { a: pick.a.map(name), b: pick.b.map(name), more: free.length > (pick.a.length + pick.b.length) } : null,
       waiting: free.map((p) => ({ ...name(p.id), games: p.games })),
-      results: await Promise.all(games.filter((x) => x.status !== 'live').slice(0, 30).map((x) => gameView(q, g, x, m, actor, info))),
+      results: games.filter((x) => x.status !== 'live').slice(0, 30).map((x) => gameViewOf(g, x, m, actor, info)),
     };
   }
 
-  async function leaderboard(q, g) {
-    const rows = await q(
-      `SELECT m.user_id AS id, u.name, u.handle, m.rating, m.games, m.wins, m.role FROM group_members m JOIN users u ON u.id = m.user_id
-       WHERE m.group_id = $1 AND m.status = 'active' ORDER BY (m.games > 0) DESC, m.rating DESC, u.name`,
-      [g.id],
-    );
-    // The last 7 days: wins and games from confirmed games.
-    const week = await q(
-      `SELECT a1, a2, b1, b2, winner FROM group_games WHERE group_id = $1 AND status = 'confirmed' AND ended_at > now() - interval '7 days'`,
-      [g.id],
-    );
+  function leaderboardOf(members, week) {
     const w = new Map();
     for (const x of week) {
       for (const [side, ids] of [['a', [x.a1, x.a2]], ['b', [x.b1, x.b2]]]) {
@@ -548,9 +557,11 @@ function createGroups({ db, fail, text }) {
         }
       }
     }
+    const rows = members.filter((r) => r.status === 'active')
+      .sort((a, b) => Number(b.games > 0) - Number(a.games > 0) || b.rating - a.rating || a.name.localeCompare(b.name));
     let rank = 0;
     return rows.map((r) => ({
-      ...r,
+      id: r.id, name: r.name, handle: r.handle, rating: r.rating, games: r.games, wins: r.wins, role: r.role,
       rank: r.games ? ++rank : null,
       provisional: r.games < L.PROVISIONAL,
       winPct: r.games ? Math.round((r.wins / r.games) * 100) : null,
@@ -559,13 +570,12 @@ function createGroups({ db, fail, text }) {
   }
 
   // The whole group page: details for anyone with the link; sessions, games,
-  // members and the leaderboard for members.
+  // members and the leaderboard for members. About 7 round trips.
   async function view(slug, actor, { skip = 0 } = {}) {
     return db.tx(async (q) => {
-      const g = await load(q, slug);
-      const m = await memberOf(q, g, actor);
+      const g = await load(q, slug, { actor });
+      const m = g.member;
       const member = Boolean(actor?.user?.isAdmin || (m && m.status === 'active'));
-      const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM group_members WHERE group_id = $1 AND status = 'active'`, [g.id]);
       const base = {
         slug: g.slug,
         name: g.name,
@@ -574,36 +584,50 @@ function createGroups({ db, fail, text }) {
         venue: g.venue,
         about: g.about,
         settings: g.settings,
-        members: n,
         role: m ? (m.status === 'requested' ? 'requested' : m.role) : actor?.user?.isAdmin ? 'admin' : null,
         member,
       };
-      if (!member) return base;
+      if (!member) {
+        const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM group_members WHERE group_id = $1 AND status = 'active'`, [g.id]);
+        return { ...base, members: n };
+      }
       await autoConfirm(q, g);
       const sessions = await sessionsOf(q, g);
+      const ids = sessions.map((x) => x.id);
+      const [players, games, members, week] = await Promise.all([
+        q('SELECT sp.*, u.name, u.handle FROM session_players sp JOIN users u ON u.id = sp.user_id WHERE sp.session_id = ANY($1::int[])', [ids]),
+        q(`SELECT * FROM group_games WHERE session_id = ANY($1::int[]) AND status <> 'void' ORDER BY started_at DESC`, [ids]),
+        q(`SELECT m.user_id AS id, m.role, m.status, m.rating, m.games, m.wins, m.joined_at, u.name, u.handle, u.email
+           FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = $1`, [g.id]),
+        q(`SELECT a1, a2, b1, b2, winner FROM group_games WHERE group_id = $1 AND status = 'confirmed' AND ended_at > now() - interval '7 days'`, [g.id]),
+      ]);
+      const info = new Map(members.map((r) => [r.id, r]));
+      const one = (s, opts) => sessionViewOf(g, s, players.filter((p) => p.session_id === s.id), games.filter((x) => x.session_id === s.id), info, m, actor, opts);
       const admin = isAdmin(m, actor);
       return {
         ...base,
+        members: members.filter((r) => r.status === 'active').length,
         admin,
         invite: g.invite_token,
-        session: sessions[0] ? await sessionView(q, g, sessions[0], m, actor, { skip }) : null,
-        nextSession: sessions[1] ? await sessionView(q, g, sessions[1], m, actor) : null,
-        leaderboard: await leaderboard(q, g),
-        requests: admin ? await q(
-          `SELECT m.user_id AS id, u.name, u.email, m.joined_at AS "requestedAt" FROM group_members m JOIN users u ON u.id = m.user_id
-           WHERE m.group_id = $1 AND m.status = 'requested' ORDER BY m.joined_at`,
-          [g.id],
-        ) : [],
+        session: sessions[0] ? one(sessions[0], { skip }) : null,
+        nextSession: sessions[1] ? one(sessions[1]) : null,
+        leaderboard: leaderboardOf(members, week),
+        requests: admin ? members.filter((r) => r.status === 'requested').sort((a, b) => Date.parse(a.joined_at) - Date.parse(b.joined_at))
+          .map((r) => ({ id: r.id, name: r.name, email: r.email, requestedAt: r.joined_at })) : [],
       };
     });
   }
 
   async function getGame(slug, actor, gameId) {
     return db.tx(async (q) => {
-      const g = await load(q, slug);
+      const g = await load(q, slug, { actor });
       const m = await needMember(q, g, actor);
-      await autoConfirm(q, g);
-      return gameView(q, g, await gameOf(q, g, gameId), m, actor);
+      let x = await gameOf(q, g, gameId);
+      if (x.status === 'done' && Date.parse(x.ended_at) < Date.now() - AUTO_CONFIRM_MINUTES * 60000) {
+        await autoConfirm(q, g);
+        x = await gameOf(q, g, gameId);
+      }
+      return gameView(q, g, x, m, actor);
     });
   }
 

@@ -3,6 +3,7 @@
   "buildCommand": "",
   "outputDirectory": "public",
   "cleanUrls": true,
+  "regions": ["sin1"],
   "rewrites": [
     {
       "source": "/t/:path*",

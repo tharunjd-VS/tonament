@@ -282,3 +282,29 @@ test('Vercel: the app\'s own pages are served by the function (cleanUrls breaks 
   assert.match(r.headers.get('content-type'), /text\/html/);
   assert.ok((await r.text()).includes('/app.js'));
 });
+
+test('speed: few database round trips per group page, poll and point', async () => {
+  const counted = await createDb(process.env.TEST_DATABASE_URL || ':memory:');
+  let n = 0;
+  const q0 = counted.query;
+  counted.query = (...a) => { n += 1; return q0(...a); };
+  const tx0 = counted.tx;
+  counted.tx = (fn) => tx0((q) => fn((...a) => { n += 1; return q(...a); }));
+  const s = createApp(counted, { mailer: { enabled: false, async send() { return {}; } } }).service;
+  const mk = async (name) => {
+    const [r] = await q0(`INSERT INTO users (email, name, password_hash) VALUES ($1, $2, 'x') RETURNING id`, [`${name}@speed.test`, name]);
+    return { user: { id: r.id, email: `${name}@speed.test`, name, isAdmin: false } };
+  };
+  const a = await mk('a');
+  const { slug } = await s.groups.createGroup(a, { name: 'Speed', sport: 'badminton', courts: 3, ...nowSchedule() });
+  const { invite, session } = await s.groups.view(slug, a);
+  const ps = [a];
+  for (let i = 0; i < 9; i++) { const p = await mk(`p${i}`); await s.groups.join(slug, p, { token: invite }); ps.push(p); }
+  for (const p of ps) await s.groups.checkIn(slug, p, session.id, true);
+  const sug = (await s.groups.view(slug, a)).session.suggestion;
+  const { id } = await s.groups.startGame(slug, a, session.id, { court: 1, a: sug.a.map((p) => p.id), b: sug.b.map((p) => p.id) });
+  n = 0; await s.groups.view(slug, a); assert.ok(n <= 8, `group page: ${n}`);
+  n = 0; await s.groups.getGame(slug, a, id); assert.ok(n <= 3, `game poll: ${n}`);
+  n = 0; await s.groups.rally(slug, a, id, 'a', 0); assert.ok(n <= 4, `point: ${n}`);
+  await counted.close?.();
+});
