@@ -15,7 +15,7 @@ const { billingConfig, publicBillingConfig } = require('./billing');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|signin|signup|forgot|reset|admin|academy\/new|me\/profile|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|signin|signup|forgot|reset|link|admin|academy\/new|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -194,6 +194,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
   const ev = (c) => c.body.event ?? (c.query.get('event') || undefined);
   const N = '(\\d+)';
   const O = '/api/orgs/([a-z0-9-]{3,30})';
+  const G = '/api/groups/([a-z0-9-]{3,40})';
   // [method, path, handler, cdnSeconds]. Handlers get ctx = { body, query,
   // actor: { user, key }, req, setCookie }. A route with cdnSeconds > 0 is
   // public: it ignores who is asking so the CDN can share it.
@@ -254,6 +255,19 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       await auth.forgotPassword(c.body, url);
       return { ok: true };
     }],
+    ['POST', '/api/auth/link', async (c) => {
+      const url = baseUrl(c.req);
+      if (!url) throw new HttpError(503, 'Set APP_URL in the project settings to enable sign-in links');
+      if (!mailer.enabled) throw new HttpError(503, 'Email isn\'t set up on this site — use your password');
+      return auth.requestLink(c.body, url);
+    }],
+    ['POST', '/api/auth/link/use', async (c) => {
+      const r = await auth.useLink(c.req, c.body);
+      if (r.needsName) return r;
+      await svc.players.ensureHandle(db.query, r.user).catch((err) => console.error('Handle failed:', err.message));
+      c.setCookie(r.cookie);
+      return { user: r.user, next: r.next };
+    }],
     ['POST', '/api/auth/reset', async (c) => {
       const { user, cookie } = await auth.resetPassword(c.req, c.body);
       c.setCookie(cookie);
@@ -276,6 +290,24 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     }],
     ['GET', '/api/me/tournaments', (c) => svc.myTournaments(c.actor)],
     ['GET', '/api/me/entries', (c) => svc.myEntries(c.actor)],
+    // Groups: daily play
+    ['POST', '/api/groups', (c) => svc.groups.createGroup(c.actor, c.body)],
+    ['GET', '/api/me/groups', (c) => svc.groups.myGroups(c.actor)],
+    ['GET', G, (c, slug) => svc.groups.view(slug, c.actor, { skip: Number(c.query.get('skip')) || 0 })],
+    ['PATCH', G, (c, slug) => svc.groups.updateGroup(slug, c.actor, c.body)],
+    ['POST', `${G}/join`, (c, slug) => svc.groups.join(slug, c.actor, c.body)],
+    ['POST', `${G}/leave`, (c, slug) => svc.groups.leave(slug, c.actor)],
+    ['POST', `${G}/members/${N}`, (c, slug, uid) => svc.groups.setMember(slug, c.actor, uid, c.body.action)],
+    ['POST', `${G}/sessions/${N}/rsvp`, (c, slug, sid) => svc.groups.rsvp(slug, c.actor, sid, c.body.status)],
+    ['POST', `${G}/sessions/${N}/checkin`, (c, slug, sid) => svc.groups.checkIn(slug, c.actor, sid, c.body.here !== false, c.body.user || null)],
+    ['POST', `${G}/sessions/${N}/games`, (c, slug, sid) => svc.groups.startGame(slug, c.actor, sid, c.body)],
+    ['GET', `${G}/games/${N}`, (c, slug, gid) => svc.groups.getGame(slug, c.actor, gid)],
+    ['POST', `${G}/games/${N}/rally`, (c, slug, gid) => svc.groups.rally(slug, c.actor, gid, c.body.side, c.body.at)],
+    ['POST', `${G}/games/${N}/undo`, (c, slug, gid) => svc.groups.undo(slug, c.actor, gid, c.body.at)],
+    ['POST', `${G}/games/${N}/result`, (c, slug, gid) => svc.groups.setResult(slug, c.actor, gid, c.body)],
+    ['POST', `${G}/games/${N}/confirm`, (c, slug, gid) => svc.groups.confirm(slug, c.actor, gid)],
+    ['POST', `${G}/games/${N}/dispute`, (c, slug, gid) => svc.groups.dispute(slug, c.actor, gid)],
+    ['POST', `${G}/games/${N}/void`, (c, slug, gid) => svc.groups.voidGame(slug, c.actor, gid)],
     // Player profiles
     ['GET', '/api/me/profile', (c) => svc.players.myProfile(c.actor)],
     ['PATCH', '/api/me/profile', (c) => svc.players.updateProfile(c.actor, c.body)],

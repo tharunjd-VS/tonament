@@ -1,0 +1,616 @@
+'use strict';
+
+// Groups: people who play together every day. The group's schedule makes
+// sessions; members RSVP (one tap from a WhatsApp link) and check in at the
+// venue; the next game is suggested fairly; any player in the game scores it
+// live and the losing side confirms; confirmed games move ratings.
+
+const crypto = require('node:crypto');
+const sports = require('./sports');
+const L = require('./group-logic');
+
+const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;
+const AUTO_CONFIRM_MINUTES = 10;
+const MAX_COURTS = 12;
+
+function createGroups({ db, fail, text }) {
+  // ---------- helpers
+
+  const slugOf = (value) => String(value || '').trim().toLowerCase()
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/g, '');
+  const sportOf = (g) => sports.get(g.sport);
+  const scoringOf = (g) => sportOf(g).normalizeConfig((g.settings || {}).scoring);
+  const needUser = (actor) => { if (!actor?.user) fail(401, 'Sign in first'); return actor.user; };
+
+  function readSettings(input = {}, prev = {}, sport) {
+    const s = { days: [1, 2, 3, 4, 5, 6], time: '06:00', timeZone: 'Asia/Kolkata', courts: 2, maxPlayers: null, hours: 3, singles: false, ...prev };
+    if (input.days !== undefined) {
+      if (!Array.isArray(input.days)) fail(400, 'days must be a list');
+      s.days = [...new Set(input.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort();
+    }
+    if (input.time !== undefined) {
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(input.time))) fail(400, 'Time: use HH:MM, like 06:00');
+      s.time = String(input.time);
+    }
+    if (input.courts !== undefined) {
+      const n = Number(input.courts);
+      if (!Number.isInteger(n) || n < 1 || n > MAX_COURTS) fail(400, `Courts: 1 to ${MAX_COURTS}`);
+      s.courts = n;
+    }
+    if (input.maxPlayers !== undefined) {
+      const n = input.maxPlayers === null || input.maxPlayers === '' ? null : Number(input.maxPlayers);
+      if (n !== null && (!Number.isInteger(n) || n < 2 || n > 200)) fail(400, 'Max players: 2 to 200, or leave it empty');
+      s.maxPlayers = n;
+    }
+    if (input.hours !== undefined) {
+      const n = Number(input.hours);
+      if (!Number.isFinite(n) || n < 1 || n > 12) fail(400, 'Session length: 1 to 12 hours');
+      s.hours = n;
+    }
+    if (input.singles !== undefined) s.singles = Boolean(input.singles);
+    if (input.scoring !== undefined) s.scoring = sport.normalizeConfig(input.scoring);
+    if (!s.scoring) s.scoring = sport.normalizeConfig({ ...sport.defaults, bestOf: 1 });
+    return s;
+  }
+
+  async function load(q, slug, { lock = false } = {}) {
+    const [g] = await q(`SELECT * FROM groups WHERE slug = $1${lock ? ' FOR UPDATE' : ''}`, [String(slug || '').toLowerCase()]);
+    if (!g) fail(404, 'Group not found');
+    return g;
+  }
+  async function memberOf(q, g, actor) {
+    if (!actor?.user) return null;
+    const [m] = await q('SELECT * FROM group_members WHERE group_id = $1 AND user_id = $2', [g.id, actor.user.id]);
+    return m || null;
+  }
+  const isAdmin = (m, actor) => Boolean(actor?.user?.isAdmin || (m && m.status === 'active' && m.role === 'admin'));
+  async function needMember(q, g, actor) {
+    needUser(actor);
+    const m = await memberOf(q, g, actor);
+    if (actor.user.isAdmin && !m) return { role: 'admin', status: 'active', site: true };
+    if (!m || m.status !== 'active') fail(403, 'Join the group first');
+    return m;
+  }
+  async function needAdmin(q, g, actor) {
+    const m = await needMember(q, g, actor);
+    if (!isAdmin(m, actor)) fail(403, 'Only group admins can do this');
+    return m;
+  }
+
+  // ---------- groups
+
+  async function createGroup(actor, input = {}) {
+    const user = needUser(actor);
+    const name = text(input.name, 'Group name', { max: 60 });
+    const sport = sports.get(input.sport);
+    if (!sport) fail(400, 'Choose a sport');
+    const settings = readSettings(input, {}, sport);
+    return db.tx(async (q) => {
+      let slug = slugOf(input.slug || name);
+      if (slug.length < 3) slug = `group-${crypto.randomBytes(3).toString('hex')}`;
+      for (let i = 2; (await q('SELECT 1 FROM groups WHERE slug = $1', [slug])).length; i++) slug = `${slugOf(name).slice(0, 34)}-${i}`;
+      const [g] = await q(
+        `INSERT INTO groups (slug, name, sport, city, venue, about, invite_token, settings, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9) RETURNING *`,
+        [slug, name, sport.id, text(input.city, 'City', { max: 60, optional: true }), text(input.venue, 'Venue', { max: 120, optional: true }),
+          text(input.about, 'About', { max: 500, optional: true }), crypto.randomBytes(9).toString('base64url'), JSON.stringify(settings), user.id],
+      );
+      await q(`INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'admin')`, [g.id, user.id]);
+      return { slug: g.slug };
+    });
+  }
+
+  async function updateGroup(slug, actor, input = {}) {
+    await db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true });
+      await needAdmin(q, g, actor);
+      const set = { settings: JSON.stringify(readSettings(input, g.settings, sportOf(g))) };
+      if (input.name !== undefined) set.name = text(input.name, 'Group name', { max: 60 });
+      for (const [k, label, max] of [['city', 'City', 60], ['venue', 'Venue', 120], ['about', 'About', 500]]) {
+        if (input[k] !== undefined) set[k] = text(input[k], label, { max, optional: true });
+      }
+      if (input.newInvite) set.invite_token = crypto.randomBytes(9).toString('base64url');
+      const keys = Object.keys(set);
+      await q(`UPDATE groups SET ${keys.map((k, i) => `${k} = $${i + 1}${k === 'settings' ? '::jsonb' : ''}`).join(', ')} WHERE id = $${keys.length + 1}`, [...keys.map((k) => set[k]), g.id]);
+    });
+    return view(slug, actor);
+  }
+
+  async function myGroups(actor) {
+    if (!actor?.user) return [];
+    const rows = await db.query(
+      `SELECT g.slug, g.name, g.sport, g.city, m.role, m.status, m.rating, m.games,
+              (SELECT COUNT(*)::int FROM group_members x WHERE x.group_id = g.id AND x.status = 'active') AS members
+       FROM group_members m JOIN groups g ON g.id = m.group_id WHERE m.user_id = $1 ORDER BY g.name`,
+      [actor.user.id],
+    );
+    return rows.map((r) => ({ ...r, sportName: sports.get(r.sport)?.name || r.sport }));
+  }
+
+  // ---------- members
+
+  // Joining with the invite link is instant; without it, it's a request.
+  async function join(slug, actor, { token } = {}) {
+    const user = needUser(actor);
+    return db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true });
+      const m = await memberOf(q, g, actor);
+      if (m && m.status === 'active') return { joined: true };
+      const ok = typeof token === 'string' && token.length > 0 && token === g.invite_token;
+      if (m) {
+        if (ok) await q(`UPDATE group_members SET status = 'active', joined_at = now() WHERE group_id = $1 AND user_id = $2`, [g.id, user.id]);
+      } else {
+        await q('INSERT INTO group_members (group_id, user_id, status) VALUES ($1, $2, $3)', [g.id, user.id, ok ? 'active' : 'requested']);
+      }
+      return { joined: ok };
+    });
+  }
+
+  // Admins: approve / decline a request, make or unmake admins, remove.
+  async function setMember(slug, actor, userId, action) {
+    await db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true });
+      await needAdmin(q, g, actor);
+      const uid = Number(userId) || 0;
+      const [m] = await q('SELECT * FROM group_members WHERE group_id = $1 AND user_id = $2', [g.id, uid]);
+      if (!m) fail(404, 'Member not found');
+      if (action === 'approve') await q(`UPDATE group_members SET status = 'active', joined_at = now() WHERE group_id = $1 AND user_id = $2`, [g.id, uid]);
+      else if (action === 'admin' || action === 'member') {
+        if (action === 'member' && m.role === 'admin') {
+          const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM group_members WHERE group_id = $1 AND role = 'admin' AND status = 'active'`, [g.id]);
+          if (n <= 1) fail(409, 'A group needs at least one admin');
+        }
+        await q('UPDATE group_members SET role = $3 WHERE group_id = $1 AND user_id = $2', [g.id, uid, action]);
+      } else if (action === 'decline' || action === 'remove') {
+        if (m.role === 'admin' && m.status === 'active') {
+          const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM group_members WHERE group_id = $1 AND role = 'admin' AND status = 'active'`, [g.id]);
+          if (n <= 1) fail(409, 'A group needs at least one admin');
+        }
+        await q('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [g.id, uid]);
+      } else fail(400, 'Unknown action');
+    });
+    return view(slug, actor);
+  }
+
+  async function leave(slug, actor) {
+    const user = needUser(actor);
+    return db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true });
+      const m = await memberOf(q, g, actor);
+      if (!m) return { left: true };
+      if (m.role === 'admin') {
+        const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM group_members WHERE group_id = $1 AND role = 'admin' AND status = 'active'`, [g.id]);
+        if (n <= 1) fail(409, 'Make someone else an admin before you leave');
+      }
+      await q('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [g.id, user.id]);
+      return { left: true };
+    });
+  }
+
+  // ---------- sessions
+
+  // The schedule's next sessions exist (made on demand); returns the current
+  // one (started up to `hours` ago, or the next) and the one after.
+  async function sessionsOf(q, g, now = new Date()) {
+    const starts = L.upcomingStarts(g.settings, now, { count: 2, hours: g.settings.hours || 3 });
+    for (const s of starts) await q('INSERT INTO group_sessions (group_id, starts_at) VALUES ($1, $2) ON CONFLICT DO NOTHING', [g.id, s.toISOString()]);
+    if (!starts.length) return [];
+    return q('SELECT * FROM group_sessions WHERE group_id = $1 AND starts_at = ANY($2::timestamptz[]) ORDER BY starts_at', [g.id, starts.map((s) => s.toISOString())]);
+  }
+  async function sessionOf(q, g, sessionId) {
+    const [s] = await q('SELECT * FROM group_sessions WHERE id = $1 AND group_id = $2', [Number(sessionId) || 0, g.id]);
+    if (!s) fail(404, 'Session not found');
+    return s;
+  }
+
+  // I'm in / can't make it. With a player limit, extra RSVPs wait; when
+  // someone drops out the first on the waitlist moves up.
+  async function rsvp(slug, actor, sessionId, status) {
+    if (!['in', 'out'].includes(status)) fail(400, 'status must be in or out');
+    await db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true });
+      await needMember(q, g, actor);
+      const s = await sessionOf(q, g, sessionId);
+      const max = g.settings.maxPlayers;
+      const [cur] = await q('SELECT * FROM session_players WHERE session_id = $1 AND user_id = $2', [s.id, actor.user.id]);
+      let next = status;
+      if (status === 'in' && max && (!cur || cur.status !== 'in')) {
+        const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM session_players WHERE session_id = $1 AND status = 'in'`, [s.id]);
+        if (n >= max) next = 'waitlist';
+      }
+      await q(
+        `INSERT INTO session_players (session_id, user_id, status) VALUES ($1, $2, $3)
+         ON CONFLICT (session_id, user_id) DO UPDATE SET status = EXCLUDED.status, rsvp_at = CASE WHEN session_players.status = EXCLUDED.status THEN session_players.rsvp_at ELSE now() END,
+           checked_in_at = CASE WHEN EXCLUDED.status = 'out' THEN NULL ELSE session_players.checked_in_at END`,
+        [s.id, actor.user.id, next],
+      );
+      if (status === 'out' && cur && cur.status === 'in' && max) {
+        await q(`UPDATE session_players SET status = 'in' WHERE session_id = $1 AND user_id =
+                 (SELECT user_id FROM session_players WHERE session_id = $1 AND status = 'waitlist' ORDER BY rsvp_at LIMIT 1)`, [s.id]);
+      }
+    });
+    return view(slug, actor);
+  }
+
+  // I'm here (or leaving). Checking in also counts as an RSVP.
+  async function checkIn(slug, actor, sessionId, here = true, userId = null) {
+    await db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true });
+      const m = await needMember(q, g, actor);
+      const s = await sessionOf(q, g, sessionId);
+      const uid = userId && Number(userId) !== actor.user.id ? Number(userId) : actor.user.id;
+      if (uid !== actor.user.id) {
+        if (!isAdmin(m, actor)) fail(403, 'Only group admins can check in someone else');
+        const [other] = await q(`SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 AND status = 'active'`, [g.id, uid]);
+        if (!other) fail(404, 'Member not found');
+      }
+      if (!here) {
+        const [busy] = await q(`SELECT 1 FROM group_games WHERE session_id = $1 AND status = 'live' AND $2 IN (a1, a2, b1, b2)`, [s.id, uid]);
+        if (busy) fail(409, 'Finish the game you\'re in first');
+      }
+      await q(
+        `INSERT INTO session_players (session_id, user_id, status, checked_in_at) VALUES ($1, $2, 'in', $3)
+         ON CONFLICT (session_id, user_id) DO UPDATE SET checked_in_at = EXCLUDED.checked_in_at,
+           status = CASE WHEN EXCLUDED.checked_in_at IS NOT NULL THEN 'in' ELSE session_players.status END`,
+        [s.id, uid, here ? new Date().toISOString() : null],
+      );
+    });
+    return view(slug, actor);
+  }
+
+  // ---------- games
+
+  async function playersInfo(q, g, ids) {
+    const rows = await q(
+      `SELECT u.id, u.name, u.handle, COALESCE(m.rating, ${L.START}) AS rating, COALESCE(m.games, 0) AS games
+       FROM users u LEFT JOIN group_members m ON m.user_id = u.id AND m.group_id = $1 WHERE u.id = ANY($2::int[])`,
+      [g.id, ids.filter(Boolean)],
+    );
+    return new Map(rows.map((r) => [r.id, r]));
+  }
+
+  // Who's free to play, with what the suggestion needs to be fair.
+  async function freePlayers(q, g, s) {
+    const here = await q(`SELECT user_id, checked_in_at FROM session_players WHERE session_id = $1 AND status = 'in' AND checked_in_at IS NOT NULL`, [s.id]);
+    const games = await q(`SELECT * FROM group_games WHERE session_id = $1 AND status <> 'void' ORDER BY started_at`, [s.id]);
+    const busy = new Set(games.filter((x) => x.status === 'live').flatMap((x) => [x.a1, x.a2, x.b1, x.b2]));
+    const info = await playersInfo(q, g, here.map((h) => h.user_id));
+    return here.filter((h) => !busy.has(h.user_id)).map((h) => {
+      const mine = games.filter((x) => [x.a1, x.a2, x.b1, x.b2].includes(h.user_id));
+      const last = mine.filter((x) => x.ended_at).map((x) => Date.parse(x.ended_at)).sort((a, b) => b - a)[0];
+      const partners = new Set(mine.map((x) => ([x.a1, x.a2].includes(h.user_id) ? [x.a1, x.a2] : [x.b1, x.b2]).find((id) => id && id !== h.user_id)).filter(Boolean));
+      const p = info.get(h.user_id) || { rating: L.START, games: 0 };
+      return { id: h.user_id, name: p.name, rating: p.rating, games: mine.length, waitingSince: last || Date.parse(h.checked_in_at), partners };
+    });
+  }
+
+  // Starts a game on a free court. Players: { a: [ids], b: [ids] } (2 or 4).
+  async function startGame(slug, actor, sessionId, input = {}) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true });
+      const m = await needMember(q, g, actor);
+      const s = await sessionOf(q, g, sessionId);
+      const [me] = await q('SELECT checked_in_at FROM session_players WHERE session_id = $1 AND user_id = $2', [s.id, actor.user.id]);
+      if (!isAdmin(m, actor) && !(me && me.checked_in_at)) fail(403, 'Check in first');
+      const court = Number(input.court);
+      if (!Number.isInteger(court) || court < 1 || court > g.settings.courts) fail(400, `Court: 1 to ${g.settings.courts}`);
+      const [taken] = await q(`SELECT 1 FROM group_games WHERE session_id = $1 AND court = $2 AND status = 'live'`, [s.id, court]);
+      if (taken) fail(409, `Court ${court} is busy`);
+      const a = (input.a || []).map(Number);
+      const b = (input.b || []).map(Number);
+      const all = [...a, ...b];
+      const ok = (a.length === 2 && b.length === 2) || (a.length === 1 && b.length === 1 && g.settings.singles);
+      if (!ok || new Set(all).size !== all.length) fail(400, g.settings.singles ? 'Pick 2 or 4 different players' : 'Pick 4 different players');
+      const free = new Set((await freePlayers(q, g, s)).map((p) => p.id));
+      const notFree = all.filter((id) => !free.has(id));
+      if (notFree.length) fail(409, 'Someone picked isn\'t checked in or is already on a court');
+      const [row] = await q(
+        `INSERT INTO group_games (group_id, session_id, court, a1, a2, b1, b2, first_server) VALUES ($1, $2, $3, $4, $5, $6, $7, 'a') RETURNING id`,
+        [g.id, s.id, court, a[0], a[1] || null, b[0], b[1] || null],
+      );
+      return { id: row.id };
+    });
+  }
+
+  async function gameOf(q, g, gameId, { lock = false } = {}) {
+    const [x] = await q(`SELECT * FROM group_games WHERE id = $1 AND group_id = $2${lock ? ' FOR UPDATE' : ''}`, [Number(gameId) || 0, g.id]);
+    if (!x) fail(404, 'Game not found');
+    return x;
+  }
+  const sideOf = (x, uid) => ([x.a1, x.a2].includes(uid) ? 'a' : [x.b1, x.b2].includes(uid) ? 'b' : null);
+  const scoreOf = (g, x, rallies = x.rallies) => {
+    const doubles = Boolean(x.a2);
+    return sportOf(g).compute(rallies, { ...scoringOf(g), ...(doubles && { doubles: true }) }, x.first_server);
+  };
+  function canScore(m, actor, x) {
+    return isAdmin(m, actor) || Boolean(sideOf(x, actor.user.id));
+  }
+
+  // A point to side a or b. `at` is how many rallies the scorer had seen, so
+  // two phones scoring the same game can't double-count.
+  async function rally(slug, actor, gameId, side, at) {
+    if (side !== 'a' && side !== 'b') fail(400, 'side must be a or b');
+    return db.tx(async (q) => {
+      const g = await load(q, slug);
+      const m = await needMember(q, g, actor);
+      const x = await gameOf(q, g, gameId, { lock: true });
+      if (!canScore(m, actor, x)) fail(403, 'Only the players in this game can score it');
+      if (x.status !== 'live') fail(409, 'This game is over');
+      if (x.final) fail(409, 'This game was entered as a final score');
+      if (at !== undefined && Number(at) !== x.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
+      const rallies = x.rallies + side;
+      const sc = scoreOf(g, x, rallies);
+      await q(
+        `UPDATE group_games SET rallies = $1, status = $2, winner = $3, ended_at = $4 WHERE id = $5`,
+        [rallies, sc.winner ? 'done' : 'live', sc.winner || null, sc.winner ? new Date().toISOString() : null, x.id],
+      );
+      return gameView(q, g, await gameOf(q, g, x.id), m, actor);
+    });
+  }
+
+  async function undo(slug, actor, gameId, at) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug);
+      const m = await needMember(q, g, actor);
+      const x = await gameOf(q, g, gameId, { lock: true });
+      if (!canScore(m, actor, x)) fail(403, 'Only the players in this game can score it');
+      if (!['live', 'done'].includes(x.status) || !x.rallies) fail(409, 'Nothing to undo');
+      if (at !== undefined && Number(at) !== x.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
+      await q(`UPDATE group_games SET rallies = $1, status = 'live', winner = NULL, ended_at = NULL WHERE id = $2`, [x.rallies.slice(0, -1), x.id]);
+      return gameView(q, g, await gameOf(q, g, x.id), m, actor);
+    });
+  }
+
+  // Quick result: "21–17" instead of point by point.
+  async function setResult(slug, actor, gameId, input = {}) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug);
+      const m = await needMember(q, g, actor);
+      const x = await gameOf(q, g, gameId, { lock: true });
+      if (!canScore(m, actor, x)) fail(403, 'Only the players in this game can enter the score');
+      if (!['live', 'done'].includes(x.status)) fail(409, 'This game is already confirmed');
+      const a = Number(input.a);
+      const b = Number(input.b);
+      if (![a, b].every((n) => Number.isInteger(n) && n >= 0 && n <= 99) || a === b) fail(400, 'Enter both scores, like 21 and 17');
+      await q(`UPDATE group_games SET final = $1::jsonb, rallies = '', status = 'done', winner = $2, ended_at = now() WHERE id = $3`,
+        [JSON.stringify({ a, b }), a > b ? 'a' : 'b', x.id]);
+      return gameView(q, g, await gameOf(q, g, x.id), m, actor);
+    });
+  }
+
+  // Ratings move when a game is confirmed (and move back if it's voided).
+  async function applyRating(q, g, x) {
+    const ids = [x.a1, x.a2, x.b1, x.b2].filter(Boolean);
+    const rows = await q('SELECT user_id AS id, rating, games FROM group_members WHERE group_id = $1 AND user_id = ANY($2::int[])', [g.id, ids]);
+    const by = new Map(rows.map((r) => [r.id, r]));
+    const team = (list) => list.filter(Boolean).map((id) => by.get(id) || { id, rating: L.START, games: 0 });
+    const margin = x.final ? Math.abs(x.final.a - x.final.b) : (() => { const sc = scoreOf(g, x); return Math.abs(sc.totals.a - sc.totals.b); })();
+    const deltas = L.rate(team([x.a1, x.a2]), team([x.b1, x.b2]), x.winner, margin);
+    for (const [id, d] of Object.entries(deltas)) {
+      const won = (x.winner === 'a' ? [x.a1, x.a2] : [x.b1, x.b2]).includes(Number(id));
+      await q('UPDATE group_members SET rating = rating + $3, games = games + 1, wins = wins + $4 WHERE group_id = $1 AND user_id = $2', [g.id, Number(id), d, won ? 1 : 0]);
+    }
+    await q('UPDATE group_games SET deltas = $1::jsonb WHERE id = $2', [JSON.stringify(deltas), x.id]);
+  }
+  async function reverseRating(q, g, x) {
+    for (const [id, d] of Object.entries(x.deltas || {})) {
+      const won = (x.winner === 'a' ? [x.a1, x.a2] : [x.b1, x.b2]).includes(Number(id));
+      await q('UPDATE group_members SET rating = rating - $3, games = GREATEST(games - 1, 0), wins = GREATEST(wins - $4, 0) WHERE group_id = $1 AND user_id = $2', [g.id, Number(id), d, won ? 1 : 0]);
+    }
+  }
+
+  // The losing side (or an admin) confirms; games left unconfirmed for a
+  // while confirm themselves (see autoConfirm).
+  async function confirm(slug, actor, gameId) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true });
+      const m = await needMember(q, g, actor);
+      const x = await gameOf(q, g, gameId, { lock: true });
+      if (!['done', 'disputed'].includes(x.status)) fail(409, x.status === 'confirmed' ? 'Already confirmed' : 'The game isn\'t finished');
+      const loser = x.winner === 'a' ? 'b' : 'a';
+      if (!isAdmin(m, actor) && sideOf(x, actor.user.id) !== loser) fail(403, 'The other side confirms the result');
+      if (x.status === 'disputed' && !isAdmin(m, actor)) fail(403, 'A group admin settles disputed games');
+      await q(`UPDATE group_games SET status = 'confirmed', confirmed_by = $1 WHERE id = $2`, [actor.user.id, x.id]);
+      await applyRating(q, g, x);
+      return gameView(q, g, await gameOf(q, g, x.id), m, actor);
+    });
+  }
+  async function dispute(slug, actor, gameId) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug);
+      const m = await needMember(q, g, actor);
+      const x = await gameOf(q, g, gameId, { lock: true });
+      if (x.status !== 'done') fail(409, 'Only a finished, unconfirmed game can be disputed');
+      if (!sideOf(x, actor.user.id) && !isAdmin(m, actor)) fail(403, 'Only the players in this game can dispute it');
+      await q(`UPDATE group_games SET status = 'disputed' WHERE id = $1`, [x.id]);
+      return gameView(q, g, await gameOf(q, g, x.id), m, actor);
+    });
+  }
+  // Admins: void a game (its rating changes are undone) or reopen a disputed one.
+  async function voidGame(slug, actor, gameId) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true });
+      const m = await needAdmin(q, g, actor);
+      const x = await gameOf(q, g, gameId, { lock: true });
+      if (x.status === 'void') return gameView(q, g, x, m, actor);
+      if (x.status === 'confirmed') await reverseRating(q, g, x);
+      await q(`UPDATE group_games SET status = 'void', deltas = NULL WHERE id = $1`, [x.id]);
+      return gameView(q, g, await gameOf(q, g, x.id), m, actor);
+    });
+  }
+  async function autoConfirm(q, g) {
+    const due = await q(
+      `SELECT * FROM group_games WHERE group_id = $1 AND status = 'done' AND ended_at < now() - interval '${AUTO_CONFIRM_MINUTES} minutes' FOR UPDATE`,
+      [g.id],
+    );
+    for (const x of due) {
+      await q(`UPDATE group_games SET status = 'confirmed' WHERE id = $1`, [x.id]);
+      await applyRating(q, g, x);
+    }
+  }
+
+  // ---------- views
+
+  function gameView(q, g, x, m, actor, info) {
+    const make = async () => {
+      const people = info || await playersInfo(q, g, [x.a1, x.a2, x.b1, x.b2]);
+      const person = (id) => (id ? { id, name: people.get(id)?.name || 'Player', handle: people.get(id)?.handle || null } : null);
+      const sc = x.final ? null : scoreOf(g, x);
+      const me = actor?.user ? sideOf(x, actor.user.id) : null;
+      const loser = x.winner ? (x.winner === 'a' ? 'b' : 'a') : null;
+      return {
+        id: x.id,
+        court: x.court,
+        status: x.status,
+        a: [person(x.a1), person(x.a2)].filter(Boolean),
+        b: [person(x.b1), person(x.b2)].filter(Boolean),
+        winner: x.winner,
+        final: x.final,
+        rallies: x.rallies.length,
+        log: x.rallies,
+        firstServer: x.first_server,
+        score: sc,
+        summary: x.final ? `${x.final.a}–${x.final.b}` : sportOf(g).summary(sc),
+        deltas: x.deltas,
+        startedAt: x.started_at,
+        endedAt: x.ended_at,
+        confirmBy: x.status === 'done' && x.ended_at ? new Date(Date.parse(x.ended_at) + AUTO_CONFIRM_MINUTES * 60000).toISOString() : null,
+        can: actor?.user ? {
+          score: x.status === 'live' && (isAdmin(m, actor) || Boolean(me)),
+          confirm: (x.status === 'done' && (me === loser || isAdmin(m, actor))) || (x.status === 'disputed' && isAdmin(m, actor)),
+          dispute: x.status === 'done' && Boolean(me || isAdmin(m, actor)),
+          void: isAdmin(m, actor) && x.status !== 'void',
+        } : {},
+      };
+    };
+    return make();
+  }
+
+  async function sessionView(q, g, s, m, actor, { skip = 0 } = {}) {
+    const players = await q(
+      `SELECT sp.*, u.name, u.handle FROM session_players sp JOIN users u ON u.id = sp.user_id WHERE sp.session_id = $1 ORDER BY sp.rsvp_at`,
+      [s.id],
+    );
+    const games = await q(`SELECT * FROM group_games WHERE session_id = $1 AND status <> 'void' ORDER BY started_at DESC`, [s.id]);
+    const info = await playersInfo(q, g, [...new Set([...players.map((p) => p.user_id), ...games.flatMap((x) => [x.a1, x.a2, x.b1, x.b2])])]);
+    const live = games.filter((x) => x.status === 'live');
+    const count = (uid) => games.filter((x) => [x.a1, x.a2, x.b1, x.b2].includes(uid)).length;
+    const onCourt = new Set(live.flatMap((x) => [x.a1, x.a2, x.b1, x.b2]));
+    const startMs = Date.parse(s.starts_at);
+    const now = Date.now();
+    const free = await freePlayers(q, g, s);
+    const pick = L.suggest(free, { singles: g.settings.singles, skip });
+    const name = (id) => ({ id, name: info.get(id)?.name || 'Player' });
+    const mine = players.find((p) => p.user_id === actor?.user?.id);
+    return {
+      id: s.id,
+      startsAt: s.starts_at,
+      endsAt: new Date(startMs + (g.settings.hours || 3) * 3600000).toISOString(),
+      today: now >= startMs - 3 * 3600000,
+      started: now >= startMs,
+      me: mine ? { status: mine.status, checkedIn: Boolean(mine.checked_in_at) } : null,
+      players: players.filter((p) => p.status !== 'out').map((p) => ({
+        id: p.user_id, name: p.name, handle: p.handle, status: p.status, checkedIn: Boolean(p.checked_in_at),
+        onCourt: onCourt.has(p.user_id), games: count(p.user_id), rating: info.get(p.user_id)?.rating ?? L.START,
+      })),
+      out: players.filter((p) => p.status === 'out').map((p) => ({ id: p.user_id, name: p.name })),
+      courts: Array.from({ length: g.settings.courts }, (_, i) => i + 1).map((no) => {
+        const x = live.find((y) => y.court === no);
+        return { no, gameId: x ? x.id : null };
+      }),
+      live: await Promise.all(live.map((x) => gameView(q, g, x, m, actor, info))),
+      suggestion: pick ? { a: pick.a.map(name), b: pick.b.map(name), more: free.length > (pick.a.length + pick.b.length) } : null,
+      waiting: free.map((p) => ({ ...name(p.id), games: p.games })),
+      results: await Promise.all(games.filter((x) => x.status !== 'live').slice(0, 30).map((x) => gameView(q, g, x, m, actor, info))),
+    };
+  }
+
+  async function leaderboard(q, g) {
+    const rows = await q(
+      `SELECT m.user_id AS id, u.name, u.handle, m.rating, m.games, m.wins, m.role FROM group_members m JOIN users u ON u.id = m.user_id
+       WHERE m.group_id = $1 AND m.status = 'active' ORDER BY (m.games > 0) DESC, m.rating DESC, u.name`,
+      [g.id],
+    );
+    // The last 7 days: wins and games from confirmed games.
+    const week = await q(
+      `SELECT a1, a2, b1, b2, winner FROM group_games WHERE group_id = $1 AND status = 'confirmed' AND ended_at > now() - interval '7 days'`,
+      [g.id],
+    );
+    const w = new Map();
+    for (const x of week) {
+      for (const [side, ids] of [['a', [x.a1, x.a2]], ['b', [x.b1, x.b2]]]) {
+        for (const id of ids.filter(Boolean)) {
+          const r = w.get(id) || { games: 0, wins: 0 };
+          r.games += 1;
+          if (x.winner === side) r.wins += 1;
+          w.set(id, r);
+        }
+      }
+    }
+    let rank = 0;
+    return rows.map((r) => ({
+      ...r,
+      rank: r.games ? ++rank : null,
+      provisional: r.games < L.PROVISIONAL,
+      winPct: r.games ? Math.round((r.wins / r.games) * 100) : null,
+      week: w.get(r.id) || { games: 0, wins: 0 },
+    }));
+  }
+
+  // The whole group page: details for anyone with the link; sessions, games,
+  // members and the leaderboard for members.
+  async function view(slug, actor, { skip = 0 } = {}) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug);
+      const m = await memberOf(q, g, actor);
+      const member = Boolean(actor?.user?.isAdmin || (m && m.status === 'active'));
+      const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM group_members WHERE group_id = $1 AND status = 'active'`, [g.id]);
+      const base = {
+        slug: g.slug,
+        name: g.name,
+        sport: { id: g.sport, name: sportOf(g).name },
+        city: g.city,
+        venue: g.venue,
+        about: g.about,
+        settings: g.settings,
+        members: n,
+        role: m ? (m.status === 'requested' ? 'requested' : m.role) : actor?.user?.isAdmin ? 'admin' : null,
+        member,
+      };
+      if (!member) return base;
+      await autoConfirm(q, g);
+      const sessions = await sessionsOf(q, g);
+      const admin = isAdmin(m, actor);
+      return {
+        ...base,
+        admin,
+        invite: g.invite_token,
+        session: sessions[0] ? await sessionView(q, g, sessions[0], m, actor, { skip }) : null,
+        nextSession: sessions[1] ? await sessionView(q, g, sessions[1], m, actor) : null,
+        leaderboard: await leaderboard(q, g),
+        requests: admin ? await q(
+          `SELECT m.user_id AS id, u.name, u.email, m.joined_at AS "requestedAt" FROM group_members m JOIN users u ON u.id = m.user_id
+           WHERE m.group_id = $1 AND m.status = 'requested' ORDER BY m.joined_at`,
+          [g.id],
+        ) : [],
+      };
+    });
+  }
+
+  async function getGame(slug, actor, gameId) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug);
+      const m = await needMember(q, g, actor);
+      await autoConfirm(q, g);
+      return gameView(q, g, await gameOf(q, g, gameId), m, actor);
+    });
+  }
+
+  return {
+    slugOf, createGroup, updateGroup, myGroups, join, setMember, leave, view, rsvp, checkIn,
+    startGame, getGame, rally, undo, setResult, confirm, dispute, voidGame,
+  };
+}
+
+module.exports = { createGroups };

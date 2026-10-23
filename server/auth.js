@@ -6,11 +6,12 @@
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
 const { HttpError } = require('./errors');
-const { passwordResetEmail } = require('./email');
+const { passwordResetEmail, signInLinkEmail } = require('./email');
 
 const scrypt = promisify(crypto.scrypt);
 const COOKIE = 'tn_session';
-const SESSION_DAYS = 30;
+const SESSION_DAYS = 180; // phones stay signed in ("remember this device")
+const LINK_MINUTES = 30;
 const MAX_FAILED_LOGINS = 10;
 const LOCK_MINUTES = 15;
 const SCRYPT = { N: 16384, r: 8, p: 1 };
@@ -142,6 +143,65 @@ function createAuth(db, { mailer } = {}) {
     const token = parseCookies(req.headers.cookie)[COOKIE];
     if (token) await db.query('DELETE FROM sessions WHERE id = $1', [tokenHash(token)]);
     return sessionCookie(req, '', 0);
+  }
+
+  // ---------- sign in with an emailed link (no password)
+
+  // Emails a one-time link that signs in (or creates the account). Like the
+  // reset email, it never says whether the email has an account. The check
+  // code is shown on screen and in the email, so people know it's theirs.
+  async function requestLink(input = {}, baseUrl) {
+    const email = normalizeEmail(input.email);
+    if (!validEmail(email)) fail(400, 'Enter a valid email address');
+    const next = typeof input.next === 'string' && input.next.startsWith('/') && !input.next.startsWith('//') ? input.next.slice(0, 300) : '/';
+    const [{ minute, hour }] = await db.query(
+      `SELECT COUNT(*) FILTER (WHERE created_at > now() - interval '1 minute')::int AS minute,
+              COUNT(*) FILTER (WHERE created_at > now() - interval '1 hour')::int AS hour
+       FROM sign_in_links WHERE email = $1`,
+      [email],
+    );
+    if (minute >= 1 || hour >= 6) fail(429, 'We just sent you a link — check your email (and spam). You can ask again in a minute.');
+    const [disabled] = await db.query('SELECT 1 FROM users WHERE email = $1 AND disabled_at IS NOT NULL', [email]);
+    const code = String(crypto.randomInt(1000, 10000));
+    if (disabled) return { code };
+    const token = crypto.randomBytes(32).toString('base64url');
+    await db.query(
+      `INSERT INTO sign_in_links (id, email, next, expires_at) VALUES ($1, $2, $3, now() + interval '${LINK_MINUTES} minutes')`,
+      [tokenHash(token), email, next],
+    );
+    // The token stays after the #, so it's never sent to the server or logged.
+    const url = `${baseUrl}/#/link?token=${token}&code=${code}`;
+    try {
+      if (mailer) await mailer.send({ to: email, ...signInLinkEmail({ url, code }) });
+    } catch (err) {
+      console.error('Sign-in link email failed:', err.message);
+      fail(502, 'Couldn\'t send the email — try again, or use your password');
+    }
+    return { code };
+  }
+
+  // Opens a link: signs in, or for a new email asks for a name first
+  // ({ needsName }) and then creates the account. Links work once.
+  async function useLink(req, input = {}) {
+    const token = typeof input.token === 'string' ? input.token : '';
+    const name = typeof input.name === 'string' ? input.name.trim().replace(/\s+/g, ' ') : '';
+    const result = await db.tx(async (q) => {
+      const [link] = await q('SELECT * FROM sign_in_links WHERE id = $1 AND used_at IS NULL AND expires_at > now() FOR UPDATE', [tokenHash(token)]);
+      if (!link) fail(400, 'This sign-in link has expired or was already used — ask for a new one');
+      let [row] = await q('SELECT * FROM users WHERE email = $1', [link.email]);
+      if (row && row.disabled_at) fail(403, 'This account is disabled. Contact support if you think this is a mistake.');
+      if (!row) {
+        if (!name) return { needsName: true, email: link.email };
+        if (name.length > 60) fail(400, 'Enter your name (up to 60 characters)');
+        // No password yet ("link" never matches one); they can set one with "Forgot password".
+        [row] = await q('INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING *', [link.email, name, 'link']);
+      }
+      await q('UPDATE sign_in_links SET used_at = now() WHERE id = $1', [link.id]);
+      await q('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1', [row.id]);
+      return { row, next: link.next || '/' };
+    });
+    if (result.needsName) return result;
+    return { user: userView(result.row), next: result.next, cookie: await startSession(req, result.row.id) };
   }
 
   // Emails a one-time reset link. Always succeeds from the caller's point of
@@ -291,7 +351,7 @@ function createAuth(db, { mailer } = {}) {
     return { ok: true };
   }
 
-  return { signup, login, logout, forgotPassword, resetPassword, userFromRequest, listUsers, userById, setAdmin, setDisabled, adminResetLink, deleteUser };
+  return { signup, login, logout, requestLink, useLink, forgotPassword, resetPassword, userFromRequest, listUsers, userById, setAdmin, setDisabled, adminResetLink, deleteUser };
 }
 
 module.exports = { createAuth, normalizeEmail, validEmail, hashPassword, verifyPassword, parseCookies };

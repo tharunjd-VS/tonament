@@ -81,6 +81,20 @@ function passwordResetEmail({ name, url }) {
   };
 }
 
+function signInLinkEmail({ url, code }) {
+  return {
+    subject: `Sign in to Tonament (${code})`,
+    html: layout({
+      heading: 'Sign in to Tonament',
+      body: ['Tap the button to sign in. This phone or computer stays signed in, so you won\'t need to do this again.', `Check code: <strong>${esc(code)}</strong> — it should match the one on your screen.`],
+      button: 'Sign in',
+      url,
+      footer: 'This link works once and expires in 30 minutes. If you didn\'t ask for it, ignore this email.',
+    }),
+    text: `Sign in to Tonament (check code ${code}):\n${url}\n\nThe link works once and expires in 30 minutes. If you didn't ask for it, ignore this email.`,
+  };
+}
+
 function inviteEmail({ inviter, tournament, roleName, roleHint, url, hasAccount }) {
   const who = inviter ? esc(inviter) : 'An organiser';
   return {
@@ -253,4 +267,4 @@ function partnerEmail({ player, tournament, event, url, hasAccount }) {
   };
 }
 
-module.exports = { createMailer, passwordResetEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };
+module.exports = { createMailer, passwordResetEmail, signInLinkEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };

@@ -12,6 +12,7 @@ const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
 const { createOrgs, createSettings } = require('./orgs');
 const { createPlayers } = require('./players');
+const { createGroups } = require('./groups');
 const dupr = require('./dupr');
 const { inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
 const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
@@ -2982,8 +2983,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
     tournamentAccess: (q, id, actor) => lockWith(q, id, actor, 'manage'),
   });
 
+  const groups = createGroups({ db, fail, text });
+
   return {
     orgs,
+    groups,
     players: profiles,
     connectDupr,
     disconnectDupr,

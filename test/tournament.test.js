@@ -310,7 +310,7 @@ test('HTTP: sign up, sign in, sessions and lockout', async () => {
     const signed = await alice('POST', '/api/auth/signup', { name: ' Alice ', email: 'Alice@X.dev', password: 'correct horse' });
     assert.equal(signed.status, 200);
     assert.deepEqual(signed.data.user, { id: signed.data.user.id, email: 'alice@x.dev', name: 'Alice', isAdmin: false });
-    assert.match(signed.setCookie, /^tn_session=[\w-]{43}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=2592000$/);
+    assert.match(signed.setCookie, /^tn_session=[\w-]{43}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=15552000$/);
     assert.equal((await alice('GET', '/api/auth/me')).data.user.email, 'alice@x.dev');
     assert.equal((await alice('POST', '/api/auth/signup', { name: 'A2', email: 'alice@x.dev', password: 'whatever12' })).status, 409);
 

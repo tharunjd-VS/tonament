@@ -481,6 +481,48 @@
       } else if (parts[0] === 'reset') {
         S.route = { name: 'reset', token: params.get('token') || '' };
         history.replaceState(null, '', '/reset'); // keep the token out of history
+      } else if (parts[0] === 'link') {
+        S.route = { name: 'link', token: params.get('token') || (S.route.name === 'link' ? S.route.token : ''), code: params.get('code') || '', state: 'opening' };
+        history.replaceState(null, '', '/link'); // keep the token out of history
+        render();
+        await useLink();
+        return;
+      } else if (parts[0] === 'groups') {
+        if (!S.me) {
+          navigate(`/signin?next=${encodeURIComponent(location.pathname)}`, { replace: true });
+          return;
+        }
+        if (parts[1] === 'new') {
+          S.route = { name: 'groupNew' };
+        } else {
+          S.route = { name: 'groups' };
+          S.groupsList = null;
+          render();
+          S.groupsList = await api('GET', '/me/groups').catch(() => []);
+        }
+      } else if (parts[0] === 'g' && parts[1]) {
+        const slug = parts[1].toLowerCase();
+        const join = params.get('join');
+        if (parts[2] === 'game' && parts[3]) {
+          S.route = { name: 'groupGame', slug, gid: Number(parts[3]) };
+          if (!S.groupGame || S.groupGame.id !== S.route.gid) S.groupGame = null;
+          render();
+          await loadGroupGame();
+          return;
+        }
+        S.route = { name: 'group', slug, tab: params.get('tab') || 'today', join, skip: 0 };
+        if (!S.group || S.group.slug !== slug) S.group = null;
+        if (join && S.me) {
+          try {
+            const r = await api('POST', `${gPath(slug)}/join`, { token: join });
+            toast(r.joined ? 'Welcome to the group! Tap "I\'m in" for the next session.' : 'Request sent to the group admins');
+          } catch (e) { toast(e.message, true); }
+          history.replaceState(null, '', `/g/${slug}`);
+          S.route.join = null;
+        }
+        render();
+        await loadGroup();
+        return;
       } else if (parts[0] === 'me' && parts[1] === 'profile') {
         if (!S.me) {
           navigate('/signin?next=/me/profile', { replace: true });
@@ -534,7 +576,7 @@
         ]);
       }
     }
-    if (['new', 'tournament', 'orgNew', 'org', 'profile'].includes(S.route.name)) ensurePlaces(); // city suggestions
+    if (['new', 'tournament', 'orgNew', 'org', 'profile', 'groupNew'].includes(S.route.name)) ensurePlaces(); // city suggestions
     render();
     if (prev.name !== S.route.name || prev.mid !== S.route.mid || prev.id !== S.route.id) window.scrollTo(0, 0);
   }
@@ -634,9 +676,14 @@
     else if (S.route.name === 'signin' || S.route.name === 'signup') view = viewAuth();
     else if (S.route.name === 'forgot') view = viewForgot();
     else if (S.route.name === 'reset') view = viewReset();
+    else if (S.route.name === 'link') view = viewLink();
     else if (S.route.name === 'admin') view = viewAdmin();
     else if (S.route.name === 'orgNew') view = viewOrgNew();
     else if (S.route.name === 'profile') view = viewProfile();
+    else if (S.route.name === 'groups') view = viewGroups();
+    else if (S.route.name === 'groupNew') view = viewGroupNew();
+    else if (S.route.name === 'group') view = viewGroup();
+    else if (S.route.name === 'groupGame') view = viewGroupGame();
     else if (S.route.name === 'org') view = viewOrgEdit();
     else if (S.route.name === 'tournament') view = S.t ? viewTournament() : loading();
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
@@ -3682,6 +3729,7 @@
           h('div', { class: 'menu-panel' },
             h('div', { class: 'menu-head' }, h('strong', {}, S.me.name), h('div', { class: 'muted small' }, S.me.email)),
             h('a', { href: '/me/profile', onclick: closeMenu }, 'Your profile'),
+            h('a', { href: '/groups', onclick: closeMenu }, 'Your groups'),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.myOrgs && !S.myOrgs.length ? h('a', { href: '/academy/new', onclick: closeMenu }, 'Create an academy page') : null,
@@ -3718,6 +3766,8 @@
       setTimeout(() => { navigate(next); });
       return loading();
     }
+    // Email me a link: no password, and this phone stays signed in.
+    if (S.emailEnabled && !S.route.password) return linkCard(signup, next);
     const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, signup ? 'Create account' : 'Sign in');
     const form = h('form', {
       class: 'card form auth-card',
@@ -3759,8 +3809,93 @@
     btn,
     h('p', { class: 'center small', style: 'margin:0' },
       signup ? 'Already have an account? ' : 'New to Tonament? ',
-      h('a', { href: `/${signup ? 'signin' : 'signup'}?next=${encodeURIComponent(next)}` }, signup ? 'Sign in' : 'Create an account')));
+      h('a', { href: `/${signup ? 'signin' : 'signup'}?next=${encodeURIComponent(next)}` }, signup ? 'Sign in' : 'Create an account')),
+    S.emailEnabled ? h('p', { class: 'center small', style: 'margin:0' },
+      h('button', { type: 'button', class: 'link-btn', onclick: () => { S.route.password = false; render(); } }, 'Email me a sign-in link instead')) : null);
     return form;
+  }
+
+  // "Email me a link": one field, then "check your email" with the check code.
+  function linkCard(signup, next) {
+    const sent = S.route.sent;
+    const email = h('input', { name: 'email', type: 'email', required: true, autocomplete: 'email', inputmode: 'email', value: (sent && sent.email) || S.route.email || null });
+    const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Email me a sign-in link');
+    const send = async (address) => {
+      btn.disabled = true;
+      try {
+        const { code } = await api('POST', '/auth/link', { email: address, next });
+        S.route.sent = { email: address, code };
+        render();
+      } catch (err) {
+        toast(err.message, true);
+        btn.disabled = false;
+      }
+    };
+    const usePassword = h('p', { class: 'center small', style: 'margin:0' },
+      h('button', { type: 'button', class: 'link-btn', onclick: () => { S.route.password = true; S.route.sent = null; render(); } }, signup ? 'Sign up with a password instead' : 'Use my password instead'));
+    if (sent) {
+      return h('div', { class: 'card form auth-card link-sent' },
+        h('h1', {}, 'Check your email'),
+        h('p', {}, 'We sent a sign-in link to ', h('strong', {}, sent.email), '. Tap it on this phone and you\'re in — no password needed.'),
+        h('p', { class: 'check-code' }, h('span', { class: 'muted small' }, 'Check code'), h('strong', {}, sent.code)),
+        h('p', { class: 'muted small' }, 'The email shows the same code. Not there? Check spam, or wait a minute and send it again.'),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn', type: 'button', onclick: () => send(sent.email) }, 'Send again'),
+          h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { S.route.sent = null; render(); } }, 'Use another email')),
+        usePassword);
+    }
+    const form = h('form', {
+      class: 'card form auth-card',
+      onsubmit: (e) => { e.preventDefault(); send(email.value.trim()); },
+    },
+    h('h1', {}, signup ? 'Join Tonament' : 'Sign in'),
+    h('p', { class: 'muted' }, 'Enter your email and we\'ll send you a link. No password to remember — and this phone stays signed in.'),
+    field('Email', email),
+    btn,
+    usePassword,
+    h('p', { class: 'center small muted', style: 'margin:0' }, 'New here? The same link creates your free account.'));
+    return form;
+  }
+
+  // Opening the emailed link: signs in, or asks a new player's name first.
+  async function useLink(name) {
+    const r = S.route;
+    try {
+      const res = await api('POST', '/auth/link/use', { token: r.token, ...(name && { name }) });
+      if (res.needsName) {
+        Object.assign(r, { state: 'name', email: res.email });
+        render();
+        return;
+      }
+      S.me = res.user;
+      S.t = null;
+      navFor = null;
+      toast(`Signed in as ${res.user.name}`);
+      navigate(safeNext(res.next), { replace: true });
+    } catch (err) {
+      Object.assign(r, { state: 'error', message: err.message });
+      render();
+    }
+  }
+
+  function viewLink() {
+    document.title = 'Signing in · Tonament';
+    const r = S.route;
+    if (r.state === 'opening') return h('div', { class: 'card auth-card' }, h('h1', {}, 'Signing you in…'), loading());
+    if (r.state === 'error') {
+      return h('div', { class: 'card form auth-card' }, h('h1', {}, 'That link didn\'t work'), h('p', { class: 'muted' }, r.message),
+        h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary', href: '/signin' }, 'Get a new link')));
+    }
+    const name = h('input', { name: 'name', required: true, maxlength: 60, autocomplete: 'name', placeholder: 'e.g. Asha Rao' });
+    const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Continue');
+    return h('form', {
+      class: 'card form auth-card',
+      onsubmit: (e) => { e.preventDefault(); btn.disabled = true; useLink(name.value.trim()); },
+    },
+    h('h1', {}, 'Welcome to Tonament'),
+    h('p', { class: 'muted' }, 'Creating your account for ', h('strong', {}, r.email), '. What should we call you?'),
+    field('Your name', name, null, 'As it appears on entry lists, scores and rankings.'),
+    btn);
   }
 
   function viewForgot() {
@@ -3840,6 +3975,473 @@
     field('New password', pw, null, 'At least 8 characters.'),
     field('Confirm new password', confirmPw),
     btn);
+  }
+
+  // ---------- groups: daily play (tonament.com/g/<slug>)
+  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const gPath = (slug) => `/groups/${encodeURIComponent(slug)}`;
+  const fmtTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  function fmtSessionDay(iso) {
+    const d = new Date(iso);
+    const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const diff = Math.round((day(d) - day(new Date())) / 86400000);
+    const label = diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+    return `${label}, ${fmtTime(iso)}`;
+  }
+  function scheduleText(s) {
+    const days = [...(s.days || [])].sort();
+    const run = days.length === 7 ? 'Every day'
+      : days.join() === '1,2,3,4,5,6' ? 'Mon–Sat'
+        : days.join() === '1,2,3,4,5' ? 'Mon–Fri'
+          : days.map((d) => DAYS[d]).join(', ');
+    const [hh, mm] = (s.time || '06:00').split(':').map(Number);
+    const time = new Date(2000, 0, 1, hh, mm).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return `${run} · ${time} · ${s.courts} court${s.courts === 1 ? '' : 's'}`;
+  }
+  const teamName = (team) => team.map((p) => p.name).join(' & ');
+  const groupUrl = (g, withInvite) => `${location.origin}/g/${g.slug}${withInvite && g.invite ? `?join=${g.invite}` : ''}`;
+
+  async function loadGroup(skip = 0) {
+    const slug = S.route.slug;
+    try {
+      const g = await api('GET', `${gPath(slug)}${skip ? `?skip=${skip}` : ''}`);
+      if (S.route.slug === slug) { S.group = g; S.error = null; }
+    } catch (e) {
+      S.error = e.message;
+    }
+    render(true);
+    scheduleGroupPoll();
+  }
+  let groupTimer;
+  function scheduleGroupPoll() {
+    clearTimeout(groupTimer);
+    if (!['group', 'groupGame'].includes(S.route.name)) return;
+    const busy = S.route.name === 'groupGame' ? 2500 : S.group && S.group.session && S.group.session.today ? 4000 : 30000;
+    groupTimer = setTimeout(() => {
+      if (document.hidden) { scheduleGroupPoll(); return; }
+      if (S.route.name === 'groupGame') { if (!gSending && !(gQueues.get(S.route.gid) || []).length) loadGroupGame(); else scheduleGroupPoll(); }
+      else if (S.route.name === 'group') loadGroup(S.route.skip || 0);
+    }, busy);
+  }
+  const groupAct = (fn, msg) => act(async () => { await fn(); await loadGroup(S.route.skip || 0); }, msg);
+
+  // Your groups.
+  function viewGroups() {
+    document.title = 'Your groups · Tonament';
+    const list = S.groupsList;
+    return [
+      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Your groups'), h('a', { class: 'btn btn-primary', href: '/groups/new' }, 'Create a group')),
+      list == null ? loading()
+        : list.length ? h('div', { class: 'card-list' }, list.map((g) => h('a', { class: 'card group-card', href: `/g/${g.slug}` },
+          icon(g.sport),
+          h('span', { class: 'group-card-main' }, h('strong', {}, g.name),
+            h('small', { class: 'muted' }, [g.sportName, g.city, `${g.members} member${g.members === 1 ? '' : 's'}`].filter(Boolean).join(' · '))),
+          g.status === 'requested' ? pill('waiting', 'Requested')
+            : g.games ? h('span', { class: 'group-card-rating' }, h('strong', {}, g.rating), h('small', {}, 'rating')) : null)))
+          : h('div', { class: 'card empty-state' },
+            h('h2', {}, 'Play together, every day'),
+            h('p', { class: 'muted' }, 'A group is the people you play with regularly. RSVP with one tap from WhatsApp, get fair games at the venue, score live with no arguments, and see who\'s really on top.'),
+            h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary', href: '/groups/new' }, 'Create a group'))),
+    ];
+  }
+
+  // Create a group: one short form.
+  function viewGroupNew() {
+    document.title = 'Create a group · Tonament';
+    const live = liveSports();
+    if (!live.length) return loading();
+    const d = (S.groupDraft ||= { sport: live[0].id });
+    const sport = live.find((x) => x.id === d.sport) || live[0];
+    const pointsField = sport.fields.find((f) => f.key === 'points');
+    const pointOptions = pointsField ? [...new Set([11, 15, 21, sport.defaults.points].filter((n) => n >= (pointsField.min || 1) && n <= (pointsField.max || 99)))].sort((a, b) => a - b) : null;
+    const form = h('form', {
+      class: 'card form new-flow',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const days = fd.getAll('days').map(Number);
+        if (!days.length) { toast('Pick at least one day', true); return; }
+        const btn = form.querySelector('button[type=submit]');
+        btn.disabled = true;
+        try {
+          const { slug } = await api('POST', '/groups', {
+            name: fd.get('name'), sport: sport.id, city: fd.get('city'), venue: fd.get('venue'),
+            days, time: fd.get('time'), courts: Number(fd.get('courts')),
+            scoring: { ...sport.defaults, bestOf: 1, ...(pointOptions && { points: Number(fd.get('points')) }) },
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata',
+          });
+          S.groupDraft = null;
+          toast('Group created — now invite your players');
+          navigate(`/g/${slug}?tab=members`);
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+        }
+      },
+    },
+    h('h1', {}, 'Create a group'),
+    h('p', { class: 'muted' }, 'For the people you play with regularly. You can change all of this later.'),
+    field('Group name', h('input', { name: 'name', required: true, maxlength: 60, placeholder: 'e.g. Velachery Morning Smashers', autocomplete: 'off' })),
+    groupField('Sport', choiceGroup({
+      name: 'sport', label: 'Sport', value: sport.id, tiles: true,
+      options: live.map((x) => ({ value: x.id, label: x.name, icon: x.id })),
+      onchange: (e) => { d.sport = e.target.value; render(); },
+    })),
+    groupField('Days', choiceGroup({ name: 'days', label: 'Days', multiple: true, value: [1, 2, 3, 4, 5, 6], options: [1, 2, 3, 4, 5, 6, 0].map((n) => ({ value: n, label: DAYS[n] })) })),
+    h('div', { class: 'grid-2' },
+      field('Start time', h('input', { name: 'time', type: 'time', required: true, value: '06:00' })),
+      groupField('Courts', choiceGroup({ name: 'courts', label: 'Courts', value: 2, options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: String(n) })) }))),
+    pointOptions ? groupField('Games to', choiceGroup({ name: 'points', label: 'Games to', value: sport.defaults.points, options: pointOptions.map((n) => ({ value: n, label: String(n) })) }), null, 'One game per match, so courts turn over quickly.') : null,
+    h('div', { class: 'grid-2' },
+      field('Venue', h('input', { name: 'venue', maxlength: 120, placeholder: 'e.g. SDAT Indoor Stadium' })),
+      field('City', h('input', { name: 'city', maxlength: 60, list: 'group-cities' }))),
+    h('datalist', { id: 'group-cities' }, cityOptions(REGIONS.defaultCountry).map((c) => h('option', { value: c }))),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create group')));
+    return form;
+  }
+
+  // The group page.
+  const GROUP_TABS = [['today', 'Today'], ['leaderboard', 'Leaderboard'], ['members', 'Members']];
+  function viewGroup() {
+    const g = S.group;
+    if (!g || g.slug !== S.route.slug) return loading();
+    document.title = `${g.name} · Tonament`;
+    const head = h('header', { class: 'group-head' },
+      h('div', { class: 'group-head-icon' }, icon(g.sport.id)),
+      h('div', {}, h('h1', {}, g.name),
+        h('p', { class: 'muted small' }, [g.sport.name, g.venue, g.city].filter(Boolean).join(' · ')),
+        h('p', { class: 'muted small' }, `${scheduleText(g.settings)} · ${g.members} member${g.members === 1 ? '' : 's'}`)));
+    if (!g.member) {
+      const next = `/g/${g.slug}${S.route.join ? `?join=${encodeURIComponent(S.route.join)}` : ''}`;
+      return [head, h('div', { class: 'card entry-card' },
+        !S.me ? [
+          h('h2', {}, `Join ${g.name}`),
+          h('p', { class: 'muted' }, 'Sign in to RSVP, play and see the leaderboard. It takes a few seconds — no password needed.'),
+          h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary btn-lg', href: `/signin?next=${encodeURIComponent(next)}` }, 'Sign in to join')),
+        ] : g.role === 'requested' ? [
+          h('h2', {}, 'Request sent'),
+          h('p', { class: 'muted' }, 'A group admin will let you in. This page updates when they do.'),
+        ] : [
+          h('h2', {}, `Join ${g.name}`),
+          h('p', { class: 'muted' }, 'Ask to join — a group admin will let you in. (With the invite link from the group, you join straight away.)'),
+          h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', onclick: () => act(async () => { await api('POST', `${gPath(g.slug)}/join`, {}); await loadGroup(); }, 'Request sent') }, 'Ask to join')),
+        ])];
+    }
+    const tabs = [...GROUP_TABS, ...(g.admin ? [['settings', 'Settings']] : [])];
+    const tab = tabs.some(([id]) => id === S.route.tab) ? S.route.tab : 'today';
+    const body = { today: groupToday, leaderboard: groupLeaderboard, members: groupMembers, settings: groupSettings }[tab](g);
+    return [head,
+      h('nav', { class: 'tabs' }, tabs.map(([id, label]) => h('a', { href: `/g/${g.slug}${id === 'today' ? '' : `?tab=${id}`}`, class: id === tab ? 'active' : '' }, label, id === 'members' && g.requests.length ? h('span', { class: 'tab-count' }, g.requests.length) : null))),
+      h('section', {}, body)];
+  }
+
+  // The RSVP card for a session (today's, or the next one).
+  function rsvpCard(g, s, small) {
+    const me = s.me;
+    const going = s.players.filter((p) => p.status === 'in');
+    const waiting = s.players.filter((p) => p.status === 'waitlist');
+    const set = (status) => groupAct(() => api('POST', `${gPath(g.slug)}/sessions/${s.id}/rsvp`, { status }), status === 'in' ? 'You\'re in ✓' : 'Got it — see you next time');
+    const share = () => {
+      const text = `${g.sport.name} · ${g.name}\n${fmtSessionDay(s.startsAt)}${g.venue ? ` at ${g.venue}` : ''}\n${going.length} in so far — tap to RSVP:\n${groupUrl(g, true)}`;
+      if (navigator.share) navigator.share({ text }).catch(() => {});
+      else window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+    };
+    return h('div', { class: `card rsvp-card${small ? ' small' : ''}` },
+      h('div', { class: 'card-head' },
+        h('h2', {}, fmtSessionDay(s.startsAt)),
+        h('button', { class: 'btn btn-small btn-ghost', onclick: share }, 'Share on WhatsApp')),
+      h('div', { class: 'rsvp-buttons' },
+        h('button', { class: `btn btn-lg${me && me.status !== 'out' ? ' btn-primary' : ''}`, 'aria-pressed': String(Boolean(me && me.status !== 'out')), onclick: () => set('in') },
+          me && me.status === 'waitlist' ? 'On the waitlist' : me && me.status === 'in' ? 'I\'m in ✓' : 'I\'m in'),
+        h('button', { class: `btn btn-lg${me && me.status === 'out' ? ' btn-dark' : ''}`, 'aria-pressed': String(Boolean(me && me.status === 'out')), onclick: () => set('out') }, 'Can\'t make it')),
+      h('p', { class: 'muted small rsvp-count' }, `${going.length} in${g.settings.maxPlayers ? ` of ${g.settings.maxPlayers}` : ''}${waiting.length ? ` · ${waiting.length} waiting` : ''}${s.out.length ? ` · ${s.out.length} can't make it` : ''}`),
+      going.length ? h('p', { class: 'rsvp-names' }, going.map((p) => h('span', { class: `name-chip${p.checkedIn ? ' here' : ''}` }, p.name))) : null,
+      waiting.length ? h('p', { class: 'rsvp-names muted small' }, 'Waitlist: ', waiting.map((p) => p.name).join(', ')) : null);
+  }
+
+  function groupToday(g) {
+    const s = g.session;
+    if (!s) {
+      return h('div', { class: 'card' }, h('h2', {}, 'No sessions scheduled'),
+        h('p', { class: 'muted' }, g.admin ? 'Pick the days you play in Settings.' : 'An admin hasn\'t set the days yet.'));
+    }
+    const out = [];
+    if (!s.today) {
+      out.push(rsvpCard(g, s));
+      return out;
+    }
+    const me = s.me;
+    const here = me && me.checkedIn;
+    const checkIn = (on, user) => groupAct(() => api('POST', `${gPath(g.slug)}/sessions/${s.id}/checkin`, { here: on, ...(user && { user }) }), on ? (user ? 'Checked in' : 'You\'re checked in') : 'See you next time');
+    // Before it starts: RSVP as usual (people decide half an hour before).
+    if (!s.started) out.push(rsvpCard(g, s));
+    // 1. Me: check in.
+    out.push(h('div', { class: `card checkin-card${here ? ' on' : ''}` },
+      h('div', { class: 'card-head' },
+        h('div', {}, h('h2', {}, fmtSessionDay(s.startsAt)), h('p', { class: 'muted small' }, `${s.players.filter((p) => p.checkedIn).length} here · ${s.players.filter((p) => p.status === 'in').length} in`)),
+        here ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => checkIn(false) }, 'Leaving')
+          : h('button', { class: 'btn btn-primary btn-lg', onclick: () => checkIn(true) }, 'I\'m here')),
+      here ? h('p', { class: 'small', style: 'margin:0' }, '✓ You\'re checked in — you\'ll be picked for games fairly.') : null));
+    // 2. Courts.
+    const free = s.courts.filter((c) => !c.gameId);
+    const sug = s.suggestion;
+    const start = (court) => act(async () => {
+      const { id } = await api('POST', `${gPath(g.slug)}/sessions/${s.id}/games`, { court, a: sug.a.map((p) => p.id), b: sug.b.map((p) => p.id) });
+      S.route.skip = 0;
+      navigate(`/g/${g.slug}/game/${id}`);
+    });
+    out.push(h('div', { class: 'court-grid' }, s.courts.map((c) => {
+      const x = c.gameId && s.live.find((y) => y.id === c.gameId);
+      if (!x) return h('div', { class: 'card court-card free' }, h('span', { class: 'court-no' }, `Court ${c.no}`), h('span', { class: 'muted' }, 'Free'));
+      const cur = x.score && x.score.games[x.score.games.length - 1];
+      return h('a', { class: 'card court-card', href: `/g/${g.slug}/game/${x.id}` },
+        h('span', { class: 'court-no' }, `Court ${c.no}`, h('span', { class: 'live-dot' }, ' LIVE')),
+        h('span', { class: 'court-team' }, teamName(x.a), h('strong', {}, cur ? cur.a : '–')),
+        h('span', { class: 'court-team' }, teamName(x.b), h('strong', {}, cur ? cur.b : '–')));
+    })));
+    // 3. Up next.
+    if (sug) {
+      out.push(h('div', { class: 'card upnext-card' },
+        h('div', { class: 'card-head' }, h('h2', {}, 'Up next'),
+          sug.more ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.route.skip = (S.route.skip || 0) + 1; loadGroup(S.route.skip); } }, 'Someone else') : null),
+        h('div', { class: 'upnext-teams' },
+          h('span', { class: 'team' }, sug.a.map((p) => p.name).join(' & ')),
+          h('span', { class: 'vs' }, 'v'),
+          h('span', { class: 'team' }, sug.b.map((p) => p.name).join(' & '))),
+        free.length && (here || g.admin)
+          ? h('div', { class: 'actions' }, free.slice(0, 3).map((c, i) => h('button', { class: `btn${i ? '' : ' btn-primary'}`, onclick: () => start(c.no) }, `Start on Court ${c.no}`)))
+          : h('p', { class: 'muted small', style: 'margin:0' }, !free.length ? 'All courts are busy — they\'re next when one frees up.' : 'Check in to start games.')));
+    } else if (here) {
+      out.push(h('p', { class: 'muted small center' }, s.players.filter((p) => p.checkedIn).length < 4 ? 'Waiting for more players to check in (4 for a game).' : 'Everyone free is on court.'));
+    }
+    // 4. Waiting + admin check-ins.
+    if (s.waiting.length) {
+      out.push(h('div', { class: 'card' }, h('h3', { style: 'margin:0 0 6px' }, `Waiting (${s.waiting.length})`),
+        h('p', { class: 'rsvp-names' }, s.waiting.map((p) => h('span', { class: 'name-chip here' }, p.name, h('small', {}, ` ${p.games}`))))));
+    }
+    if (g.admin) {
+      const notHere = s.players.filter((p) => p.status === 'in' && !p.checkedIn);
+      if (notHere.length) {
+        out.push(h('details', { class: 'card' }, h('summary', {}, `Check in for others (${notHere.length})`),
+          h('ul', { class: 'org-t-list' }, notHere.map((p) => h('li', {}, h('span', {}, p.name), h('button', { class: 'btn btn-small', onclick: () => checkIn(true, p.id) }, 'Here'))))));
+      }
+    }
+    // 5. Results.
+    if (s.results.length) {
+      out.push(h('div', { class: 'card' }, h('h2', {}, 'Results today'),
+        h('ul', { class: 'result-list' }, s.results.map((x) => gameResultRow(g, x)))));
+    }
+    if (g.nextSession) out.push(rsvpCard(g, g.nextSession, true));
+    return out;
+  }
+
+  function gameResultRow(g, x) {
+    const won = (side) => x.winner === side;
+    const status = { done: pill('waiting', 'Waiting for confirmation'), confirmed: pill('done', 'Confirmed'), disputed: pill('withdrawn', 'Disputed') }[x.status];
+    const delta = (p) => (x.deltas && x.deltas[p.id] != null ? h('small', { class: x.deltas[p.id] >= 0 ? 'up' : 'down' }, ` ${x.deltas[p.id] >= 0 ? '+' : ''}${x.deltas[p.id]}`) : null);
+    const post = (what, msg) => groupAct(() => api('POST', `${gPath(g.slug)}/games/${x.id}/${what}`, {}), msg);
+    return h('li', {},
+      h('div', { class: 'result-head' },
+        h('a', { href: `/g/${g.slug}/game/${x.id}`, class: 'game-line' },
+          h('span', { class: won('a') ? 'won' : '' }, x.a.map((p) => [p.name, delta(p)]).reduce((acc, v, i) => (i ? [...acc, ' & ', v] : [v]), [])),
+          h('span', { class: 'muted' }, ` ${x.summary} `),
+          h('span', { class: won('b') ? 'won' : '' }, x.b.map((p) => [p.name, delta(p)]).reduce((acc, v, i) => (i ? [...acc, ' & ', v] : [v]), []))),
+        status),
+      x.can && (x.can.confirm || x.can.dispute) ? h('div', { class: 'actions', style: 'margin:6px 0 0' },
+        x.can.confirm ? h('button', { class: 'btn btn-small btn-primary', onclick: () => post('confirm', 'Result confirmed') }, x.status === 'disputed' ? 'Keep this result' : `Confirm ${x.summary}`) : null,
+        x.can.dispute && x.status === 'done' ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => confirm('Flag this result for a group admin?') && post('dispute', 'Flagged for an admin') }, 'Something\'s wrong') : null,
+        x.status === 'disputed' && x.can.void ? h('button', { class: 'btn btn-small btn-ghost danger', onclick: () => confirm('Void this game? It won\'t count for ratings.') && post('void', 'Game voided') }, 'Void game') : null) : null);
+  }
+
+  function groupLeaderboard(g) {
+    const rows = g.leaderboard.filter((r) => r.games);
+    const fresh = g.leaderboard.filter((r) => !r.games);
+    return [
+      h('div', { class: 'card' },
+        h('h2', {}, 'Leaderboard'),
+        rows.length ? h('ol', { class: 'rank-list' }, rows.map((r) => h('li', { class: `rank-row${r.id === (S.me && S.me.id) ? ' me' : ''}` },
+          h('span', { class: 'rank-no' }, r.rank),
+          h('span', { class: 'rank-name' }, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : h('strong', {}, r.name),
+            h('small', { class: 'muted' }, `${r.wins}–${r.games - r.wins} · ${r.winPct}% wins${r.week.games ? ` · this week ${r.week.wins}–${r.week.games - r.week.wins}` : ''}`)),
+          h('span', { class: 'rank-pts' }, h('strong', {}, r.rating), h('small', {}, r.provisional ? 'new' : 'rating')))))
+          : empty('No confirmed games yet. Ratings start at 1000 and move after every confirmed game.'),
+        h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Ratings move after every confirmed game: beat stronger players to climb faster. "new" = fewer than 5 games.')),
+      fresh.length ? h('p', { class: 'muted small' }, `Yet to play: ${fresh.map((r) => r.name).join(', ')}`) : null,
+    ];
+  }
+
+  function groupMembers(g) {
+    const link = groupUrl(g, true);
+    const shareInvite = () => {
+      const text = `Join ${g.name} on Tonament — RSVP, fair games and live scores:\n${link}`;
+      if (navigator.share) navigator.share({ text }).catch(() => {});
+      else window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+    };
+    const setMember = (id, action, msg) => groupAct(() => api('POST', `${gPath(g.slug)}/members/${id}`, { action }), msg);
+    return [
+      h('div', { class: 'card' },
+        h('h2', {}, 'Invite players'),
+        h('p', { class: 'muted small' }, 'Anyone with this link joins straight away. Share it in your WhatsApp group.'),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn btn-primary', onclick: shareInvite }, 'Share invite link'),
+          h('button', { class: 'btn', onclick: () => copy(link, 'Invite link copied') }, 'Copy link'))),
+      g.requests.length ? h('div', { class: 'card' }, h('h2', {}, `Asking to join (${g.requests.length})`),
+        h('ul', { class: 'org-t-list' }, g.requests.map((r) => h('li', {},
+          h('span', {}, h('strong', {}, r.name), h('small', { class: 'muted' }, ` ${r.email}`)),
+          h('span', { class: 'actions', style: 'margin:0' },
+            h('button', { class: 'btn btn-small btn-primary', onclick: () => setMember(r.id, 'approve', `${r.name} joined`) }, 'Let in'),
+            h('button', { class: 'btn btn-small btn-ghost', onclick: () => setMember(r.id, 'decline', 'Declined') }, 'Decline')))))) : null,
+      h('div', { class: 'card' }, h('h2', {}, `Members (${g.members})`),
+        h('ul', { class: 'org-t-list' }, g.leaderboard.map((r) => h('li', {},
+          h('span', {}, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : r.name, r.role === 'admin' ? [' ', pill('org', 'Admin')] : null),
+          g.admin && r.id !== (S.me && S.me.id) ? h('span', { class: 'actions', style: 'margin:0' },
+            h('button', { class: 'btn btn-small btn-ghost', onclick: () => setMember(r.id, r.role === 'admin' ? 'member' : 'admin', r.role === 'admin' ? 'No longer an admin' : `${r.name} is now an admin`) }, r.role === 'admin' ? 'Remove admin' : 'Make admin'),
+            h('button', { class: 'btn btn-small btn-ghost danger', onclick: () => confirm(`Remove ${r.name} from the group?`) && setMember(r.id, 'remove', 'Removed') }, 'Remove')) : null)))),
+      h('p', { class: 'center' }, h('button', {
+        class: 'link-btn small',
+        onclick: () => confirm(`Leave ${g.name}?`) && act(async () => { await api('POST', `${gPath(g.slug)}/leave`, {}); navigate('/groups'); }, 'You left the group'),
+      }, 'Leave this group')),
+    ];
+  }
+
+  function groupSettings(g) {
+    const s = g.settings;
+    const sport = S.sports.find((x) => x.id === g.sport.id);
+    const pointsField = sport && sport.fields.find((f) => f.key === 'points');
+    const form = h('form', {
+      class: 'card form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const days = fd.getAll('days').map(Number);
+        saveForm(form, async () => {
+          await api('PATCH', gPath(g.slug), {
+            name: fd.get('name'), venue: fd.get('venue'), city: fd.get('city'), days, time: fd.get('time'),
+            courts: Number(fd.get('courts')), maxPlayers: fd.get('maxPlayers') || null, singles: fd.get('singles') === 'on',
+            ...(pointsField && { scoring: { ...s.scoring, points: Number(fd.get('points')) } }),
+          });
+          await loadGroup();
+        }, 'Settings saved');
+      },
+    },
+    h('h2', {}, 'Settings'),
+    field('Group name', h('input', { name: 'name', required: true, maxlength: 60, value: g.name })),
+    groupField('Days', choiceGroup({ name: 'days', label: 'Days', multiple: true, value: s.days, options: [1, 2, 3, 4, 5, 6, 0].map((n) => ({ value: n, label: DAYS[n] })) })),
+    h('div', { class: 'grid-2' },
+      field('Start time', h('input', { name: 'time', type: 'time', required: true, value: s.time })),
+      field('Courts', h('input', { name: 'courts', type: 'number', min: 1, max: 12, required: true, value: s.courts }))),
+    h('div', { class: 'grid-2' },
+      pointsField ? field('Games to', h('input', { name: 'points', type: 'number', min: pointsField.min || 5, max: pointsField.max || 50, value: s.scoring.points })) : null,
+      field('Max players (optional)', h('input', { name: 'maxPlayers', type: 'number', min: 2, max: 200, value: s.maxPlayers ?? '', placeholder: 'No limit' }), null, 'Extra RSVPs go on a waitlist.')),
+    h('label', { class: 'check-field' }, h('input', { type: 'checkbox', name: 'singles', checked: Boolean(s.singles) }),
+      h('span', {}, h('strong', {}, 'Allow singles'), h('small', {}, 'When only 2 or 3 players are free, suggest a singles game.'))),
+    h('div', { class: 'grid-2' },
+      field('Venue', h('input', { name: 'venue', maxlength: 120, value: g.venue || '' })),
+      field('City', h('input', { name: 'city', maxlength: 60, value: g.city || '' }))),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
+    return [form,
+      h('div', { class: 'card' }, h('h2', {}, 'Invite link'),
+        h('p', { class: 'muted small' }, 'Made a new link? The old one stops working (people already in the group stay).'),
+        h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => confirm('Make a new invite link? The old one stops working.') && groupAct(() => api('PATCH', gPath(g.slug), { newInvite: true }), 'New invite link made') }, 'New invite link')))];
+  }
+
+  // ---------- a group game: score it live (players), or follow it
+  const gQueues = new Map(); // game id -> [{ type: 'rally', side } | { type: 'undo' }]
+  let gSending = false;
+  async function loadGroupGame() {
+    const { slug, gid } = S.route;
+    try {
+      const [x, g] = await Promise.all([api('GET', `${gPath(slug)}/games/${gid}`), S.group && S.group.slug === slug ? S.group : api('GET', gPath(slug))]);
+      if (S.route.gid === gid) { S.groupGame = x; S.group = g; S.error = null; }
+    } catch (e) {
+      S.error = e.message;
+    }
+    render(true);
+    scheduleGroupPoll();
+  }
+  // The game with points still being sent, worked out locally (same rules as the server).
+  function groupGameNow(g, x) {
+    const ops = gQueues.get(x.id) || [];
+    const sport = window.TonamentSports && window.TonamentSports[g.sport.id];
+    if (!ops.length || !sport || x.final) return x;
+    let log = x.log;
+    for (const op of ops) log = op.type === 'rally' ? log + op.side : log.slice(0, -1);
+    const score = sport.compute(log, { ...g.settings.scoring, ...(x.a.length > 1 && { doubles: true }) }, x.firstServer);
+    return { ...x, log, rallies: log.length, score, summary: sport.summary(score), status: score.winner ? 'done' : 'live', winner: score.winner || null, pending: ops.length };
+  }
+  function groupTap(g, x, op) {
+    gQueues.set(x.id, [...(gQueues.get(x.id) || []), op]);
+    render();
+    sendGroupQueue(g.slug, x.id);
+  }
+  async function sendGroupQueue(slug, gid) {
+    if (gSending) return;
+    gSending = true;
+    try {
+      while ((gQueues.get(gid) || []).length) {
+        const op = gQueues.get(gid)[0];
+        const at = S.groupGame.log.length;
+        try {
+          S.groupGame = await api('POST', `${gPath(slug)}/games/${gid}/${op.type}`, op.type === 'rally' ? { side: op.side, at } : { at });
+          gQueues.set(gid, gQueues.get(gid).slice(1));
+          S.offline = false;
+        } catch (e) {
+          if (e.network) { S.offline = true; render(); await new Promise((r) => setTimeout(r, 2000)); continue; }
+          gQueues.set(gid, []);
+          toast(e.message, true);
+          await loadGroupGame();
+        }
+        render();
+      }
+    } finally {
+      gSending = false;
+    }
+  }
+
+  function viewGroupGame() {
+    const g = S.group;
+    const raw = S.groupGame;
+    if (!g || !raw || raw.id !== S.route.gid) return loading();
+    const x = groupGameNow(g, raw);
+    document.title = `${teamName(x.a)} v ${teamName(x.b)} · ${g.name}`;
+    const m = {
+      a: { id: 'a', name: teamName(x.a) }, b: { id: 'b', name: teamName(x.b) },
+      status: x.status === 'live' ? 'live' : 'done', winner: x.winner, summary: x.summary, score: x.score,
+    };
+    const finalForm = () => {
+      const fa = h('input', { type: 'number', min: 0, max: 99, required: true, 'aria-label': teamName(x.a), inputmode: 'numeric' });
+      const fb = h('input', { type: 'number', min: 0, max: 99, required: true, 'aria-label': teamName(x.b), inputmode: 'numeric' });
+      return h('details', { class: 'card' }, h('summary', {}, 'Enter the final score instead'),
+        h('form', {
+          class: 'final-form',
+          onsubmit: (e) => { e.preventDefault(); act(async () => { S.groupGame = await api('POST', `${gPath(g.slug)}/games/${x.id}/result`, { a: Number(fa.value), b: Number(fb.value) }); }, 'Score saved'); },
+        }, h('label', {}, h('span', {}, teamName(x.a)), fa), h('label', {}, h('span', {}, teamName(x.b)), fb), h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save score')));
+    };
+    const tap = (s) => (x.score && x.score.tap && x.score.tap[s]) || '+1';
+    const post = (what, msg) => act(async () => { S.groupGame = await api('POST', `${gPath(g.slug)}/games/${x.id}/${what}`, {}); }, msg);
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: `/g/${g.slug}` }, `← ${g.name}`), h('span', { class: 'muted small' }, ` · Court ${x.court}`)),
+      x.score ? scoreboard(m) : h('div', { class: 'card final-score' }, h('strong', {}, `${teamName(x.a)} ${x.final.a} – ${x.final.b} ${teamName(x.b)}`)),
+      x.can.score && x.status === 'live' && !x.final ? h('div', { class: 'scorer' },
+        h('div', { class: 'score-btns' }, ['a', 'b'].map((s) => h('button', { class: `score-btn side-${s}`, onclick: () => groupTap(g, x, { type: 'rally', side: s }) },
+          h('span', { class: `sbtn-plus${tap(s) === '+1' ? '' : ' sbtn-word'}` }, tap(s)), h('span', { class: 'sbtn-name' }, teamName(x[s]))))),
+        h('div', { class: `sync ${S.offline && x.pending ? 'offline' : x.pending ? 'saving' : 'saved'}`, role: 'status' },
+          S.offline && x.pending ? `No connection — ${x.pending} point${x.pending === 1 ? '' : 's'} waiting` : x.pending ? 'Saving…' : 'All points saved'),
+        h('div', { class: 'scorer-tools' }, h('button', { class: 'btn', disabled: !x.rallies, onclick: () => groupTap(g, x, { type: 'undo' }) }, '↶ Undo')),
+        h('p', { class: 'hint center', style: 'margin:0' }, 'Tap the side that won the rally. Everyone in the game sees the score live.')) : null,
+      x.can.score && x.status === 'live' && !x.rallies ? finalForm() : null,
+      x.status === 'live' && !x.can.score ? h('p', { class: 'muted small center' }, 'Live — the players are scoring this game.') : null,
+      x.status !== 'live' ? h('div', { class: 'card' },
+        h('h2', {}, x.status === 'confirmed' ? 'Confirmed ✓' : x.status === 'disputed' ? 'Disputed — an admin will check it' : x.status === 'void' ? 'Voided' : 'Game over'),
+        x.status === 'done' ? h('p', { class: 'muted small' }, `${teamName(x[x.winner === 'a' ? 'b' : 'a'])} confirm the result. It confirms itself at ${fmtTime(x.confirmBy)}.`) : null,
+        x.deltas ? h('p', { class: 'small' }, [...x.a, ...x.b].map((p) => `${p.name} ${x.deltas[p.id] >= 0 ? '+' : ''}${x.deltas[p.id]}`).join(' · ')) : null,
+        h('div', { class: 'actions' },
+          x.can.confirm ? h('button', { class: 'btn btn-primary', onclick: () => post('confirm', 'Result confirmed') }, x.status === 'disputed' ? 'Keep this result' : `Confirm ${x.summary}`) : null,
+          x.can.dispute ? h('button', { class: 'btn btn-ghost', onclick: () => confirm('Flag this result for a group admin?') && post('dispute', 'Flagged for an admin') }, 'Something\'s wrong') : null,
+          x.status !== 'live' && x.can.void && x.status !== 'confirmed' ? h('button', { class: 'btn btn-ghost danger', onclick: () => confirm('Void this game?') && post('void', 'Game voided') }, 'Void') : null,
+          h('a', { class: 'btn', href: `/g/${g.slug}` }, 'Back to the group'))) : null,
+      x.score ? gamesTable(m) : null,
+    ];
   }
 
   // ---------- player profiles (tonament.com/p/<handle>)
@@ -4861,7 +5463,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|signin$|signup$|forgot$|reset$|admin$|academy\/new$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

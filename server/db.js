@@ -376,6 +376,76 @@ CREATE TABLE IF NOT EXISTS event_results (
 );
 CREATE INDEX IF NOT EXISTS event_results_rank ON event_results(sport, category, finished_at);
 CREATE INDEX IF NOT EXISTS event_results_email ON event_results(email);
+-- v24: sign in with an emailed link (no password needed); the phone stays signed in.
+CREATE TABLE IF NOT EXISTS sign_in_links (
+  id          TEXT PRIMARY KEY,                  -- sha256 of the emailed token
+  email       TEXT NOT NULL,
+  next        TEXT,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  used_at     TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS sign_in_links_email ON sign_in_links(email, created_at);
+-- Groups: people who play together every day. A schedule makes sessions;
+-- members RSVP and check in; games are suggested, scored live by players and
+-- confirmed by the losing side; confirmed games move each member's rating.
+CREATE TABLE IF NOT EXISTS groups (
+  id           SERIAL PRIMARY KEY,
+  slug         TEXT UNIQUE NOT NULL,
+  name         TEXT NOT NULL,
+  sport        TEXT NOT NULL,
+  city         TEXT,
+  venue        TEXT,
+  about        TEXT,
+  invite_token TEXT NOT NULL,
+  settings     JSONB NOT NULL,             -- { days, time, timeZone, courts, maxPlayers, hours, scoring, singles }
+  created_by   INTEGER,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS group_members (
+  group_id   INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role       TEXT NOT NULL DEFAULT 'member',  -- admin | member
+  status     TEXT NOT NULL DEFAULT 'active',  -- active | requested
+  rating     INTEGER NOT NULL DEFAULT 1000,
+  games      INTEGER NOT NULL DEFAULT 0,
+  wins       INTEGER NOT NULL DEFAULT 0,
+  joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS group_members_user ON group_members(user_id);
+CREATE TABLE IF NOT EXISTS group_sessions (
+  id         SERIAL PRIMARY KEY,
+  group_id   INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  starts_at  TIMESTAMPTZ NOT NULL,
+  UNIQUE (group_id, starts_at)
+);
+CREATE TABLE IF NOT EXISTS session_players (
+  session_id    INTEGER NOT NULL REFERENCES group_sessions(id) ON DELETE CASCADE,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status        TEXT NOT NULL,              -- in | waitlist | out
+  rsvp_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  checked_in_at TIMESTAMPTZ,
+  PRIMARY KEY (session_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS group_games (
+  id           SERIAL PRIMARY KEY,
+  group_id     INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  session_id   INTEGER REFERENCES group_sessions(id) ON DELETE SET NULL,
+  court        INTEGER NOT NULL,
+  a1 INTEGER NOT NULL, a2 INTEGER, b1 INTEGER NOT NULL, b2 INTEGER,
+  rallies      TEXT NOT NULL DEFAULT '',
+  first_server TEXT NOT NULL DEFAULT 'a',
+  status       TEXT NOT NULL DEFAULT 'live',   -- live | done | confirmed | disputed | void
+  winner       TEXT,                           -- a | b
+  final        JSONB,                          -- { a, b } when entered as a final score
+  deltas       JSONB,                          -- rating changes, by user id
+  started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ended_at     TIMESTAMPTZ,
+  confirmed_by INTEGER
+);
+CREATE INDEX IF NOT EXISTS group_games_session ON group_games(session_id, status);
+CREATE INDEX IF NOT EXISTS group_games_group ON group_games(group_id, ended_at);
 CREATE TABLE IF NOT EXISTS dupr_submissions (
   match_id    INTEGER PRIMARY KEY,
   status      TEXT NOT NULL DEFAULT 'queued',  -- queued | sent | failed
@@ -388,7 +458,7 @@ CREATE TABLE IF NOT EXISTS dupr_submissions (
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 23;
+const SCHEMA_VERSION = 24;
 
 async function migrate(db) {
   try {

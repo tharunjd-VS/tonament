@@ -37,6 +37,18 @@
       "destination": "/index.html"
     },
     {
+      "source": "/groups/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/groups",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/g/:path*",
+      "destination": "/index.html"
+    },
+    {
       "source": "/p/:handle",
       "destination": "/api/index?__path=player/:handle"
     },
@@ -49,7 +61,7 @@
       "destination": "/api/index?__path=rankings/:path*"
     },
     {
-      "source": "/:page(new|signin|signup|forgot|reset|admin)",
+      "source": "/:page(new|signin|signup|forgot|reset|link|admin)",
       "destination": "/index.html"
     },
     {

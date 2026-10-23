@@ -1017,3 +1017,57 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .logo-preview.round, .org-edit-logo.round { border-radius: 50%; object-fit: cover; padding: 0; }
 .org-edit-logo.round.initials { width: 56px; height: 56px; font-size: 1.2rem; }
 .logo-preview.round.initials { font-size: 1.4rem; }
+
+/* ---------- sign in with a link */
+.check-code { display: flex; align-items: baseline; gap: 12px; margin: 4px 0; }
+.check-code strong { font-size: 2rem; letter-spacing: 0.2em; font-variant-numeric: tabular-nums; color: var(--accent-text); }
+
+/* ---------- groups (daily play) */
+.page-head { margin: 4px 0 16px; flex-wrap: wrap; gap: 10px; }
+.page-head h1 { margin: 0; }
+.group-card { display: flex; align-items: center; gap: 14px; text-decoration: none; color: var(--text); }
+.group-card > .icon { width: 36px; height: 36px; color: var(--accent-text); flex: none; }
+.group-card-main { flex: 1; min-width: 0; display: grid; }
+.group-card-main strong { overflow-wrap: anywhere; }
+.group-card-rating { display: grid; text-align: right; line-height: 1.1; }
+.group-card-rating small { color: var(--muted); font-size: 0.75rem; }
+.empty-state h2 { margin-top: 0; }
+.group-head { display: flex; gap: 14px; align-items: center; margin: 4px 0 12px; }
+.group-head h1 { margin: 0; overflow-wrap: anywhere; }
+.group-head p { margin: 2px 0 0; }
+.group-head-icon { width: 56px; height: 56px; border-radius: 16px; background: var(--accent); color: var(--on-accent); display: flex; align-items: center; justify-content: center; flex: none; }
+.group-head-icon .icon { width: 34px; height: 34px; }
+.tab-count { display: inline-block; margin-left: 6px; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: 0.75rem; font-weight: 700; text-align: center; }
+.rsvp-card h2, .checkin-card h2 { margin: 0; }
+.rsvp-card.small h2 { font-size: 1.05rem; }
+.rsvp-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0 6px; }
+.rsvp-buttons .btn { width: 100%; justify-content: center; }
+.btn-dark { background: var(--surface-2); border-color: var(--border); }
+.rsvp-count { margin: 4px 0; }
+.rsvp-names { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+.name-chip { padding: 3px 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); font-size: 0.88rem; }
+.name-chip.here { border-color: var(--accent); }
+.name-chip small { color: var(--muted); }
+.checkin-card.on { border-left: 4px solid var(--accent); }
+.checkin-card .card-head { align-items: center; gap: 12px; flex-wrap: wrap; }
+.court-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); margin-bottom: 16px; }
+.court-card { margin: 0; display: grid; gap: 4px; text-decoration: none; color: var(--text); border-left: 4px solid var(--live); }
+.court-card.free { border-left-color: var(--border); }
+.court-no { font-weight: 700; font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.court-no .live-dot { color: var(--live); }
+.court-team { display: flex; justify-content: space-between; gap: 8px; }
+.court-team strong { font-variant-numeric: tabular-nums; font-size: 1.2rem; }
+.upnext-card { border: 2px solid var(--accent); }
+.upnext-card h2 { margin: 0; }
+.upnext-teams { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; margin: 12px 0; font-weight: 700; font-size: 1.1rem; }
+.upnext-teams .team:last-child { text-align: right; }
+.upnext-teams .vs { color: var(--muted); font-weight: 600; }
+.game-line { color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.game-line .won { font-weight: 700; }
+.game-line small.up { color: var(--accent-text); }
+.game-line small.down { color: var(--muted); }
+.rank-row.me { background: var(--accent-soft); border-radius: 8px; }
+.final-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: end; margin-top: 10px; }
+.final-form label { display: grid; gap: 4px; font-size: 0.9rem; }
+.final-form button { grid-column: 1 / -1; }
+.final-score { text-align: center; font-size: 1.4rem; }
