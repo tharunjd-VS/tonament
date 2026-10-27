@@ -348,6 +348,8 @@ test('a carrom group game: a whole board in one tap, and undo takes it off', asy
   const sid = g.session.id;
   for (const p of [admin, joy]) { await svc.groups.rsvp(slug, p, sid, 'in'); await svc.groups.checkIn(slug, p, sid, true); }
   const { id } = await svc.groups.startGame(slug, admin, sid, { court: 1, a: [admin.user.id], b: [joy.user.id] });
+  await assert.rejects(svc.groups.startGame(slug, admin, sid, { court: 1, a: [admin.user.id], b: [joy.user.id] }), /Board 1 is busy/);
+  await assert.rejects(svc.groups.startGame(slug, admin, sid, { court: 3, a: [admin.user.id], b: [joy.user.id] }), /Board: 1 to 1/);
   await assert.rejects(svc.groups.rally(slug, admin, id, 'a', undefined, { points: 13 }), /1 to 12/);
   let x = await svc.groups.rally(slug, admin, id, 'a', 0, { points: 12 });
   x = await svc.groups.rally(slug, joy, id, 'b', 1, { points: 9 });

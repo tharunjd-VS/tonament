@@ -8,6 +8,7 @@
 const crypto = require('node:crypto');
 const sports = require('./sports');
 const L = require('./group-logic');
+const { courtWord } = require('../public/sports/events');
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;
 const AUTO_CONFIRM_MINUTES = 10;
@@ -314,9 +315,10 @@ function createGroups({ db, fail, text }) {
       const [me] = await q('SELECT checked_in_at FROM session_players WHERE session_id = $1 AND user_id = $2', [s.id, actor.user.id]);
       if (!isAdmin(m, actor) && !(me && me.checked_in_at)) fail(403, 'Check in first');
       const court = Number(input.court);
-      if (!Number.isInteger(court) || court < 1 || court > g.settings.courts) fail(400, `Court: 1 to ${g.settings.courts}`);
+      const word = courtWord(g.sport); // Court, Table or Board
+      if (!Number.isInteger(court) || court < 1 || court > g.settings.courts) fail(400, `${word}: 1 to ${g.settings.courts}`);
       const [taken] = await q(`SELECT 1 FROM group_games WHERE session_id = $1 AND court = $2 AND status = 'live'`, [s.id, court]);
-      if (taken) fail(409, `Court ${court} is busy`);
+      if (taken) fail(409, `${word} ${court} is busy`);
       const a = (input.a || []).map(Number);
       const b = (input.b || []).map(Number);
       const all = [...a, ...b];
