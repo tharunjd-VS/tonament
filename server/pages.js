@@ -478,7 +478,9 @@ function sportsHubHtml({ base, sports }) {
 function orgHtml({ base, o }) {
   const path = `/@${o.slug}`;
   const L = o.location;
-  const placeText = [L.address, [L.city, [L.region, L.postcode].filter(Boolean).join(' ')].filter(Boolean).join(', '), L.country].filter(Boolean).join(', ');
+  // Parts the address already has (people often type "…, Chennai") aren't repeated.
+  const has = (part) => part && (L.address || '').toLowerCase().includes(String(part).toLowerCase());
+  const placeText = [L.address, [has(L.city) ? null : L.city, [has(L.region) ? null : L.region, has(L.postcode) ? null : L.postcode].filter(Boolean).join(' ')].filter(Boolean).join(', '), has(L.country) ? null : L.country].filter(Boolean).join(', ');
   const where = [o.kindName, L.city].filter(Boolean).join(' · ');
   const today = new Date().toISOString().slice(0, 10);
   const last = (t) => isoDate(t.endsOn) || isoDate(t.startsOn);

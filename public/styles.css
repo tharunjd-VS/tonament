@@ -248,6 +248,11 @@ legend { font-weight: 700; padding: 0 6px; }
   border-bottom: 3px solid transparent; margin-bottom: -1px;
 }
 .tabs a.active { color: var(--text); border-bottom-color: var(--accent); }
+/* More tabs past the edge: fade it, so it reads as "scroll for more". */
+.tabs.more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+.tabs.more-left { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); }
+.tabs.more-left.more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
+@media (max-width: 480px) { .tabs a { padding: 10px 11px; } }
 .banner { border-radius: var(--radius); padding: 16px; margin-bottom: 16px; display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .banner.champion {
   background: var(--navy); color: #E5E7EB; font-size: 1.2rem; font-weight: 600; justify-content: center; text-align: center;
@@ -683,6 +688,18 @@ body.display-mode.display-idle .dc-fs { visibility: hidden; }
 @media (max-aspect-ratio: 1/1) {
   .dc-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "courts" "next" "panel"; }
 }
+/* Someone opening the display on a phone: a smaller logo, the name on its
+   own line, and the page scrolls instead of cutting off. */
+@media (max-width: 700px) {
+  .display { height: auto; min-height: 100vh; overflow: visible; padding: 16px; gap: 14px; }
+  .dc-head { flex-wrap: wrap; gap: 8px 12px; padding-bottom: 10px; }
+  .dc-brand { height: 1.4em; border-right: 0; padding-right: 0; margin-right: auto; }
+  .dc-title { order: 3; flex-basis: 100%; }
+  .dc-title h1 { font-size: 1.6em; }
+  .dc-clock strong { font-size: 1.3em; }
+  .dc-body { display: flex; flex-direction: column; gap: 16px; }
+  .dc-courts, .dc-next, .dc-panel { overflow: visible; }
+}
 
 /* Entry fees paid to the organiser */
 .qr-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
@@ -930,6 +947,7 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .search-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .search-row input[type=search] { flex: 1 1 220px; }
 .search-row select { flex: 0 1 180px; }
+.search-row select.grow { flex: 1 1 200px; min-width: 0; }
 .admin-filters .choice { min-height: 32px; padding: 4px 12px; font-size: 0.88rem; }
 .admin-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .admin-row { margin: 0; display: grid; gap: 10px; }

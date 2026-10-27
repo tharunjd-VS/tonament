@@ -12,6 +12,7 @@ const scrypt = promisify(crypto.scrypt);
 const COOKIE = 'tn_session';
 const SESSION_DAYS = 180; // phones stay signed in ("remember this device")
 const LINK_MINUTES = 30;
+const LINK_USES = 5; // a scanner's visit and the person's own tap (or two)
 const MAX_FAILED_LOGINS = 10;
 const LOCK_MINUTES = 15;
 const SCRYPT = { N: 16384, r: 8, p: 1 };
@@ -165,9 +166,12 @@ function createAuth(db, { mailer } = {}) {
     const code = String(crypto.randomInt(1000, 10000));
     if (disabled) return { code };
     const token = crypto.randomBytes(32).toString('base64url');
+    // poll: kept by the tab that asked. When the link is opened anywhere (say,
+    // in the mail app's own browser), that tab signs in too.
+    const poll = crypto.randomBytes(24).toString('base64url');
     await db.query(
-      `INSERT INTO sign_in_links (id, email, next, expires_at) VALUES ($1, $2, $3, now() + interval '${LINK_MINUTES} minutes')`,
-      [tokenHash(token), email, next],
+      `INSERT INTO sign_in_links (id, email, next, expires_at, poll_hash) VALUES ($1, $2, $3, now() + interval '${LINK_MINUTES} minutes', $4)`,
+      [tokenHash(token), email, next, tokenHash(poll)],
     );
     // The token stays after the #, so it's never sent to the server or logged.
     const url = `${baseUrl}/#/link?token=${token}&code=${code}`;
@@ -177,17 +181,38 @@ function createAuth(db, { mailer } = {}) {
       console.error('Sign-in link email failed:', err.message);
       fail(502, 'Couldn\'t send the email — try again, or use your password');
     }
-    return { code };
+    return { code, poll };
+  }
+
+  // The tab that asked for a link: signed in yet? Once the link has been
+  // opened (on any device or browser), this tab gets its own session — once.
+  async function pollLink(req, input = {}) {
+    const poll = typeof input.poll === 'string' ? input.poll : '';
+    if (!poll) return { waiting: true };
+    const claimed = await db.tx(async (q) => {
+      const [link] = await q(
+        `SELECT * FROM sign_in_links WHERE poll_hash = $1 AND user_id IS NOT NULL AND claimed_at IS NULL
+           AND expires_at > now() - interval '10 minutes' FOR UPDATE`, [tokenHash(poll)]);
+      if (!link) return null;
+      const [row] = await q('SELECT * FROM users WHERE id = $1 AND disabled_at IS NULL', [link.user_id]);
+      if (!row) return null;
+      await q('UPDATE sign_in_links SET claimed_at = now() WHERE id = $1', [link.id]);
+      return { row, next: link.next || '/' };
+    });
+    if (!claimed) return { waiting: true };
+    return { user: userView(claimed.row), next: claimed.next, cookie: await startSession(req, claimed.row.id) };
   }
 
   // Opens a link: signs in, or for a new email asks for a name first
-  // ({ needsName }) and then creates the account. Links work once.
+  // ({ needsName }) and then creates the account. A link works a few times
+  // until it expires: mail scanners (Outlook's Safe Links) and mail apps
+  // often open it before the person taps it, and that mustn't use it up.
   async function useLink(req, input = {}) {
     const token = typeof input.token === 'string' ? input.token : '';
     const name = typeof input.name === 'string' ? input.name.trim().replace(/\s+/g, ' ') : '';
     const result = await db.tx(async (q) => {
-      const [link] = await q('SELECT * FROM sign_in_links WHERE id = $1 AND used_at IS NULL AND expires_at > now() FOR UPDATE', [tokenHash(token)]);
-      if (!link) fail(400, 'This sign-in link has expired or was already used — ask for a new one');
+      const [link] = await q(`SELECT * FROM sign_in_links WHERE id = $1 AND uses < ${LINK_USES} AND expires_at > now() FOR UPDATE`, [tokenHash(token)]);
+      if (!link) fail(400, 'This sign-in link has expired — ask for a new one');
       let [row] = await q('SELECT * FROM users WHERE email = $1', [link.email]);
       if (row && row.disabled_at) fail(403, 'This account is disabled. Contact support if you think this is a mistake.');
       if (!row) {
@@ -196,7 +221,7 @@ function createAuth(db, { mailer } = {}) {
         // No password yet ("link" never matches one); they can set one with "Forgot password".
         [row] = await q('INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING *', [link.email, name, 'link']);
       }
-      await q('UPDATE sign_in_links SET used_at = now() WHERE id = $1', [link.id]);
+      await q('UPDATE sign_in_links SET used_at = COALESCE(used_at, now()), uses = uses + 1, user_id = $2 WHERE id = $1', [link.id, row.id]);
       await q('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1', [row.id]);
       return { row, next: link.next || '/' };
     });
@@ -351,7 +376,7 @@ function createAuth(db, { mailer } = {}) {
     return { ok: true };
   }
 
-  return { signup, login, logout, requestLink, useLink, forgotPassword, resetPassword, userFromRequest, listUsers, userById, setAdmin, setDisabled, adminResetLink, deleteUser };
+  return { signup, login, logout, requestLink, useLink, pollLink, forgotPassword, resetPassword, userFromRequest, listUsers, userById, setAdmin, setDisabled, adminResetLink, deleteUser };
 }
 
 module.exports = { createAuth, normalizeEmail, validEmail, hashPassword, verifyPassword, parseCookies };

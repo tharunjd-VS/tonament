@@ -262,6 +262,13 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       if (!mailer.enabled) throw new HttpError(503, 'Email isn\'t set up on this site — use your password');
       return auth.requestLink(c.body, url);
     }],
+    // The tab that asked for the link: signed in once the link is opened anywhere.
+    ['POST', '/api/auth/link/poll', async (c) => {
+      const r = await auth.pollLink(c.req, c.body);
+      if (r.waiting) return r;
+      c.setCookie(r.cookie);
+      return { user: r.user, next: r.next };
+    }],
     ['POST', '/api/auth/link/use', async (c) => {
       const r = await auth.useLink(c.req, c.body);
       if (r.needsName) return r;

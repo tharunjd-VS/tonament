@@ -254,8 +254,13 @@ test('HTTP: group routes need sign-in; sign in with an emailed link', async () =
   assert.equal(body.next, '/groups');
   const cookie = r.headers.get('set-cookie');
   assert.match(cookie, /Max-Age=15552000/);
-  // Works once.
-  assert.equal((await post('/api/auth/link/use', { token, name: 'Again' })).status, 400);
+  // Works again until it expires (mail scanners open links before people tap them), up to 5 times.
+  r = await post('/api/auth/link/use', { token });
+  assert.equal((await r.json()).user.name, 'New Player');
+  for (let i = 0; i < 3; i++) await post('/api/auth/link/use', { token });
+  assert.equal((await post('/api/auth/link/use', { token })).status, 400);
+  await db.query(`UPDATE sign_in_links SET uses = 0, expires_at = now() - interval '1 minute'`);
+  assert.match((await (await post('/api/auth/link/use', { token })).json()).error, /expired/);
   r = await post('/api/groups', { name: 'Link Group', sport: 'pickleball' }, cookie.split(';')[0]);
   assert.equal(r.status, 200);
   // An existing account signs straight in; no password was ever set for link accounts.
@@ -266,6 +271,21 @@ test('HTTP: group routes need sign-in; sign in with an emailed link', async () =
   r = await post('/api/auth/link/use', { token: t2 });
   assert.equal((await r.json()).user.name, 'New Player');
   assert.equal((await post('/api/auth/login', { email: 'new.player@group.test', password: 'link' })).status, 401);
+  // The tab that asked signs in once the link is opened elsewhere (the mail app's browser) — once.
+  mails = [];
+  await db.query(`UPDATE sign_in_links SET created_at = now() - interval '2 minutes'`);
+  r = await post('/api/auth/link', { email: 'new.player@group.test', next: '/g/abc' });
+  const { poll } = await r.json();
+  assert.ok(poll);
+  assert.deepEqual(await (await post('/api/auth/link/poll', { poll })).json(), { waiting: true });
+  assert.deepEqual(await (await post('/api/auth/link/poll', { poll: 'guess' })).json(), { waiting: true });
+  const t3 = mails[0].text.match(/token=([\w-]+)/)[1];
+  await post('/api/auth/link/use', { token: t3 });
+  r = await post('/api/auth/link/poll', { poll });
+  const polled = await r.json();
+  assert.deepEqual([polled.user.name, polled.next], ['New Player', '/g/abc']);
+  assert.match(r.headers.get('set-cookie'), /Max-Age=15552000/);
+  assert.deepEqual(await (await post('/api/auth/link/poll', { poll })).json(), { waiting: true });
   // Unknown emails still "send" (no account enumeration); bad emails don't.
   assert.equal((await post('/api/auth/link', { email: 'nope' })).status, 400);
 });

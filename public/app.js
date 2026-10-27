@@ -660,6 +660,49 @@
   // ---------- render
   // soft renders (from live updates) wait while the user is typing in a field
   let wasDisplaying = false; // see the venue display below
+  // Open/closed sections (<details>) stay as the person left them when the
+  // page redraws with live data — the group page refreshes every few seconds.
+  // Keyed by page and summary text (numbers ignored: "Check in for others (3)").
+  // Settings panels (data-panel) keep their own state.
+  const detailsOpen = new Map();
+  const detailsKey = (d) => `${location.pathname}|${d.dataset.key || (d.querySelector(':scope > summary')?.textContent || '').replace(/\d+/g, '#').trim()}`;
+  app.addEventListener('toggle', (e) => {
+    const d = e.target;
+    if (d.tagName === 'DETAILS' && !d.hasAttribute('data-panel') && !keepingDetails) detailsOpen.set(detailsKey(d), d.open);
+  }, true);
+  let keepingDetails = false;
+  function keepDetails() {
+    keepingDetails = true;
+    for (const d of app.querySelectorAll('details:not([data-panel])')) {
+      const want = detailsOpen.get(detailsKey(d));
+      if (want !== undefined && d.open !== want) d.open = want;
+    }
+    // toggle events fire after this; don't record our own restoring.
+    setTimeout(() => { keepingDetails = false; }, 0);
+    keepTabs();
+  }
+
+  // Tab rows wider than the phone scroll sideways: keep where they were
+  // scrolled through redraws (else the selected tab), and fade the edge
+  // that has more tabs past it.
+  const tabsScroll = new Map();
+  function keepTabs() {
+    app.querySelectorAll('.tabs').forEach((row, i) => {
+      const key = `${location.pathname}|${i}`;
+      const fade = () => {
+        row.classList.toggle('more-right', row.scrollLeft + row.clientWidth < row.scrollWidth - 2);
+        row.classList.toggle('more-left', row.scrollLeft > 2);
+      };
+      if (tabsScroll.has(key)) row.scrollLeft = tabsScroll.get(key);
+      else {
+        const active = row.querySelector('.active');
+        if (active && active.offsetLeft + active.offsetWidth > row.clientWidth) row.scrollLeft = active.offsetLeft - 24;
+      }
+      fade();
+      row.addEventListener('scroll', () => { tabsScroll.set(key, row.scrollLeft); fade(); }, { passive: true });
+    });
+  }
+
   function render(soft = false) {
     if (soft && isEditing()) {
       S.pendingRender = true;
@@ -702,6 +745,7 @@
     else if (wasDisplaying) applyTheme(themePref());
     wasDisplaying = displaying;
     app.replaceChildren(...[view].flat(Infinity).filter(Boolean));
+    keepDetails();
     applyBranding(['tournament', 'match', 'display'].includes(S.route.name) && S.t && !S.error ? S.t.branding : null);
     renderNav();
   }
@@ -3949,6 +3993,41 @@
     return form;
   }
 
+  // While "check your email" is up, this tab asks whether the link has been
+  // opened — on this phone in the mail app's own browser, or anywhere — and
+  // signs itself in when it has. Checks again as soon as the tab is back.
+  let linkPoll = null;
+  function waitForLink(poll) {
+    if (!poll) return;
+    clearTimeout(linkPoll && linkPoll.timer);
+    const until = Date.now() + 40 * 60000;
+    const me = { poll };
+    linkPoll = me;
+    const check = async () => {
+      if (linkPoll !== me) return;
+      if (S.me || !['signin', 'signup'].includes(S.route.name) || !S.route.sent || Date.now() > until) { linkPoll = null; return; }
+      if (!document.hidden) {
+        try {
+          const r = await api('POST', '/auth/link/poll', { poll });
+          if (r.user && linkPoll === me) {
+            linkPoll = null;
+            S.me = r.user;
+            navFor = null;
+            toast(`Signed in as ${r.user.name}`);
+            navigate(safeNext(r.next), { replace: true });
+            return;
+          }
+        } catch { /* offline: try again */ }
+      }
+      me.timer = setTimeout(check, 2500);
+    };
+    me.check = check;
+    me.timer = setTimeout(check, 2500);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && linkPoll && linkPoll.check) { clearTimeout(linkPoll.timer); linkPoll.check(); }
+  });
+
   // "Email me a link": one field, then "check your email" with the check code.
   function linkCard(signup, next) {
     const sent = S.route.sent;
@@ -3957,9 +4036,10 @@
     const send = async (address) => {
       btn.disabled = true;
       try {
-        const { code } = await api('POST', '/auth/link', { email: address, next });
+        const { code, poll } = await api('POST', '/auth/link', { email: address, next });
         S.route.sent = { email: address, code };
         render();
+        waitForLink(poll);
       } catch (err) {
         toast(err.message, true);
         btn.disabled = false;
@@ -3970,7 +4050,7 @@
     if (sent) {
       return h('div', { class: 'card form auth-card link-sent' },
         h('h1', {}, 'Check your email'),
-        h('p', {}, 'We sent a sign-in link to ', h('strong', {}, sent.email), '. Tap it on this phone and you\'re in — no password needed.'),
+        h('p', {}, 'We sent a sign-in link to ', h('strong', {}, sent.email), '. Tap it and you\'re in — no password needed. If it opens in your email app, come back here: this page signs you in too.'),
         h('p', { class: 'check-code' }, h('span', { class: 'muted small' }, 'Check code'), h('strong', {}, sent.code)),
         h('p', { class: 'muted small' }, 'The email shows the same code. Not there? Check spam, or wait a minute and send it again.'),
         h('div', { class: 'actions' },
@@ -5309,7 +5389,7 @@
     const linked = new Set(o.tournaments.map((t) => t.id));
     const unlinked = (S.mine || []).filter((t) => !linked.has(t.id) && ['owner', 'organiser'].includes(t.role));
     const link = (id, slug, msg) => act(async () => { await api('POST', `/tournaments/${encodeURIComponent(id)}/org`, { org: slug }, id); S.org = await api('GET', orgPath(o.slug)); }, msg);
-    const picker = h('select', { 'aria-label': 'Tournament to add' }, h('option', { value: '' }, 'Choose a tournament…'), unlinked.map((t) => h('option', { value: t.id }, t.name)));
+    const picker = h('select', { class: 'grow', 'aria-label': 'Tournament to add' }, h('option', { value: '' }, 'Choose a tournament…'), unlinked.map((t) => h('option', { value: t.id }, t.name)));
     const tournaments = h('div', { class: 'card' },
       h('h2', {}, `Tournaments (${o.tournaments.length})`),
       h('p', { class: 'muted small' }, 'Public tournaments linked here show on your page: upcoming ones first, then live and past results.'),

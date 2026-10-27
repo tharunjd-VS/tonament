@@ -108,7 +108,8 @@ function createGroups({ db, fail, text, orgs }) {
     // The venue or academy hosting it (its page link only while the page is public).
     g.host = oSlug ? {
       slug: oSlug, name: oName, kind: oKind, kindName: (orgs?.KIND_NAMES || {})[oKind] || 'Venue',
-      address: [oAddress, oCity].filter(Boolean).join(', ') || null,
+      // The city only when the address doesn't already end with it.
+      address: [oAddress, oCity && !(oAddress || '').toLowerCase().includes(oCity.toLowerCase()) ? oCity : null].filter(Boolean).join(', ') || null,
       public: Boolean(oPaid && Date.parse(oPaid) + (orgs?.GRACE_DAYS || 14) * 86400000 > Date.now()),
     } : null;
     g.member = user ? { group_id: g.id, user_id: user, role, status, rating, games } : null;

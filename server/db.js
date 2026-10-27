@@ -386,6 +386,13 @@ CREATE TABLE IF NOT EXISTS sign_in_links (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS sign_in_links_email ON sign_in_links(email, created_at);
+-- v26: links work a few times (mail scanners open them first), and the tab
+-- that asked signs in when the link is opened elsewhere (poll_hash).
+ALTER TABLE sign_in_links ADD COLUMN IF NOT EXISTS uses INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sign_in_links ADD COLUMN IF NOT EXISTS user_id INTEGER;
+ALTER TABLE sign_in_links ADD COLUMN IF NOT EXISTS poll_hash TEXT;
+ALTER TABLE sign_in_links ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS sign_in_links_poll ON sign_in_links(poll_hash);
 -- Groups: people who play together every day. A schedule makes sessions;
 -- members RSVP and check in; games are suggested, scored live by players and
 -- confirmed by the losing side; confirmed games move each member's rating.
@@ -462,7 +469,7 @@ CREATE TABLE IF NOT EXISTS dupr_submissions (
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 25;
+const SCHEMA_VERSION = 26;
 
 async function migrate(db) {
   try {
