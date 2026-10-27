@@ -1,4 +1,4 @@
-// Snooker: best of N frames; the umpire taps who won each frame. Shared by
+// Snooker: best of N frames, scored ball by ball (or just who won each frame). Shared by
 // the server (require) and the browser (window.TonamentSports.snooker). Needs frames.js.
 
 (function (root, factory) {
@@ -13,5 +13,6 @@
     name: 'Snooker',
     bestOf: [1, 3, 5, 7, 9, 11],
     defaults: { bestOf: 3 },
+    points: true,
   });
 });

@@ -1,6 +1,6 @@
 // Carrom: games to 25 (or 29) points, best of 1 or 3. After each board, the
-// umpire taps +1 for each point its winner scores (the opponent's coins left
-// on the board, plus 3 for the queen). No win-by-2: first to the target wins.
+// umpire taps the points its winner scores (the opponent's coins left on the
+// board, plus 3 for the queen) in one tap. No win-by-2: first to the target wins.
 // Shared by the server (require) and the browser (window.TonamentSports.carrom). Needs rally.js.
 
 (function (root, factory) {
@@ -27,7 +27,7 @@
     const c = normalizeConfig(cfg);
     // A cap equal to the target: reaching it wins, with no margin needed.
     const score = R.play(rallies, { ...c, cap: c.points }, firstServer, rules);
-    return { ...score, server: null, hint: 'After each board, tap +1 for each point its winner scores (opponent\'s coins left, +3 for the queen).', firstLabel: 'Breaks first' };
+    return { ...score, server: null, hint: 'After each board, tap the points its winner scores: the opponent\'s coins left, +3 for the queen.', firstLabel: 'Breaks first', taps: { max: R.MAX_TAP, fouls: false, end: false } };
   }
 
   return {

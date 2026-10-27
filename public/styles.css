@@ -42,6 +42,14 @@
   --scoreboard: #070C17;
   --toast: #E5E7EB;
   --on-toast: var(--navy);
+  /* snooker balls: content colours for the scorer's ball buttons (both themes) */
+  --ball-red: #DC2626;     --on-ball-red: #FFFFFF;
+  --ball-yellow: #FACC15;  --on-ball-yellow: #0B1220;
+  --ball-green: #16A34A;   --on-ball-green: #FFFFFF;
+  --ball-brown: #92400E;   --on-ball-brown: #FFFFFF;
+  --ball-blue: #2563EB;    --on-ball-blue: #FFFFFF;
+  --ball-pink: #F472B6;    --on-ball-pink: #0B1220;
+  --ball-black: #0F0F0F;   --on-ball-black: #FFFFFF;
   --qr-bg: #FFFFFF;                /* QR codes need a white background to scan, in both themes */
   --radius: 14px;
   --shadow: none;
@@ -348,6 +356,24 @@ a.b-match:hover { border-color: var(--accent); }
 .sbtn-plus { font-size: 2.6rem; font-weight: 700; line-height: 1; }
 .sbtn-word { font-size: 1.6rem; }
 .sbtn-name { font-weight: 600; font-size: 1rem; overflow-wrap: anywhere; text-align: center; }
+.pick-btns .pick-btn { min-height: 92px; gap: 4px; opacity: 0.7; }
+.pick-btns .pick-btn[aria-pressed='true'] { opacity: 1; box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--text); }
+.pick-label { font-size: 0.8rem; font-weight: 600; }
+.point-pad { display: grid; gap: 12px; }
+.ball-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.ball { aspect-ratio: 1; border-radius: 50%; border: 2px solid var(--border); font: inherit; font-size: 1.25rem; font-weight: 700; cursor: pointer; }
+.ball:active { transform: scale(0.94); }
+.ball-red { background: var(--ball-red); color: var(--on-ball-red); }
+.ball-yellow { background: var(--ball-yellow); color: var(--on-ball-yellow); }
+.ball-green { background: var(--ball-green); color: var(--on-ball-green); }
+.ball-brown { background: var(--ball-brown); color: var(--on-ball-brown); }
+.ball-blue { background: var(--ball-blue); color: var(--on-ball-blue); }
+.ball-pink { background: var(--ball-pink); color: var(--on-ball-pink); }
+.ball-black { background: var(--ball-black); color: var(--on-ball-black); }
+.foul-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.foul-row .end-frame { margin-left: auto; }
+.pts-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.pts-row .pts { padding: 12px 0; font-size: 1.1rem; font-weight: 700; justify-content: center; }
 .scorer-tools { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .seg button { font: inherit; font-size: 0.875rem; border: 0; background: var(--surface); color: var(--text); padding: 6px 12px; cursor: pointer; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

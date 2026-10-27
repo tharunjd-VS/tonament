@@ -349,8 +349,9 @@ function createGroups({ db, fail, text }) {
 
   // A point to side a or b. `at` is how many rallies the scorer had seen, so
   // two phones scoring the same game can't double-count.
-  async function rally(slug, actor, gameId, side, at) {
-    if (side !== 'a' && side !== 'b') fail(400, 'side must be a or b');
+  // extra: { points, foul, end } for sports that score more than 1 a tap.
+  async function rally(slug, actor, gameId, side, at, extra = {}) {
+    if (!extra.end && side !== 'a' && side !== 'b') fail(400, 'side must be a or b');
     return db.tx(async (q) => {
       const g = await load(q, slug, { actor });
       const m = await needMember(q, g, actor);
@@ -359,7 +360,9 @@ function createGroups({ db, fail, text }) {
       if (x.status !== 'live') fail(409, 'This game is over');
       if (x.final) fail(409, 'This game was entered as a final score');
       if (at !== undefined && Number(at) !== x.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
-      const rallies = x.rallies + side;
+      const tap = sports.tapFor(scoreOf(g, x, x.rallies), { ...extra, side });
+      if (tap.error) fail(400, tap.error);
+      const rallies = x.rallies + tap.ch;
       const sc = scoreOf(g, x, rallies);
       const [row] = await q(
         `UPDATE group_games SET rallies = $1, status = $2, winner = $3, ended_at = $4 WHERE id = $5 RETURNING *`,

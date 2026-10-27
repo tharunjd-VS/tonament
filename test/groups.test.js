@@ -337,3 +337,24 @@ test('profiles show group play: the player sees each group, others only totals',
   assert.ok(html.includes('Group play') && !html.includes('Secret Smashers'));
   assert.match(pageRes.headers.get('cache-control'), /s-maxage=60\b/);
 });
+
+test('a carrom group game: a whole board in one tap, and undo takes it off', async () => {
+  const admin = await user('Carrom Admin');
+  const { slug } = await svc.groups.createGroup(admin, { name: 'Office Carrom Club', sport: 'carrom', courts: 1, singles: true, ...nowSchedule() });
+  const { invite } = await svc.groups.view(slug, admin);
+  const joy = await user('Joy');
+  await svc.groups.join(slug, joy, { token: invite });
+  let g = await svc.groups.view(slug, admin);
+  const sid = g.session.id;
+  for (const p of [admin, joy]) { await svc.groups.rsvp(slug, p, sid, 'in'); await svc.groups.checkIn(slug, p, sid, true); }
+  const { id } = await svc.groups.startGame(slug, admin, sid, { court: 1, a: [admin.user.id], b: [joy.user.id] });
+  await assert.rejects(svc.groups.rally(slug, admin, id, 'a', undefined, { points: 13 }), /1 to 12/);
+  let x = await svc.groups.rally(slug, admin, id, 'a', 0, { points: 12 });
+  x = await svc.groups.rally(slug, joy, id, 'b', 1, { points: 9 });
+  assert.deepEqual([x.score.games[0].a, x.score.games[0].b, x.rallies], [12, 9, 2]);
+  x = await svc.groups.undo(slug, admin, id, 2);
+  assert.equal(x.score.games[0].b, 0);
+  await svc.groups.rally(slug, admin, id, 'a', 1, { points: 12 });
+  x = await svc.groups.rally(slug, admin, id, 'a', 2, { points: 3 });
+  assert.deepEqual([x.status, x.summary], ['done', '27-0']);
+});

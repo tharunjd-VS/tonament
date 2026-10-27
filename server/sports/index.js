@@ -39,7 +39,10 @@ for (const s of CATALOGUE) {
   if ((s.status === 'live') !== MODULES.has(s.id)) throw new Error(`Sport catalogue out of sync for ${s.id}`);
 }
 
+const { tapFor } = require('../../public/sports/rally');
+
 module.exports = {
+  tapFor,
   // Only playable sports have rules.
   get: (id) => MODULES.get(id) || null,
   // Catalogue entry for any listed sport (live or not).

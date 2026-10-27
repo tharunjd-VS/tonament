@@ -3010,7 +3010,8 @@
     return h('div', { class: 'scoreboard' }, row('a'), row('b'),
       live && sc.server
         ? h('div', { class: 'sb-foot' }, `${sc.unit || 'Game'} ${sc.games.length} · ${nameOf(m[sc.server])} to serve${sc.serveCourt ? ` from the ${sc.serveCourt} court` : ''}${sc.note ? ` · ${sc.note}` : ''}`)
-        : m.status === 'done' ? h('div', { class: 'sb-foot' }, m.draw ? `Match drawn · ${m.summary}` : m.summary) : null);
+        : live && sc.note ? h('div', { class: 'sb-foot' }, sc.note)
+          : m.status === 'done' ? h('div', { class: 'sb-foot' }, m.draw ? `Match drawn · ${m.summary}` : m.summary) : null);
   }
 
   // Whether the umpire's points have reached the server.
@@ -3043,7 +3044,9 @@
           m.status === 'scheduled'
             ? h('button', { class: 'btn btn-small', onclick: () => patchMatch(t, m, { status: 'live' }, 'Match marked as on court') }, 'Mark on court')
             : null)) : null,
-      h('div', { class: 'score-btns' }, btn('a'), btn('b')),
+      m.score.taps && m.score.taps.max > 1
+        ? pointPad(m.id, m.score, { a: m.a.name, b: m.b.name }, (extra) => rally(t, m, extra.side, extra))
+        : h('div', { class: 'score-btns' }, btn('a'), btn('b')),
       syncLine(m),
       h('div', { class: 'scorer-tools' },
         h('button', { class: 'btn', disabled: fresh, onclick: () => undo(t, m) }, '↶ Undo'),
@@ -3051,7 +3054,46 @@
           class: 'inline-form',
           onsubmit: (e) => { e.preventDefault(); patchMatch(t, m, { court: courtInput.value }, `${CAT.courtWord(t.sport.id)} saved`); courtInput.blur(); },
         }, h('span', { class: 'label' }, CAT.courtWord(t.sport.id)), courtInput, h('button', { class: 'btn btn-small', type: 'submit' }, 'Save'))),
-      h('p', { class: 'hint center', style: 'margin:0' }, `${m.score.hint || 'Tap the side that won the rally.'} Keyboard: A / ← and L / → to score, Z to undo.`));
+      h('p', { class: 'hint center', style: 'margin:0' }, `${m.score.hint || 'Tap the side that won the rally.'} ${m.score.taps && m.score.taps.max > 1
+        ? 'Keyboard: A / L to pick the player, 1–9 to score, Z to undo.'
+        : 'Keyboard: A / ← and L / → to score, Z to undo.'}`));
+  }
+
+  // Snooker (ball by ball) and carrom: pick the player, then tap what they
+  // scored in one go — a ball's value, a foul, or a whole board's points.
+  const BALLS = [[1, 'red', 'Red'], [2, 'yellow', 'Yellow'], [3, 'green', 'Green'], [4, 'brown', 'Brown'], [5, 'blue', 'Blue'], [6, 'pink', 'Pink'], [7, 'black', 'Black']];
+  S.atTable = S.atTable || {}; // match or game id -> the side picked on the point pad
+  function pointPad(key, score, names, onTap) {
+    const T = score.taps;
+    const snooker = T.fouls;
+    // Snooker keeps the player at the table between pots; carrom asks who won each board.
+    const sel = S.atTable[key] || (snooker ? 'a' : null);
+    const pick = (s) => { S.atTable[key] = s; render(); };
+    const other = (s) => (s === 'a' ? 'b' : 'a');
+    const pickBtn = (s) => h('button', {
+      class: `score-btn pick-btn side-${s}`, 'aria-pressed': String(sel === s), onclick: () => pick(s),
+    }, h('span', { class: 'sbtn-name' }, names[s]), h('span', { class: 'pick-label' }, snooker ? (sel === s ? 'At the table' : 'Tap to switch') : (sel === s ? 'Won the board' : 'Won the board?')));
+    const score1 = (extra, next) => { if (next !== undefined) S.atTable[key] = next; onTap(extra); };
+    return h('div', { class: 'point-pad' },
+      h('div', { class: 'score-btns pick-btns' }, pickBtn('a'), pickBtn('b')),
+      snooker
+        ? [
+          h('div', { class: 'ball-row', role: 'group', 'aria-label': `Potted by ${names[sel]}` }, BALLS.map(([n, id, label]) => h('button', {
+            class: `ball ball-${id}`, onclick: () => score1({ side: sel, points: n }), 'aria-label': `${label}, ${n} to ${names[sel]}`, title: label,
+          }, n))),
+          h('div', { class: 'foul-row' },
+            h('span', { class: 'label' }, `Foul by ${names[sel]}:`),
+            [4, 5, 6, 7].map((n) => h('button', { class: 'btn btn-small', onclick: () => score1({ side: other(sel), points: n, foul: true }, other(sel)), 'aria-label': `Foul by ${names[sel]}: ${n} to ${names[other(sel)]}` }, `+${n}`)),
+            h('button', { class: 'btn btn-small btn-primary end-frame', disabled: !T.end, onclick: () => {
+              const g = score.games[score.games.length - 1];
+              const w = g.a > g.b ? 'a' : 'b';
+              if (confirm(`End ${score.unit.toLowerCase()} ${score.games.length}: ${names[w]} wins ${Math.max(g.a, g.b)}–${Math.min(g.a, g.b)}?`)) onTap({ end: true });
+            } }, `End ${score.unit.toLowerCase()}`)),
+        ]
+        : h('div', { class: 'pts-row', role: 'group', 'aria-label': sel ? `Points to ${names[sel]}` : 'Pick who won the board first' },
+          Array.from({ length: T.max }, (_, i) => i + 1).map((n) => h('button', {
+            class: 'btn pts', disabled: !sel, onclick: () => score1({ side: sel, points: n }, null),
+          }, `+${n}`))));
   }
 
   function gamesTable(m) {
@@ -3094,7 +3136,7 @@
     const sport = window.TonamentSports && window.TonamentSports[t.sport.id];
     if (!ops.length || !sport) return m;
     let log = m.log;
-    for (const op of ops) log = op.type === 'rally' ? log + op.side : log.slice(0, -1);
+    for (const op of ops) log = op.type === 'rally' ? log + op.ch : log.slice(0, -1);
     const scoring = t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring;
     const score = TonamentLeague.score(sport, log, scoring, m.firstServer, { draws: m.stage === 'league' && Boolean(t.config.leagueDraws) });
     return {
@@ -3116,14 +3158,19 @@
     sendQueue(t, mid);
   }
 
-  function rally(t, m, side) {
+  // extra: { points, foul, end } for sports that score more than 1 a tap.
+  function rally(t, m, side, extra = {}) {
     const shown = withPending(t, confirmedMatch(m.id) || m);
     if (shown.status === 'done') return;
+    const tap = TonamentRally.tapFor(shown.score, { ...extra, side });
+    if (tap.error) return toast(tap.error, true);
     if (navigator.vibrate) navigator.vibrate(12);
-    enqueue(t, m.id, { type: 'rally', side });
+    enqueue(t, m.id, { type: 'rally', side, ...extra, ch: tap.ch });
     const after = withPending(t, confirmedMatch(m.id) || m);
-    if (after.status === 'done') toast(after.draw ? `🤝 Match drawn ${after.summary}` : `🏸 ${after[side].name} wins ${after.summary}`);
+    if (after.status === 'done') toast(after.draw ? `🤝 Match drawn ${after.summary}` : `🏸 ${after[after.score.winner].name} wins ${after.summary}`);
   }
+  // What a queued tap sends: the side, plus points / foul / end when set.
+  const tapBody = (op, at) => ({ side: op.side, points: op.points, foul: op.foul, end: op.end, at });
 
   function undo(t, m) {
     const shown = withPending(t, confirmedMatch(m.id) || m);
@@ -3141,9 +3188,9 @@
         const op = pendingOps(mid)[0];
         const base = confirmedMatch(mid);
         const at = base.rallies;
-        const expected = op.type === 'rally' ? base.log + op.side : base.log.slice(0, -1);
+        const expected = op.type === 'rally' ? base.log + op.ch : base.log.slice(0, -1);
         try {
-          const updated = await api('POST', `${tPath(t)}/matches/${mid}/${op.type}`, op.type === 'rally' ? { side: op.side, at } : { at }, t.id);
+          const updated = await api('POST', `${tPath(t)}/matches/${mid}/${op.type}`, op.type === 'rally' ? tapBody(op, at) : { at }, t.id);
           mergeMatch(updated);
           queues.set(mid, pendingOps(mid).slice(1));
           S.offline = false;
@@ -3199,7 +3246,12 @@
     if (!confirmed) return;
     const m = withPending(t, confirmed);
     const k = e.key.toLowerCase();
-    if ((k === 'a' || k === 'arrowleft') && canScore(t, m)) rally(t, m, 'a');
+    const pad = m.score.taps && m.score.taps.max > 1;
+    if (pad && (k === 'a' || k === 'l') && canScore(t, m)) { S.atTable[m.id] = k === 'a' ? 'a' : 'b'; render(); }
+    else if (pad && /^[1-9]$/.test(k) && canScore(t, m)) {
+      const side = S.atTable[m.id] || (m.score.taps.fouls ? 'a' : null);
+      if (side) { rally(t, m, side, { points: Number(k) }); if (!m.score.taps.fouls) S.atTable[m.id] = null; }
+    } else if ((k === 'a' || k === 'arrowleft') && canScore(t, m)) rally(t, m, 'a');
     else if ((k === 'l' || k === 'arrowright') && canScore(t, m)) rally(t, m, 'b');
     else if ((k === 'z' || k === 'backspace') && m.rallies && (canScore(t, m) || m.status === 'done')) undo(t, m);
     else return;
@@ -4346,7 +4398,7 @@
   }
 
   // ---------- a group game: score it live (players), or follow it
-  const gQueues = new Map(); // game id -> [{ type: 'rally', side } | { type: 'undo' }]
+  const gQueues = new Map(); // game id -> [{ type: 'rally', side, ch, points?, foul?, end? } | { type: 'undo' }]
   let gSending = false;
   async function loadGroupGame() {
     const { slug, gid } = S.route;
@@ -4365,11 +4417,16 @@
     const sport = window.TonamentSports && window.TonamentSports[g.sport.id];
     if (!ops.length || !sport || x.final) return x;
     let log = x.log;
-    for (const op of ops) log = op.type === 'rally' ? log + op.side : log.slice(0, -1);
+    for (const op of ops) log = op.type === 'rally' ? log + op.ch : log.slice(0, -1);
     const score = sport.compute(log, { ...g.settings.scoring, ...(x.a.length > 1 && { doubles: true }) }, x.firstServer);
     return { ...x, log, rallies: log.length, score, summary: sport.summary(score), status: score.winner ? 'done' : 'live', winner: score.winner || null, pending: ops.length };
   }
   function groupTap(g, x, op) {
+    if (op.type === 'rally') {
+      const tap = TonamentRally.tapFor(groupGameNow(g, x).score || {}, op);
+      if (tap.error) return toast(tap.error, true);
+      op = { ...op, ch: tap.ch };
+    }
     gQueues.set(x.id, [...(gQueues.get(x.id) || []), op]);
     render();
     sendGroupQueue(g.slug, x.id);
@@ -4382,7 +4439,7 @@
         const op = gQueues.get(gid)[0];
         const at = S.groupGame.log.length;
         try {
-          S.groupGame = await api('POST', `${gPath(slug)}/games/${gid}/${op.type}`, op.type === 'rally' ? { side: op.side, at } : { at });
+          S.groupGame = await api('POST', `${gPath(slug)}/games/${gid}/${op.type}`, op.type === 'rally' ? tapBody(op, at) : { at });
           gQueues.set(gid, gQueues.get(gid).slice(1));
           S.offline = false;
         } catch (e) {
@@ -4423,8 +4480,10 @@
       h('p', {}, h('a', { class: 'back-link', href: `/g/${g.slug}` }, `← ${g.name}`), h('span', { class: 'muted small' }, ` · ${CAT.courtWord(g.sport.id)} ${x.court}`)),
       x.score ? scoreboard(m) : h('div', { class: 'card final-score' }, h('strong', {}, `${teamName(x.a)} ${x.final.a} – ${x.final.b} ${teamName(x.b)}`)),
       x.can.score && x.status === 'live' && !x.final ? h('div', { class: 'scorer' },
-        h('div', { class: 'score-btns' }, ['a', 'b'].map((s) => h('button', { class: `score-btn side-${s}`, onclick: () => groupTap(g, x, { type: 'rally', side: s }) },
-          h('span', { class: `sbtn-plus${tap(s) === '+1' ? '' : ' sbtn-word'}` }, tap(s)), h('span', { class: 'sbtn-name' }, teamName(x[s]))))),
+        x.score && x.score.taps && x.score.taps.max > 1
+          ? pointPad(`g${x.id}`, x.score, { a: teamName(x.a), b: teamName(x.b) }, (extra) => groupTap(g, x, { type: 'rally', ...extra }))
+          : h('div', { class: 'score-btns' }, ['a', 'b'].map((s) => h('button', { class: `score-btn side-${s}`, onclick: () => groupTap(g, x, { type: 'rally', side: s }) },
+            h('span', { class: `sbtn-plus${tap(s) === '+1' ? '' : ' sbtn-word'}` }, tap(s)), h('span', { class: 'sbtn-name' }, teamName(x[s]))))),
         h('div', { class: `sync ${S.offline && x.pending ? 'offline' : x.pending ? 'saving' : 'saved'}`, role: 'status' },
           S.offline && x.pending ? `No connection — ${x.pending} point${x.pending === 1 ? '' : 's'} waiting` : x.pending ? 'Saving…' : 'All points saved'),
         h('div', { class: 'scorer-tools' }, h('button', { class: 'btn', disabled: !x.rallies, onclick: () => groupTap(g, x, { type: 'undo' }) }, '↶ Undo')),

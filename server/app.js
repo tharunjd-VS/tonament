@@ -245,7 +245,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['PATCH', `${T}/matches/${N}`, (c, id, mid) => svc.updateMatch(id, c.actor, mid, c.body)],
     ['POST', `${T}/matches/${N}/call`, (c, id, mid) => svc.callMatch(id, c.actor, mid, c.body.court)],
     ['POST', `${T}/matches/${N}/queue`, (c, id, mid) => svc.queueMatch(id, c.actor, mid, c.body.top !== false)],
-    ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.actor, mid, c.body.side, c.body.at)],
+    ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.actor, mid, c.body.side, c.body.at, { points: c.body.points, foul: c.body.foul, end: c.body.end })],
     ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid, c.body.at)],
 
     ['GET', '/api/auth/me', (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled })],
@@ -302,7 +302,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${G}/sessions/${N}/checkin`, (c, slug, sid) => svc.groups.checkIn(slug, c.actor, sid, c.body.here !== false, c.body.user || null)],
     ['POST', `${G}/sessions/${N}/games`, (c, slug, sid) => svc.groups.startGame(slug, c.actor, sid, c.body)],
     ['GET', `${G}/games/${N}`, (c, slug, gid) => svc.groups.getGame(slug, c.actor, gid)],
-    ['POST', `${G}/games/${N}/rally`, (c, slug, gid) => svc.groups.rally(slug, c.actor, gid, c.body.side, c.body.at)],
+    ['POST', `${G}/games/${N}/rally`, (c, slug, gid) => svc.groups.rally(slug, c.actor, gid, c.body.side, c.body.at, { points: c.body.points, foul: c.body.foul, end: c.body.end })],
     ['POST', `${G}/games/${N}/undo`, (c, slug, gid) => svc.groups.undo(slug, c.actor, gid, c.body.at)],
     ['POST', `${G}/games/${N}/result`, (c, slug, gid) => svc.groups.setResult(slug, c.actor, gid, c.body)],
     ['POST', `${G}/games/${N}/confirm`, (c, slug, gid) => svc.groups.confirm(slug, c.actor, gid)],

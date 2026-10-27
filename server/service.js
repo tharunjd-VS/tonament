@@ -2150,8 +2150,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
   }
 
   // A finished pickleball match goes to DUPR (when connected) after it's saved.
-  async function rally(id, actor, mid, side, at) {
-    const m = await rallyIn(id, actor, mid, side, at);
+  // extra: { points, foul, end } for sports that score more than 1 a tap.
+  async function rally(id, actor, mid, side, at, extra = {}) {
+    const m = await rallyIn(id, actor, mid, side, at, extra);
     if (m.status === 'done' && dupr.enabled()) await sendToDupr(m.id).catch((err) => console.error('DUPR:', err.message));
     return m;
   }
@@ -2235,8 +2236,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return r;
   }
 
-  async function rallyIn(id, actor, mid, side, at) {
-    if (side !== 'a' && side !== 'b') fail(400, 'side must be "a" or "b"');
+  async function rallyIn(id, actor, mid, side, at, extra = {}) {
+    if (!extra.end && side !== 'a' && side !== 'b') fail(400, 'side must be "a" or "b"');
     return db.tx(async (q) => {
       const { t: tournament } = await lockWith(q, id, actor, 'score');
       const m = await matchOf(q, tournament, mid);
@@ -2246,7 +2247,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
       requireStageOpen(t, m);
       checkAt(m, at);
 
-      const rallies = m.rallies + side;
+      const tap = sports.tapFor(scoreOf(t, m), { ...extra, side });
+      if (tap.error) fail(400, tap.error);
+      const rallies = m.rallies + tap.ch;
       const score = scoreOf(t, m, rallies);
       const winnerId = score.winner ? (score.winner === 'a' ? m.a_id : m.b_id) : null;
       const over = league.finished(score); // won, or drawn in a 2-game league match
