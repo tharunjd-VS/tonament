@@ -540,3 +540,16 @@ test('group links preview with context: joining, or coming to play today', async
   assert.equal(r.status, 404);
   assert.match(head(await r.text()), /og\.png/);
 });
+
+test('a group keeps its own time zone (sessions start at local time there)', async () => {
+  const a = await user('Sydney Admin');
+  const { slug } = await svc.groups.createGroup(a, { name: 'Harbour Smashers', sport: 'badminton', days: [0, 1, 2, 3, 4, 5, 6], time: '19:00', endTime: '21:00', timeZone: 'Australia/Sydney' });
+  const g = await svc.groups.view(slug, a);
+  assert.equal(g.settings.timeZone, 'Australia/Sydney');
+  const local = new Intl.DateTimeFormat('en-GB', { timeZone: 'Australia/Sydney', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(g.session.startsAt));
+  assert.equal(local, '19:00');
+  await assert.rejects(svc.groups.updateGroup(slug, a, { timeZone: 'Mars/Olympus' }), /Unknown time zone/);
+  // Without one, India.
+  const { slug: s2 } = await svc.groups.createGroup(a, { name: 'Default Zone', sport: 'badminton' });
+  assert.equal((await svc.groups.view(s2, a)).settings.timeZone, 'Asia/Kolkata');
+});

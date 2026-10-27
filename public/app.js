@@ -4268,7 +4268,12 @@
     const head = h('header', { class: 'group-head' },
       h('div', { class: 'group-head-icon' }, icon(g.sport.id)),
       h('div', {}, h('h1', {}, g.name),
-        h('p', { class: 'muted small' }, [g.sport.name, g.venue || (g.host && g.host.address), g.city].filter(Boolean).join(' · ')),
+        h('p', { class: 'muted small' }, (() => {
+          const where = g.venue || (g.host && g.host.address);
+          // The host's address often ends with the city already.
+          const city = g.city && !(where && where.toLowerCase().includes(g.city.toLowerCase())) ? g.city : null;
+          return [g.sport.name, where, city].filter(Boolean).join(' · ');
+        })()),
         h('p', { class: 'group-level' }, h('span', { class: 'event-tag level-tag' }, levelText(g.settings.levels))),
         h('p', { class: 'muted small' }, `${scheduleText(g.settings, g.sport.id)} · ${g.members} member${g.members === 1 ? '' : 's'}`),
         g.host ? h('p', { class: 'host-chip' }, `Hosted by `, g.host.public ? h('a', { href: `/@${g.host.slug}` }, g.host.name) : h('strong', {}, g.host.name)) : null));

@@ -43,6 +43,14 @@ function createGroups({ db, fail, text, orgs }) {
       if (!TIME_RE.test(String(input.time))) fail(400, 'Time: use HH:MM, like 06:00');
       s.time = String(input.time);
     }
+    // The venue's time zone (the create form sends the organiser's): sessions start at local time there.
+    if (input.timeZone !== undefined && input.timeZone !== null && input.timeZone !== '') {
+      try {
+        s.timeZone = new Intl.DateTimeFormat('en-US', { timeZone: String(input.timeZone) }).resolvedOptions().timeZone;
+      } catch {
+        fail(400, 'Unknown time zone');
+      }
+    }
     // The finish time sets the session length (and moves with the start time).
     if (input.endTime !== undefined && input.endTime !== null && input.endTime !== '') {
       if (!TIME_RE.test(String(input.endTime))) fail(400, 'End time: use HH:MM, like 09:00');
