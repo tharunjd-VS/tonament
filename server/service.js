@@ -584,7 +584,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // Doubles events tell the rules module so (pickleball's side-out has two servers a side).
   const scoringOf = (t) => (t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring);
-  const drawsIn = (t, m) => m.stage === 'league' && Boolean(t.config.leagueDraws);
+  // League matches can be drawn: timed sports by their own rules (football yes, basketball no),
+  // others when the organiser chose 2-game league matches.
+  const leagueDrawsOf = (t) => (t.sportDef.timed ? t.sportDef.draws : Boolean(t.config.leagueDraws));
+  const drawsIn = (t, m) => m.stage === 'league' && leagueDrawsOf(t);
   const scoreOf = (t, m, rallies = m.rallies) => league.score(t.sportDef, rallies, scoringOf(t), m.first_server, { draws: drawsIn(t, m) });
 
   function matchView(t, m, score, names) {
@@ -641,7 +644,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       return {
         no: g,
         name: groupName(g),
-        standings: formats.standings(members, results).map((r) => ({
+        standings: formats.standings(members, results, t.sportDef.leaguePoints).map((r) => ({
           ...r,
           name: names.get(r.id),
           withdrawn: entries.some((e) => e.id === r.id && e.withdrawn),

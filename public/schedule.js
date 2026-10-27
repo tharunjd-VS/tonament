@@ -16,6 +16,7 @@
     badminton: 25, pickleball: 20, 'table-tennis': 20, squash: 30, tennis: 75, padel: 75,
     volleyball: 60, 'beach-volleyball': 45, throwball: 45, 'sepak-takraw': 40,
     snooker: 45, pool: 30, carrom: 40,
+    football: 100, futsal: 50, hockey: 75, kabaddi: 50, basketball: 90,
   };
   const defaultMinutes = (sport) => MINUTES[sport] || 30;
   const MAX_COURTS = 40;

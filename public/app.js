@@ -1262,6 +1262,16 @@
   // League matches can instead be exactly 2 games, where 1-1 is a draw.
   function scoringFields(sport, scoring, leagueDraws = false) {
     const unit = sportUnit(sport.id).toLowerCase();
+    const rules = window.TonamentSports[sport.id];
+    if (rules && rules.timed) {
+      // Football, basketball, …: the sport's own rules decide draws and league points.
+      const lp = rules.leaguePoints;
+      return h('fieldset', { class: 'scoring-set' }, h('legend', {}, `${sport.name} rules`),
+        sport.fields.length ? h('div', { class: 'scoring-grid' }, sport.fields.map((f) => groupField(f.label, choiceGroup({ name: `scoring.${f.key}`, value: scoring[f.key], options: f.options, label: f.label }), null, f.hint))) : null,
+        h('p', { class: 'hint', style: 'margin:0' }, rules.draws
+          ? `League matches can be drawn: win ${lp.win} points, draw ${lp.draw}. Group tables rank on points, then ${rules.compute('', {}).unit === 'Goal' ? 'goal' : 'point'} difference.`
+          : `No draws: a level game goes to overtime. Group tables rank on wins (${lp.win} points each), then point difference.`));
+    }
     return h('fieldset', { class: 'scoring-set' }, h('legend', {}, `${sport.name} scoring`),
       h('div', { class: 'scoring-grid' }, sport.fields.map((f) => (f.type === 'select'
         ? groupField(f.label, choiceGroup({ name: `scoring.${f.key}`, value: scoring[f.key], options: f.options, label: f.label }), null, f.hint)
@@ -2879,13 +2889,16 @@
     for (const ev of t.events) {
       if (ev.status === 'league' || (ev.status !== 'setup' && ev.groups.length && ev.status !== 'knockout')) {
         // With draws: drawn and league points columns too.
-        const draws = Boolean(ev.config && ev.config.leagueDraws);
-        const cols = ['#', 'Name', 'P', 'W', ...(draws ? ['D'] : []), 'L', ...(draws ? ['Pts'] : [])];
+        const evSport = window.TonamentSports[t.sport.id];
+        const timedEv = Boolean(evSport && evSport.timed);
+        const draws = timedEv ? evSport.draws : Boolean(ev.config && ev.config.leagueDraws);
+        const showPts = draws || timedEv;
+        const cols = ['#', 'Name', 'P', 'W', ...(draws ? ['D'] : []), 'L', ...(showPts ? ['Pts'] : [])];
         for (const g of ev.groups) {
           panels.push([`${named ? `${ev.name} · ` : ''}${g.name}`, h('table', { class: 'dc-table' },
             h('thead', {}, h('tr', {}, cols.map((c, i) => h('th', { class: i === 1 ? '' : 'num' }, c)))),
             h('tbody', {}, g.standings.map((r) => h('tr', {}, h('td', { class: 'num' }, r.rank), h('td', {}, r.name), h('td', { class: 'num' }, r.played), h('td', { class: 'num' }, r.won),
-              draws ? h('td', { class: 'num' }, r.drawn) : null, h('td', { class: 'num' }, r.lost), draws ? h('td', { class: 'num' }, h('strong', {}, r.leaguePoints)) : null))))]);
+              draws ? h('td', { class: 'num' }, r.drawn) : null, h('td', { class: 'num' }, r.lost), showPts ? h('td', { class: 'num' }, h('strong', {}, r.leaguePoints)) : null))))]);
         }
       }
       const ko = ev.matches.filter((m) => m.stage === 'knockout' && m.status !== 'bye');
@@ -3065,6 +3078,8 @@
     if (!t.groups.length) return empty('Groups appear once the tournament starts.');
     const q = t.format === 'league_knockout' ? t.config.qualifiers : 1;
     const signed = (n) => (n > 0 ? `+${n}` : String(n));
+    const sport = window.TonamentSports[t.sport.id];
+    if (sport && sport.timed) return timedGroups(t, sport, q, signed);
     const draws = Boolean(t.config.leagueDraws);
     const diffLabel = tennisLike(t) ? 'Gms' : draws ? '±' : 'Pts';
     const cols = ['#', t.event.discipline === 'team' ? 'Team' : 'Player', 'P', 'W', ...(draws ? ['D'] : []), 'L', unitOf(t) === 'Set' ? 'Sets' : 'Games', diffLabel, ...(draws ? ['Pts'] : [])];
@@ -3091,6 +3106,42 @@
               h('td', { class: 'num' }, `${r.gamesFor}–${r.gamesAgainst}`),
               h('td', { class: 'num' }, signed(r.pointsFor - r.pointsAgainst)),
               draws ? h('td', { class: 'num' }, h('strong', {}, r.leaguePoints)) : null))))),
+          h('details', { open: fixtures.some((m) => m.status !== 'done') },
+            h('summary', {}, `Fixtures (${fixtures.filter((m) => m.status === 'done').length}/${fixtures.length} played)`),
+            h('div', { class: 'match-list', style: 'grid-template-columns:1fr' }, fixtures.map((m) => matchCard(t, m)))));
+      })),
+    ];
+  }
+
+  // Football, hockey, basketball, …: a league table — played, won, drawn,
+  // lost, goals (points) for and against, difference, league points.
+  function timedGroups(t, sport, q, signed) {
+    const lp = sport.leaguePoints || { win: 2, draw: 1 };
+    const draws = sport.draws;
+    const u = sport.compute('', {}).unit === 'Goal' ? 'G' : 'P';
+    const what = u === 'G' ? 'goal' : 'point';
+    const cols = ['#', 'Team', 'P', 'W', ...(draws ? ['D'] : []), 'L', `${u}F`, `${u}A`, `${u}D`, 'Pts'];
+    const titles = { D: 'Drawn', [`${u}F`]: `${what[0].toUpperCase()}${what.slice(1)}s for`, [`${u}A`]: `${what[0].toUpperCase()}${what.slice(1)}s against`, [`${u}D`]: `${what[0].toUpperCase()}${what.slice(1)} difference`, Pts: `League points: win ${lp.win}${draws ? `, draw ${lp.draw}` : ''}` };
+    const ranking = `Ranking: league points (win ${lp.win}${draws ? `, draw ${lp.draw}` : ''}, loss 0), then head-to-head, ${what} difference.`;
+    return [
+      h('p', { class: 'muted small' }, t.format === 'league_knockout' ? `Top ${q} in each group qualify for the knockout (highlighted). ${ranking}` : ranking),
+      h('div', { class: 'groups-grid' }, t.groups.map((g) => {
+        const fixtures = t.matches.filter((m) => m.stage === 'league' && m.group === g.no).sort(byOrder);
+        return h('div', { class: 'card' },
+          h('h2', {}, g.name),
+          h('div', { class: 'table-wrap' }, h('table', {},
+            h('thead', {}, h('tr', {}, cols.map((c, i) => h('th', { class: i === 1 ? '' : 'num', title: titles[c] || null }, c)))),
+            h('tbody', {}, g.standings.map((r) => h('tr', { class: qualifying(g, q).has(r.id) ? 'q' : r.withdrawn ? 'out' : '' },
+              h('td', { class: 'num' }, r.rank),
+              h('td', { class: 'name' }, r.name, r.withdrawn ? [' ', pill('withdrawn', 'Withdrew')] : null),
+              h('td', { class: 'num' }, r.played),
+              h('td', { class: 'num' }, r.won),
+              draws ? h('td', { class: 'num' }, r.drawn) : null,
+              h('td', { class: 'num' }, r.lost),
+              h('td', { class: 'num' }, r.pointsFor),
+              h('td', { class: 'num' }, r.pointsAgainst),
+              h('td', { class: 'num' }, signed(r.pointsFor - r.pointsAgainst)),
+              h('td', { class: 'num' }, h('strong', {}, r.leaguePoints))))))),
           h('details', { open: fixtures.some((m) => m.status !== 'done') },
             h('summary', {}, `Fixtures (${fixtures.filter((m) => m.status === 'done').length}/${fixtures.length} played)`),
             h('div', { class: 'match-list', style: 'grid-template-columns:1fr' }, fixtures.map((m) => matchCard(t, m)))));
@@ -3240,9 +3291,11 @@
           m.status === 'scheduled'
             ? h('button', { class: 'btn btn-small', onclick: () => patchMatch(t, m, { status: 'live' }, 'Match marked as on court') }, 'Mark on court')
             : null)) : null,
-      m.score.taps && m.score.taps.max > 1
-        ? pointPad(m.id, m.score, { a: m.a.name, b: m.b.name }, (extra) => rally(t, m, extra.side, extra))
-        : h('div', { class: 'score-btns' }, btn('a'), btn('b')),
+      m.score.taps && m.score.taps.values
+        ? periodPad(m.score, { a: m.a.name, b: m.b.name }, (extra) => rally(t, m, extra.side, extra))
+        : m.score.taps && m.score.taps.max > 1
+          ? pointPad(m.id, m.score, { a: m.a.name, b: m.b.name }, (extra) => rally(t, m, extra.side, extra))
+          : h('div', { class: 'score-btns' }, btn('a'), btn('b')),
       syncLine(m),
       h('div', { class: 'scorer-tools' },
         h('button', { class: 'btn', disabled: fresh, onclick: () => undo(t, m) }, '↶ Undo'),
@@ -3250,7 +3303,7 @@
           class: 'inline-form',
           onsubmit: (e) => { e.preventDefault(); patchMatch(t, m, { court: courtInput.value }, `${CAT.courtWord(t.sport.id)} saved`); courtInput.blur(); },
         }, h('span', { class: 'label' }, CAT.courtWord(t.sport.id)), courtInput, h('button', { class: 'btn btn-small', type: 'submit' }, 'Save'))),
-      h('p', { class: 'hint center', style: 'margin:0' }, `${m.score.hint || 'Tap the side that won the rally.'} ${m.score.taps && m.score.taps.max > 1
+      h('p', { class: 'hint center', style: 'margin:0' }, `${m.score.hint || 'Tap the side that won the rally.'} ${m.score.taps && m.score.taps.max > 1 && !m.score.taps.values
         ? 'Keyboard: A / L to pick the player, 1–9 to score, Z to undo.'
         : 'Keyboard: A / ← and L / → to score, Z to undo.'}`));
   }
@@ -3260,10 +3313,16 @@
   function resultForm(t, m) {
     const sport = window.TonamentSports[t.sport.id];
     const sc0 = m.score;
-    const rows = sc0.single ? 1 : Math.min(sport.normalizeConfig(t.config.scoring).bestOf || 3, 11);
-    const unit = sc0.single ? 'Result' : sc0.unit || 'Game';
+    // Football, basketball, …: the final score, and the penalties (shoot-out,
+    // tie-break raids) when a knockout match ends level.
+    const timedTie = sc0.timed && !sc0.drawsAllowed && sc0.tieName;
+    const labels = sc0.timed ? ['Final score', ...(timedTie ? [`${sc0.tieName} (if level)`] : [])] : null;
+    const rows = labels ? labels.length : sc0.single ? 1 : Math.min(sport.normalizeConfig(t.config.scoring).bestOf || 3, 11);
+    const unit = sc0.timed ? 'Score' : sc0.single ? 'Result' : sc0.unit || 'Game';
     const need = sc0.single ? 1 : Math.ceil(rows / 2);
-    const msg = h('p', { class: 'hint result-msg', role: 'status' }, sc0.single ? (sc0.note || '') : `Fill in each ${unit.toLowerCase()} played — best of ${rows}.`);
+    const msg = h('p', { class: 'hint result-msg', role: 'status' }, sc0.timed
+      ? `The score at the end${sc0.drawsAllowed ? ' — a level score is a draw' : ', including any extra time or overtime'}.`
+      : sc0.single ? (sc0.note || '') : `Fill in each ${unit.toLowerCase()} played — best of ${rows}.`);
     const inputs = Array.from({ length: rows }, (_, i) => ['a', 'b'].map((s) => h('input', {
       type: 'number', min: 0, max: 999, inputmode: 'numeric', name: `${s}${i}`, 'aria-label': `${m[s].name}, ${unit.toLowerCase()} ${i + 1}`,
     })));
@@ -3307,10 +3366,35 @@
     },
     h('table', { class: 'result-table' },
       h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, m.a.name), h('th', {}, m.b.name))),
-      h('tbody', {}, inputs.map(([a, b], i) => h('tr', {}, h('th', { scope: 'row' }, sc0.single ? (sc0.unit ? `${sc0.unit}s` : 'Score') : `${unit} ${i + 1}`), h('td', {}, a), h('td', {}, b))))),
+      h('tbody', {}, inputs.map(([a, b], i) => h('tr', {}, h('th', { scope: 'row' }, labels ? labels[i] : sc0.single ? (sc0.unit ? `${sc0.unit}s` : 'Score') : `${unit} ${i + 1}`), h('td', {}, a), h('td', {}, b))))),
     msg,
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save result')));
     return form;
+  }
+
+  // Football, hockey, kabaddi, basketball: each team's buttons (a goal, or
+  // +1 / +2 / +3), and the end of the half or quarter when the whistle goes.
+  function periodPad(score, names, onTap) {
+    const T = score.taps;
+    const end = h('button', {
+      class: 'btn btn-lg end-period', type: 'button', disabled: !T.end || null,
+      onclick: () => confirm(`${T.endLabel}?${T.endConfirm ? `\n${T.endConfirm}` : ''}`) && onTap({ end: true }),
+    }, T.endLabel);
+    if (T.values.length === 1) {
+      const word = (score.tap && score.tap.a) || score.unit;
+      return h('div', { class: 'point-pad' },
+        h('div', { class: 'score-btns' }, ['a', 'b'].map((s) => h('button', {
+          class: `score-btn side-${s}`, type: 'button', onclick: () => onTap({ side: s }), 'aria-label': `${word} to ${names[s]}`,
+        }, h('span', { class: 'sbtn-plus sbtn-word' }, word), h('span', { class: 'sbtn-name' }, names[s])))),
+        end);
+    }
+    return h('div', { class: 'point-pad' },
+      h('div', { class: 'value-cols' }, ['a', 'b'].map((s) => h('div', { class: `value-col side-${s}` },
+        h('div', { class: 'value-team' }, names[s]),
+        h('div', { class: 'value-btns' }, T.values.map((n) => h('button', {
+          class: `score-btn value-btn side-${s}`, type: 'button', onclick: () => onTap(n === 1 ? { side: s } : { side: s, points: n }), 'aria-label': `${n} to ${names[s]}`,
+        }, `+${n}`)))))),
+      end);
   }
 
   // Snooker (ball by ball) and carrom: pick the player, then tap what they
@@ -3388,7 +3472,8 @@
   function matchCompute(t, m) {
     const sport = window.TonamentSports[t.sport.id];
     const scoring = t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring;
-    return (log) => TonamentLeague.score(sport, log, scoring, m.firstServer, { draws: m.stage === 'league' && Boolean(t.config.leagueDraws) });
+    const draws = sport.timed ? sport.draws : Boolean(t.config.leagueDraws);
+    return (log) => TonamentLeague.score(sport, log, scoring, m.firstServer, { draws: m.stage === 'league' && draws });
   }
 
   // The match as the umpire should see it: confirmed state plus queued taps.
@@ -3506,7 +3591,7 @@
     if (!confirmed) return;
     const m = withPending(t, confirmed);
     const k = e.key.toLowerCase();
-    const pad = m.score.taps && m.score.taps.max > 1;
+    const pad = m.score.taps && m.score.taps.max > 1 && !m.score.taps.values;
     if (pad && (k === 'a' || k === 'l') && canScore(t, m)) { S.atTable[m.id] = k === 'a' ? 'a' : 'b'; render(); }
     else if (pad && /^[1-9]$/.test(k) && canScore(t, m)) {
       const side = S.atTable[m.id] || (m.score.taps.fouls ? 'a' : null);
@@ -4962,7 +5047,9 @@
       x.can.score && x.status === 'live' && !x.final ? modeSwitch : null,
       x.can.score && x.status === 'live' && !x.final && atEnd ? finalForm() : null,
       x.can.score && x.status === 'live' && !x.final && !atEnd ? h('div', { class: 'scorer' },
-        x.score && x.score.taps && x.score.taps.max > 1
+        x.score && x.score.taps && x.score.taps.values
+          ? periodPad(x.score, { a: teamName(x.a), b: teamName(x.b) }, (extra) => groupTap(g, x, { type: 'rally', ...extra }))
+          : x.score && x.score.taps && x.score.taps.max > 1
           ? pointPad(`g${x.id}`, x.score, { a: teamName(x.a), b: teamName(x.b) }, (extra) => groupTap(g, x, { type: 'rally', ...extra }))
           : h('div', { class: 'score-btns' }, ['a', 'b'].map((s) => h('button', { class: `score-btn side-${s}`, onclick: () => groupTap(g, x, { type: 'rally', side: s }) },
             h('span', { class: `sbtn-plus${tap(s) === '+1' ? '' : ' sbtn-word'}` }, tap(s)), h('span', { class: 'sbtn-name' }, teamName(x[s]))))),

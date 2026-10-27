@@ -17,6 +17,8 @@
 
   // sport: a rules module (compute, …). opts.draws: this match is a 2-game league match.
   function score(sport, rallies, cfg, firstServer, opts = {}) {
+    // Timed sports (football, …) are drawn by their own rules when level at full time.
+    if (sport.timed) return sport.compute(rallies, { ...(cfg || {}), draws: Boolean(opts.draws) }, firstServer);
     if (!opts.draws) return sport.compute(rallies, cfg, firstServer);
     const s = sport.compute(rallies, { ...(cfg || {}), bestOf: 3 }, firstServer);
     const done = s.games.slice(0, GAMES);

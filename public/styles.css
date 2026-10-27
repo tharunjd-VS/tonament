@@ -423,6 +423,12 @@ a.b-match:hover { border-color: var(--accent); }
 .ball-blue { background: var(--ball-blue); color: var(--on-ball-blue); }
 .ball-pink { background: var(--ball-pink); color: var(--on-ball-pink); }
 .ball-black { background: var(--ball-black); color: var(--on-ball-black); }
+.value-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.value-col { display: grid; gap: 8px; align-content: start; }
+.value-team { font-weight: 700; text-align: center; overflow-wrap: anywhere; }
+.value-btns { display: grid; gap: 8px; }
+.score-btn.value-btn { min-height: 76px; font-size: 1.8rem; font-weight: 700; }
+.end-period { width: 100%; justify-content: center; }
 .foul-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .foul-row .end-frame { margin-left: auto; }
 .pts-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }

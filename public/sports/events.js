@@ -27,6 +27,11 @@
     snooker: { disciplines: ['singles', 'doubles'] },
     pool: { disciplines: ['singles', 'doubles'] },
     carrom: { disciplines: ['singles', 'doubles'] },
+    football: TEAM,
+    futsal: TEAM,
+    hockey: TEAM,
+    kabaddi: TEAM,
+    basketball: TEAM,
     pickleball: {
       levels: ['Open', 'Beginner', 'Intermediate', 'Advanced', '3.0', '3.5', '4.0', '4.5', '5.0+'],
       ages: ['Open', 'U19', '35+', '50+', '60+', '65+', '70+'],
@@ -127,8 +132,8 @@
     return [base, e.age !== 'Open' ? e.age : null, level].filter(Boolean).join(' ');
   }
 
-  // What a playing area is called: table tennis is played on tables.
-  const courtWord = (sport) => (['table-tennis', 'snooker', 'pool'].includes(sport) ? 'Table' : sport === 'carrom' ? 'Board' : 'Court');
+  // What a playing area is called: table tennis is played on tables, football on pitches.
+  const courtWord = (sport) => (['table-tennis', 'snooker', 'pool'].includes(sport) ? 'Table' : sport === 'carrom' ? 'Board' : ['football', 'hockey'].includes(sport) ? 'Pitch' : 'Court');
 
   return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName, courtWord };
 });

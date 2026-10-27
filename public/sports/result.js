@@ -20,6 +20,7 @@
     if (!Array.isArray(games) || !games.length) return { error: 'Enter the score of each game' };
     let log = '';
     let sc = compute(log);
+    if (sc.timed) return fromTimed(compute, games);
     // Frames-only sports keep the whole match as one "game" of frames won.
     const first = sc.note; // "First to 3 frames"
     const unit = sc.single ? 'result' : (sc.unit || 'Game').toLowerCase();
@@ -74,6 +75,37 @@
           : `${t.a}-${t.b} isn't a finished ${unit} under this match's rules — check ${label}` };
       }
     }
+    return { rallies: log, score: sc };
+  }
+
+  // Football, basketball, …: games[0] is the final score (with any extra
+  // time or overtime), games[1] the penalties / shoot-out when it ended level
+  // and someone had to win. The periods are ended one by one, as a scorer would.
+  function fromTimed(compute, games) {
+    const num = (v) => Number(v);
+    const ok = (g) => g && [num(g.a), num(g.b)].every((n) => Number.isInteger(n) && n >= 0 && n <= 999);
+    if (!ok(games[0])) return { error: 'Enter both teams\' scores' };
+    const add = (log, side, n, max) => {
+      let out = log;
+      for (let left = n; left > 0; left -= Math.min(left, max)) out += R.tapCode(side, Math.min(left, max));
+      return out;
+    };
+    let sc = compute('');
+    const max = sc.taps.max;
+    let log = add(add('', 'a', num(games[0].a), max), 'b', num(games[0].b), max);
+    sc = compute(log);
+    for (let i = 0; i < 12 && sc.taps.end && sc.phase !== 'shootout'; i++) { log += 'x'; sc = compute(log); }
+    if (sc.phase === 'shootout') {
+      const tie = sc.tieName || 'Penalties';
+      if (!ok(games[1])) return { error: `Level at full time — enter the ${tie.toLowerCase()} too` };
+      if (num(games[1].a) === num(games[1].b)) return { error: `${tie} can't end level` };
+      log = add(add(log, 'a', num(games[1].a), 1), 'b', num(games[1].b), 1) + 'x';
+      sc = compute(log);
+    } else if (games[1] && ok(games[1]) && num(games[1].a) + num(games[1].b) > 0) {
+      return { error: sc.draw ? 'A drawn league match has no penalties' : 'Penalties only when it\'s level at full time' };
+    }
+    if (sc.phase === 'overtime') return { error: 'It can\'t end level — add the overtime points to the final score' };
+    if (sc.phase !== 'over') return { error: 'That doesn\'t finish the match' };
     return { rallies: log, score: sc };
   }
 

@@ -88,14 +88,17 @@ function roundName(round, totalRounds) {
 }
 
 // League points: a win is 2, a draw 1 (2-game league matches), a loss 0.
-// With no draws this ranks exactly as matches won.
+// With no draws this ranks exactly as matches won. A sport can set its own
+// (football: win 3, draw 1).
 const WIN_POINTS = 2;
 const DRAW_POINTS = 1;
 
 // results: [{ a, b, winner, draw, gamesA, gamesB, pointsA, pointsB }]
 // Ranking (BWF style): league points; two-way tie -> head-to-head (unless
 // they drew); otherwise game difference, then point difference.
-function standings(memberIds, results) {
+function standings(memberIds, results, points = {}) {
+  const win = points.win ?? WIN_POINTS;
+  const drawn = points.draw ?? DRAW_POINTS;
   const order = new Map(memberIds.map((id, i) => [id, i]));
   const rows = new Map(
     memberIds.map((id) => [
@@ -116,7 +119,7 @@ function standings(memberIds, results) {
     b.pointsFor += r.pointsB; b.pointsAgainst += r.pointsA;
   }
 
-  for (const row of rows.values()) row.leaguePoints = row.won * WIN_POINTS + row.drawn * DRAW_POINTS;
+  for (const row of rows.values()) row.leaguePoints = row.won * win + row.drawn * drawn;
 
   const byStats = (x, y) =>
     y.gamesFor - y.gamesAgainst - (x.gamesFor - x.gamesAgainst) ||
