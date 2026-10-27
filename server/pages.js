@@ -377,12 +377,12 @@ function groupHtml(shell, { base, g }) {
   return shell.replace(/<!-- head:start[\s\S]*?<!-- head:end -->/, head);
 }
 
-// sport: { id, name, presets: [label], courtWord }, content: server/sport-pages.js entry,
+// sport: { id, name, presets: [label], courtWord, courtWords, team }, content: server/sport-pages.js entry,
 // tournaments: upcoming public cards, others: [{ id, name }].
 function sportHtml({ base, sport, content, tournaments, others }) {
   const path = `/${sport.id}`;
   const lower = sport.name.toLowerCase();
-  const courts = `${sport.courtWord.toLowerCase()}s`;
+  const courts = (sport.courtWords || `${sport.courtWord}s`).toLowerCase();
   const list = tournaments.length
     ? `<div class="card-list sport-list">${tournaments.map(tournamentCardHtml).join('\n      ')}</div>
     <p><a href="/?sport=${esc(sport.id)}">Search all ${esc(lower)} tournaments</a></p>`
@@ -415,9 +415,9 @@ function sportHtml({ base, sport, content, tournaments, others }) {
     <section>
       <h2 class="features-title">Everything else you need</h2>
       <div class="feature-groups">
-        <section><h3>Entries &amp; fees</h3><ul><li><strong>Online entries</strong> from one link, with partner finder and waitlist</li><li><strong>Entry fees by UPI</strong>, paid straight to you and confirmed in one tap</li><li><strong>Check-in</strong> on the day</li></ul></section>
+        <section><h3>Entries &amp; fees</h3><ul><li><strong>Online entries</strong> from one link, ${sport.team ? 'with an optional squad list and a waitlist' : 'with partner finder and waitlist'}</li><li><strong>Entry fees by UPI</strong>, paid straight to you and confirmed in one tap</li><li><strong>Check-in</strong> on the day</li></ul></section>
         <section><h3>Draws &amp; ${esc(courts)}</h3><ul><li><strong>Groups and knockouts</strong> made in one tap, seeded</li><li><strong>An order of play</strong> across your ${esc(courts)}, with estimated times</li><li><strong>Nobody double-booked</strong> across events</li></ul></section>
-        <section><h3>Live on the day</h3><ul><li><strong>Umpires score</strong> on their own phones</li><li><strong>Live scores</strong> for players and spectators</li><li><strong>Venue display</strong> for the TV in the hall</li></ul></section>
+        <section><h3>Live on the day</h3><ul><li><strong>${sport.team ? 'Scorers keep the score' : 'Umpires score'}</strong> on their own phones — or enter the result at the end</li><li><strong>Live scores</strong> for players and spectators</li><li><strong>Venue display</strong> for the TV at your venue</li></ul></section>
       </div>
       <figure class="tv-shot"><img src="/guide/display.jpg" width="1440" height="810" loading="lazy" alt="The venue display: live scores on every ${esc(sport.courtWord.toLowerCase())}, who's up next and the latest results"></figure>
     </section>

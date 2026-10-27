@@ -240,10 +240,10 @@ legend { font-weight: 700; padding: 0 6px; }
 .hero-visual.phone { width: 230px; max-height: 420px; overflow: hidden; border: 7px solid #000; border-radius: 34px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); outline: 1px solid #2A3550; }
 .hero-visual.card { width: 300px; overflow: hidden; border-radius: 18px; border: 1px solid #2A3550; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
 .hero-visual.tv { width: min(440px, 40vw); overflow: hidden; border: 7px solid #000; border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); outline: 1px solid #2A3550; }
-.hero-visual.sports { display: grid; grid-template-columns: repeat(4, 76px); gap: 8px; }
-.hero-visual.sports a { display: grid; justify-items: center; gap: 6px; padding: 10px 4px; border-radius: 12px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.12); color: #E5E7EB; text-decoration: none; font-size: 0.68rem; font-weight: 600; text-align: center; line-height: 1.2; }
+.hero-visual.sports { display: grid; grid-template-columns: repeat(6, 64px); gap: 6px; }
+.hero-visual.sports a { display: grid; justify-items: center; gap: 5px; padding: 8px 2px; border-radius: 12px; background: var(--navy); border: 1px solid rgba(255, 255, 255, 0.12); color: #E5E7EB; text-decoration: none; font-size: 0.68rem; font-weight: 600; text-align: center; line-height: 1.2; }
 .hero-visual.sports a:hover { border-color: var(--lime); }
-.hero-visual.sports .icon { width: 26px; height: 26px; color: var(--lime); }
+.hero-visual.sports .icon { width: 24px; height: 24px; color: var(--lime); }
 .hero-nav { display: flex; align-items: center; gap: 10px; margin-top: 26px; }
 .hero-dots { display: flex; flex-wrap: wrap; gap: 6px; }
 .hero-dots button { font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer; border-radius: 999px; padding: 5px 12px; border: 1px solid rgba(255, 255, 255, 0.22); background: rgba(255, 255, 255, 0.04); color: #CBD5E1; transition: background 0.2s, color 0.2s; }
@@ -447,6 +447,10 @@ a.b-match:hover { border-color: var(--accent); }
 .result-table th, .result-table td { padding: 4px 6px; text-align: left; }
 .result-table thead th { font-size: 0.85rem; color: var(--muted); overflow-wrap: anywhere; }
 .result-table tbody th { font-weight: 600; white-space: nowrap; width: 1%; }
+/* Long row names ("Tie-break raids (if level)") wrap instead of pushing the boxes off a phone. */
+.result-table { table-layout: fixed; }
+.result-table tbody th { white-space: normal; width: 34%; line-height: 1.25; }
+.result-table input { min-width: 0; }
 .result-table input { width: 100%; text-align: center; font-size: 1.15rem; font-weight: 700; }
 .result-msg { margin: 8px 0 0; min-height: 1.4em; }
 .add-result-card summary { cursor: pointer; }

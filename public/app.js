@@ -877,7 +877,7 @@
         label: 'Every sport',
         eyebrow: [`${sportCount} sports`, h('b', {}, 'Each with its own rules')],
         title: ['Every sport. ', 'Its own rules.'],
-        lead: 'Badminton rally scoring, pickleball side-out, tennis tie-breaks, snooker ball by ball, carrom a board at a time — score live, or just enter the result at the end.',
+        lead: 'Badminton rally scoring, pickleball side-out, tennis tie-breaks, football penalties, basketball overtime, snooker ball by ball — score live, or just enter the result at the end.',
         chips: ['Scored live or at the end', 'Serve and side called for you', 'Singles, doubles and teams'],
         actions: [
           h('a', { class: 'btn btn-primary btn-lg', href: '/sports' }, 'See all sports'),
@@ -1633,7 +1633,7 @@
 
   function tabsWithTeam(t) {
     const tabs = tabsFor(t);
-    if (t.courts) tabs.push({ id: 'courts', label: `${CAT.courtWord(t.sport.id)}s` });
+    if (t.courts) tabs.push({ id: 'courts', label: CAT.courtWords(t.sport.id) });
     if (hasPage(t)) tabs.push({ id: 'about', label: 'About' });
     if (t.can.manage) tabs.push({ id: 'events', label: 'Events' }, { id: 'team', label: 'Team' });
     return tabs;
@@ -2476,7 +2476,7 @@
     const c = t.courts;
     const names = c ? c.names : [];
     const custom = names.some((n, i) => n !== defaultCourtName(i, t.sport.id));
-    return h('fieldset', { class: 'details-set' }, h('legend', {}, `${CAT.courtWord(t.sport.id)}s`),
+    return h('fieldset', { class: 'details-set' }, h('legend', {}, CAT.courtWords(t.sport.id)),
       h('p', { class: 'hint', style: 'margin:0' }, 'Set your courts to run an order of play: call matches to free courts and show players when they\'re likely on.'),
       h('div', { class: 'grid-2' },
         field('Number of courts', h('input', { type: 'number', name: 'courtCount', min: 0, max: 40, value: names.length || '', placeholder: 'None' })),
@@ -2953,7 +2953,7 @@
         ? h('div', { class: 'dc-wait' }, white ? orgMark('dc-wait-org') : h('img', { src: '/brand/logo-stacked-white.svg', alt: 'Tonament' }), h('h2', {}, 'Starting soon'), h('p', {}, fmtSchedule(t) || 'Play starts once the draw is made.'))
         : h('div', { class: 'dc-body' },
           h('section', { class: 'dc-courts' },
-            h('h2', {}, plan ? `${CAT.courtWord(t.sport.id)}s` : CAT.courtWord(t.sport.id) === 'Court' ? 'On court now' : 'Playing now'),
+            h('h2', {}, plan ? CAT.courtWords(t.sport.id) : CAT.courtWord(t.sport.id) === 'Court' ? 'On court now' : 'Playing now'),
             courts.length ? h('div', { class: 'dc-court-grid' }, courts) : h('p', { class: 'dc-empty' }, 'No matches on court right now.')),
           h('section', { class: 'dc-next' },
             h('h2', {}, 'Up next'),
@@ -4440,7 +4440,7 @@
         : days.join() === '1,2,3,4,5' ? 'Mon–Fri'
           : days.map((d) => DAYS[d]).join(', ');
     const time = `${fmtClock(s.time || '06:00')}${s.endTime ? ` – ${fmtClock(s.endTime)}` : ''}`;
-    return `${run} · ${time} · ${s.courts} ${CAT.courtWord(sport).toLowerCase()}${s.courts === 1 ? '' : 's'}`;
+    return `${run} · ${time} · ${s.courts} ${(s.courts === 1 ? CAT.courtWord(sport) : CAT.courtWords(sport)).toLowerCase()}`;
   }
   const teamName = (team) => team.map((p) => p.name).join(' & ');
   // ['Beginner', 'Intermediate'] -> "Beginner & Intermediate"; none -> "All levels".
@@ -4545,7 +4545,7 @@
       field('Start time', h('input', { name: 'time', type: 'time', required: true, value: fs ? fs.endTime || fs.time : '06:00' })),
       field('End time', h('input', { name: 'endTime', type: 'time', required: true, value: fs ? '' : '09:00' }), null, from ? 'This slot starts when the last one ends.' : null)),
     levelField(sport.id, fs ? fs.levels : []),
-    groupField(`${CAT.courtWord(sport.id)}s`, choiceGroup({ name: 'courts', label: `${CAT.courtWord(sport.id)}s`, value: fs ? fs.courts : 2, options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: String(n) })) })),
+    groupField(CAT.courtWords(sport.id), choiceGroup({ name: 'courts', label: CAT.courtWords(sport.id), value: fs ? fs.courts : 2, options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: String(n) })) })),
     field('Max players (optional)', h('input', { name: 'maxPlayers', type: 'number', min: 2, max: 200, value: fs && fs.maxPlayers ? fs.maxPlayers : '', placeholder: 'No limit' }), null, 'Extra RSVPs go on a waitlist.'),
     hostField(host),
     openField(fs ? fs.open : Boolean(host)),
@@ -4932,7 +4932,7 @@
       field('Start time', h('input', { name: 'time', type: 'time', required: true, value: s.time })),
       field('End time', h('input', { name: 'endTime', type: 'time', required: true, value: s.endTime || '' }))),
     h('div', { class: 'grid-2' },
-      field(`${CAT.courtWord(g.sport.id)}s`, h('input', { name: 'courts', type: 'number', min: 1, max: 12, required: true, value: s.courts })),
+      field(CAT.courtWords(g.sport.id), h('input', { name: 'courts', type: 'number', min: 1, max: 12, required: true, value: s.courts })),
       pointsField ? field('Games to', h('input', { name: 'points', type: 'number', min: pointsField.min || 5, max: pointsField.max || 50, value: s.scoring.points })) : null),
     h('div', { class: 'grid-2' },
       field('Max players (optional)', h('input', { name: 'maxPlayers', type: 'number', min: 2, max: 200, value: s.maxPlayers ?? '', placeholder: 'No limit' }), null, 'Extra RSVPs go on a waitlist.')),

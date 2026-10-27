@@ -221,7 +221,7 @@ const SPORTS = {
       'Level in a knockout: straight to penalties, or extra time and then penalties',
       'Team entries with an optional squad list, and fixtures across your pitches',
     ],
-    formats: 'Groups of four into semi-finals and a final is the classic cup; a round-robin league suits a season of Sunday games. Players in two teams are never scheduled on two pitches at once.',
+    formats: 'Groups of four into semi-finals and a final is the classic cup; a round-robin league suits a season of Sunday games.',
     faqs: [
       ['How are league tables ranked?', 'Points first — 3 for a win, 1 for a draw — then head-to-head when two teams are level, then goal difference. The table updates the moment a result is in.'],
       ['What happens if a knockout match is level?', 'You choose per event: straight to penalties, or extra time and then penalties. The scorer taps each penalty scored and ends the shoot-out when it\'s decided; the result reads "1-1 (4-3 pens)".'],

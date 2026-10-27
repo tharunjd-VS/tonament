@@ -429,6 +429,8 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     name: x.name,
     presets: catalog.presetsFor(x.id).map((p) => p.label),
     courtWord: catalog.courtWord(x.id),
+    courtWords: catalog.courtWords(x.id),
+    team: catalog.isTeamSport(x.id),
     blurb: SPORT_PAGES[x.id].rules[0],
   }));
 

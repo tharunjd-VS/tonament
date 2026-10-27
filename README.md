@@ -1,6 +1,6 @@
 # Tonament
 
-Tournament management with live scoring for **tonament.com**. Badminton, pickleball, table tennis, squash, tennis, padel, volleyball, beach volleyball, throwball and sepak takraw today; new sports are plug-in modules.
+Tournament management with live scoring for **tonament.com**. Badminton, pickleball, table tennis, squash, tennis, padel, volleyball, beach volleyball, throwball, sepak takraw, football, futsal, hockey, kabaddi, basketball, snooker, pool and carrom today; new sports are plug-in modules.
 
 ## Features
 
@@ -19,7 +19,15 @@ Tournament management with live scoring for **tonament.com**. Badminton, pickleb
   - **Beach volleyball:** pairs; best of 3 sets to 21, deciding set to 15; "switch sides" every 7 points (5 in the deciding set).
   - **Throwball:** best of 3 sets to 25 (15/21 too).
   - **Sepak takraw:** best of 3 sets to 21, deciding set to 15.
-- **Team events** (volleyball, throwball, sepak takraw): Men's / Women's / Mixed / Open Team. Entries are team names; self-entry (by the captain's account) asks for the team name, an optional phone and, optionally, the players (organisers only). Each sport offers only its own event types.
+- **Timed team sports** (no target score; the scorer ends each half or quarter when the whistle goes; `public/sports/timed.js`):
+  - **Football, futsal:** two halves, goals; league draws (3 points a win, 1 a draw); a level knockout goes to penalties, or extra time then penalties.
+  - **Hockey:** four quarters (or two halves); league draws (3/1); a level knockout goes to a shoot-out.
+  - **Kabaddi:** two halves, 1–5 points a tap; league ties (2/1); tie-break raids in a knockout.
+  - **Basketball:** four quarters (or two halves), 1/2/3 points; never a draw — overtime until someone leads.
+  - League tables for these rank on league points, then head-to-head, then goal (point) difference.
+- **Frame and board sports:** snooker (best of N frames, ball by ball with fouls and breaks, or frames only), pool (race to N racks; 8/9/10-ball) and carrom (games to 25 or 29, a board's points in one tap).
+- **Results at the end:** instead of scoring live, type each game's score (or the final score and penalties); it's checked with the sport's rules and saved as if scored live.
+- **Team events** (volleyball, throwball, sepak takraw, football, futsal, hockey, kabaddi, basketball): Men's / Women's / Mixed / Open Team. Entries are team names; self-entry (by the captain's account) asks for the team name, an optional phone and, optionally, the players (organisers only). Each sport offers only its own event types.
 - **Undo:** works on any point, including the one that won a match. It's blocked once the next match has started.
 - **Entries and the event day:**
   - Players enter themselves on the public page until a closing date/time or the draw. They sign in (or create a free account) first: the entry belongs to their account (one per event), the account email is the contact (an optional phone too; organisers only), and the name is prefilled. Players see "My entries" on the home page and can withdraw their own entry before the draw (not once paid, or once paired). Organisers adding players by hand need no accounts.

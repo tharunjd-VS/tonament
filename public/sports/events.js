@@ -135,5 +135,8 @@
   // What a playing area is called: table tennis is played on tables, football on pitches.
   const courtWord = (sport) => (['table-tennis', 'snooker', 'pool'].includes(sport) ? 'Table' : sport === 'carrom' ? 'Board' : ['football', 'hockey'].includes(sport) ? 'Pitch' : 'Court');
 
-  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName, courtWord };
+  // "Courts", "Tables", "Boards", "Pitches".
+  const courtWords = (sport) => { const w = courtWord(sport); return /(ch|sh|s)$/.test(w) ? `${w}es` : `${w}s`; };
+
+  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName, courtWord, courtWords };
 });
