@@ -493,7 +493,12 @@
           return;
         }
         if (parts[1] === 'new') {
-          S.route = { name: 'groupNew', host: params.get('host') || null };
+          S.route = { name: 'groupNew', host: params.get('host') || null, copy: params.get('copy') || null };
+          S.groupDraft = null;
+          const copyOf = S.route.copy;
+          if (copyOf && !(S.group && S.group.slug === copyOf)) {
+            api('GET', gPath(copyOf)).then((g) => { S.group = g; S.groupDraft = null; render(); }).catch(() => {});
+          }
           ensureMyOrgs();
         } else {
           S.route = { name: 'groups' };
@@ -4063,6 +4068,9 @@
     return `${run} · ${time} · ${s.courts} ${CAT.courtWord(sport).toLowerCase()}${s.courts === 1 ? '' : 's'}`;
   }
   const teamName = (team) => team.map((p) => p.name).join(' & ');
+  // ['Beginner', 'Intermediate'] -> "Beginner & Intermediate"; none -> "All levels".
+  const levelText = (levels) => (levels && levels.length ? levels.length === 1 ? levels[0] : `${levels.slice(0, -1).join(', ')} & ${levels[levels.length - 1]}` : 'All levels');
+  const groupLevels = (sportId) => CAT.levelsFor(sportId).filter((l) => l !== 'Open');
   const groupUrl = (g, withInvite) => `${location.origin}/g/${g.slug}${withInvite && g.invite ? `?join=${g.invite}` : ''}`;
 
   async function loadGroup(skip = 0) {
@@ -4114,8 +4122,12 @@
     document.title = 'Create a group · Tonament';
     const live = liveSports();
     if (!live.length) return loading();
-    const d = (S.groupDraft ||= { sport: live[0].id });
+    // "Copy for another slot": start from an existing group's details.
+    const from = S.route.copy && S.group && S.group.slug === S.route.copy ? S.group : null;
+    const d = (S.groupDraft ||= from ? { sport: from.sport.id } : { sport: live[0].id });
     const sport = live.find((x) => x.id === d.sport) || live[0];
+    const fs = from ? from.settings : null;
+    const host = from ? (from.host && from.host.slug) : S.route.host;
     const pointsField = sport.fields.find((f) => f.key === 'points');
     const pointOptions = pointsField ? [...new Set([11, 15, 21, sport.defaults.points].filter((n) => n >= (pointsField.min || 1) && n <= (pointsField.max || 99)))].sort((a, b) => a - b) : null;
     const form = h('form', {
@@ -4131,6 +4143,7 @@
           const { slug } = await api('POST', '/groups', {
             name: fd.get('name'), sport: sport.id, city: fd.get('city'), venue: fd.get('venue'),
             days, time: fd.get('time'), endTime: fd.get('endTime'), courts: Number(fd.get('courts')),
+            levels: fd.getAll('levels'), open: fd.get('open') === 'on', maxPlayers: fd.get('maxPlayers') || null,
             ...(fd.get('host') && { host: fd.get('host') }),
             scoring: { ...sport.defaults, bestOf: 1, ...(pointOptions && { points: Number(fd.get('points')) }) },
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata',
@@ -4144,24 +4157,27 @@
         }
       },
     },
-    h('h1', {}, 'Create a group'),
-    h('p', { class: 'muted' }, 'For the people you play with regularly. You can change all of this later.'),
-    field('Group name', h('input', { name: 'name', required: true, maxlength: 60, placeholder: 'e.g. Velachery Morning Smashers', autocomplete: 'off' })),
+    h('h1', {}, from ? 'Another slot' : 'Create a group'),
+    h('p', { class: 'muted' }, from ? `A copy of ${from.name}: change the name, time and level.` : 'For the people you play with regularly — or a venue\'s daily slot for a level. You can change all of this later.'),
+    field('Group name', h('input', { name: 'name', required: true, maxlength: 60, value: from ? `${from.name} (copy)` : '', placeholder: host ? 'e.g. Evening Intermediates' : 'e.g. Velachery Morning Smashers', autocomplete: 'off' })),
     groupField('Sport', choiceGroup({
       name: 'sport', label: 'Sport', value: sport.id, tiles: true,
       options: live.map((x) => ({ value: x.id, label: x.name, icon: x.id })),
       onchange: (e) => { d.sport = e.target.value; render(); },
     })),
-    groupField('Days', choiceGroup({ name: 'days', label: 'Days', multiple: true, value: [1, 2, 3, 4, 5, 6], options: [1, 2, 3, 4, 5, 6, 0].map((n) => ({ value: n, label: DAYS[n] })) })),
+    groupField('Days', choiceGroup({ name: 'days', label: 'Days', multiple: true, value: fs ? fs.days : [1, 2, 3, 4, 5, 6], options: [1, 2, 3, 4, 5, 6, 0].map((n) => ({ value: n, label: DAYS[n] })) })),
     h('div', { class: 'grid-2' },
-      field('Start time', h('input', { name: 'time', type: 'time', required: true, value: '06:00' })),
-      field('End time', h('input', { name: 'endTime', type: 'time', required: true, value: '09:00' }))),
-    groupField(`${CAT.courtWord(sport.id)}s`, choiceGroup({ name: 'courts', label: `${CAT.courtWord(sport.id)}s`, value: 2, options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: String(n) })) })),
-    hostField(S.route.host),
+      field('Start time', h('input', { name: 'time', type: 'time', required: true, value: fs ? fs.endTime || fs.time : '06:00' })),
+      field('End time', h('input', { name: 'endTime', type: 'time', required: true, value: fs ? '' : '09:00' }), null, from ? 'This slot starts when the last one ends.' : null)),
+    levelField(sport.id, fs ? fs.levels : []),
+    groupField(`${CAT.courtWord(sport.id)}s`, choiceGroup({ name: 'courts', label: `${CAT.courtWord(sport.id)}s`, value: fs ? fs.courts : 2, options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: String(n) })) })),
+    field('Max players (optional)', h('input', { name: 'maxPlayers', type: 'number', min: 2, max: 200, value: fs && fs.maxPlayers ? fs.maxPlayers : '', placeholder: 'No limit' }), null, 'Extra RSVPs go on a waitlist.'),
+    hostField(host),
+    openField(fs ? fs.open : Boolean(host)),
     pointOptions ? groupField('Games to', choiceGroup({ name: 'points', label: 'Games to', value: sport.defaults.points, options: pointOptions.map((n) => ({ value: n, label: String(n) })) }), null, 'One game per match, so courts turn over quickly.') : null,
     h('div', { class: 'grid-2' },
-      field('Venue', h('input', { name: 'venue', maxlength: 120, placeholder: 'e.g. SDAT Indoor Stadium' })),
-      field('City', h('input', { name: 'city', maxlength: 60, list: 'group-cities' }))),
+      field('Venue', h('input', { name: 'venue', maxlength: 120, value: from ? from.venue || '' : '', placeholder: 'e.g. SDAT Indoor Stadium' })),
+      field('City', h('input', { name: 'city', maxlength: 60, list: 'group-cities', value: from ? from.city || '' : '' }))),
     h('datalist', { id: 'group-cities' }, cityOptions(REGIONS.defaultCountry).map((c) => h('option', { value: c }))),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create group')));
     return form;
@@ -4177,6 +4193,7 @@
       h('div', { class: 'group-head-icon' }, icon(g.sport.id)),
       h('div', {}, h('h1', {}, g.name),
         h('p', { class: 'muted small' }, [g.sport.name, g.venue || (g.host && g.host.address), g.city].filter(Boolean).join(' · ')),
+        h('p', { class: 'group-level' }, h('span', { class: 'event-tag level-tag' }, levelText(g.settings.levels))),
         h('p', { class: 'muted small' }, `${scheduleText(g.settings, g.sport.id)} · ${g.members} member${g.members === 1 ? '' : 's'}`),
         g.host ? h('p', { class: 'host-chip' }, `Hosted by `, g.host.public ? h('a', { href: `/@${g.host.slug}` }, g.host.name) : h('strong', {}, g.host.name)) : null));
     if (!g.member) {
@@ -4191,8 +4208,10 @@
           h('p', { class: 'muted' }, 'A group admin will let you in. This page updates when they do.'),
         ] : [
           h('h2', {}, `Join ${g.name}`),
-          h('p', { class: 'muted' }, 'Ask to join — a group admin will let you in. (With the invite link from the group, you join straight away.)'),
-          h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', onclick: () => act(async () => { await api('POST', `${gPath(g.slug)}/join`, {}); await loadGroup(); }, 'Request sent') }, 'Ask to join')),
+          g.settings.open
+            ? h('p', { class: 'muted' }, `${levelText(g.settings.levels)} · ${scheduleText(g.settings, g.sport.id)}. Join, then say you're in for the days you're coming.`)
+            : h('p', { class: 'muted' }, 'Ask to join — a group admin will let you in. (With the invite link from the group, you join straight away.)'),
+          h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', onclick: () => act(async () => { const r = await api('POST', `${gPath(g.slug)}/join`, {}); await loadGroup(); return r; }, g.settings.open ? 'You\'re in the group ✓' : 'Request sent') }, g.settings.open ? 'Join' : 'Ask to join')),
         ])];
     }
     const tabs = [...GROUP_TABS, ...(g.admin ? [['attendance', 'Attendance'], ['settings', 'Settings']] : [])];
@@ -4246,7 +4265,7 @@
     const max = g.settings.maxPlayers;
     const where = g.host ? g.host.name : g.venue;
     const text = [
-      `${g.sport.name} · ${g.name}${where && where !== g.name ? ` at ${where}` : ''}`,
+      `${g.sport.name} · ${g.name}${where && where !== g.name ? ` at ${where}` : ''}${g.settings.levels && g.settings.levels.length ? ` · ${levelText(g.settings.levels)}` : ''}`,
       `${fmtSessionDay(s.startsAt, s.endsAt)} · ${going} going${max ? (going < max ? `, ${max - going} spot${max - going === 1 ? '' : 's'} left` : ', full (waitlist open)') : ''}`,
       `Say you're in (and when you're coming): ${groupUrl(g, true)}`,
     ].join('\n');
@@ -4402,6 +4421,11 @@
     ];
   }
 
+  // Which levels the slot is for (none ticked: all levels).
+  const levelField = (sportId, value) => groupField('Level', choiceGroup({ name: 'levels', label: 'Level', multiple: true, value: value || [], options: groupLevels(sportId).map((l) => ({ value: l, label: l })) }), null, 'Leave all unticked for all levels.');
+  const openField = (on) => h('label', { class: 'check-field' }, h('input', { type: 'checkbox', name: 'open', checked: Boolean(on) }),
+    h('span', {}, h('strong', {}, 'Anyone can join'), h('small', {}, 'People who find the group (say, on your venue page) join with one tap — no approval needed.')));
+
   // Hosted by: one of the venue / academy pages I manage (create form).
   function hostField(preset) {
     const mine = S.myOrgs || [];
@@ -4469,6 +4493,7 @@
           await api('PATCH', gPath(g.slug), {
             name: fd.get('name'), venue: fd.get('venue'), city: fd.get('city'), days, time: fd.get('time'), endTime: fd.get('endTime'),
             ...(fd.has('host') && { host: fd.get('host') || null }),
+            levels: fd.getAll('levels'), open: fd.get('open') === 'on',
             courts: Number(fd.get('courts')), maxPlayers: fd.get('maxPlayers') || null, singles: fd.get('singles') === 'on',
             ...(pointsField && { scoring: { ...s.scoring, points: Number(fd.get('points')) } }),
           });
@@ -4487,6 +4512,8 @@
       pointsField ? field('Games to', h('input', { name: 'points', type: 'number', min: pointsField.min || 5, max: pointsField.max || 50, value: s.scoring.points })) : null),
     h('div', { class: 'grid-2' },
       field('Max players (optional)', h('input', { name: 'maxPlayers', type: 'number', min: 2, max: 200, value: s.maxPlayers ?? '', placeholder: 'No limit' }), null, 'Extra RSVPs go on a waitlist.')),
+    levelField(g.sport.id, s.levels),
+    openField(s.open),
     h('label', { class: 'check-field' }, h('input', { type: 'checkbox', name: 'singles', checked: Boolean(s.singles) }),
       h('span', {}, h('strong', {}, 'Allow singles'), h('small', {}, 'When only 2 or 3 players are free, suggest a singles game.'))),
     h('div', { class: 'grid-2' },
@@ -4495,6 +4522,9 @@
     groupHostField(g),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
     return [form,
+      h('div', { class: 'card' }, h('h2', {}, 'Another slot'),
+        h('p', { class: 'muted small' }, 'Run several slots a day (say, beginners then intermediates)? Each slot is its own group, so its RSVPs, games and rankings stay with that level.'),
+        h('div', { class: 'actions' }, h('a', { class: 'btn', href: `/groups/new?copy=${encodeURIComponent(g.slug)}` }, 'Copy for another slot'))),
       h('div', { class: 'card' }, h('h2', {}, 'Invite link'),
         h('p', { class: 'muted small' }, 'Made a new link? The old one stops working (people already in the group stay).'),
         h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => confirm('Make a new invite link? The old one stops working.') && groupAct(() => api('PATCH', gPath(g.slug), { newInvite: true }), 'New invite link made') }, 'New invite link')))];

@@ -314,13 +314,15 @@ function nextLabel(iso, timeZone = 'Asia/Kolkata') {
   if (day(at) === day(new Date(now.getTime() + 86400000))) return 'Tomorrow';
   return new Intl.DateTimeFormat('en-IN', { timeZone, weekday: 'long' }).format(at);
 }
+// ['Beginner', 'Intermediate'] -> "Beginner & Intermediate"; none -> "All levels".
+const levelText = (levels) => (levels && levels.length ? levels.length === 1 ? levels[0] : `${levels.slice(0, -1).join(', ')} & ${levels[levels.length - 1]}` : 'All levels');
 function groupCardHtml(g) {
   const st = g.settings;
   const next = g.next ? [nextLabel(g.next, st.timeZone), `${g.going} going`, g.spots != null ? (g.spots ? `${g.spots} spot${g.spots === 1 ? '' : 's'} left` : 'Full — join the waitlist') : null].filter(Boolean).join(' · ') : null;
   return `<a class="card t-card" href="/g/${esc(g.slug)}">
         <div class="card-head"><h3>${iconSvg(g.sport.id)} ${esc(g.name)}</h3><span class="btn btn-small btn-primary">Join</span></div>
         <div class="t-card-when">${esc(`${daysText(st.days)} · ${hours(st.time, st.endTime)}`)}</div>
-        ${next ? `<div class="t-card-events"><span class="event-tag">${esc(next)}</span></div>` : ''}
+        <div class="t-card-events"><span class="event-tag level-tag">${esc(levelText(st.levels))}</span>${next ? `<span class="event-tag">${esc(next)}</span>` : ''}</div>
       </a>`;
 }
 
@@ -464,7 +466,7 @@ function orgHtml({ base, o }) {
         </div>
       </div>
     </section>
-    ${o.groups && o.groups.length ? `<section><h2 class="features-title">Play here</h2><p class="muted">Regular games at ${esc(o.name)}. Join a group, say you're in, and turn up.</p><div class="card-list sport-list">${o.groups.map(groupCardHtml).join('')}</div></section>` : ''}
+    ${o.groups && o.groups.length ? `<section><h2 class="features-title">Play here</h2><p class="muted">Regular games at ${esc(o.name)}. Pick a slot for your level, join, say you're in, and turn up.</p><div class="card-list sport-list">${o.groups.map(groupCardHtml).join('')}</div></section>` : ''}
 ${list('Live now', live)}
 ${list(upcoming.some((t) => t.entriesOpen) ? 'Upcoming tournaments — entries open' : 'Upcoming tournaments', upcoming)}
     ${o.about ? `<section><h2 class="features-title">About</h2><div class="org-about">${para(o.about)}</div></section>` : ''}

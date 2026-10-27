@@ -557,6 +557,7 @@ fieldset.details-set { display: grid; gap: 12px; }
 
 .t-card-events { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px; }
 .event-tag { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); }
+.event-tag.level-tag { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
 
 .fee-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 
@@ -1080,6 +1081,7 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .eta-field select { width: auto; flex: 0 1 auto; }
 .arrivals { margin: 4px 0 0; color: var(--muted); }
 .arrivals strong { color: var(--text); font-weight: 600; }
+.group-level { margin: 6px 0 0; }
 .host-chip { margin: 4px 0 0; font-size: 0.88rem; color: var(--muted); }
 .host-chip a, .host-chip strong { font-weight: 600; }
 .attendance-table td.here { color: var(--accent-text); font-weight: 700; }

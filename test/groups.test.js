@@ -452,3 +452,27 @@ test('venues and academies host groups: "Play here" on their page, attendance fo
   assert.deepEqual(a.players.map((p) => [p.name, p.came]), [['Asha', 3], ['Bala', 1], ['Chitra', 0]]);
   assert.equal(a.players[2].marks[a.sessions[1].id], 'in');
 });
+
+test('a venue\'s daily slots by level: levels, anyone can join, listed by time', async () => {
+  const mgr = await user('Court Owner');
+  const [o] = await db.query(`INSERT INTO orgs (slug, name, kind, paid_until) VALUES ('rally-hub', 'Rally Hub', 'venue', now() + interval '300 days') RETURNING id`);
+  await db.query(`INSERT INTO org_members (org_id, email, role) VALUES ($1, $2, 'owner')`, [o.id, mgr.user.email]);
+  const inter = await svc.groups.createGroup(mgr, { name: 'Evening Intermediates', sport: 'badminton', host: 'rally-hub', time: '19:00', endTime: '21:00', levels: ['Intermediate'] });
+  const beg = await svc.groups.createGroup(mgr, { name: 'Evening Beginners', sport: 'badminton', host: 'rally-hub', time: '18:00', endTime: '19:00', levels: ['Beginner', 'Intermediate', 'Beginner'] });
+  await assert.rejects(svc.groups.createGroup(mgr, { name: 'Pros', sport: 'badminton', levels: ['Pro'] }), /Level: one of Beginner, Intermediate, Advanced/);
+  // Hosted groups are open by default: anyone joins with one tap, no invite link.
+  const g = await svc.groups.view(beg.slug, mgr);
+  assert.deepEqual([g.settings.levels, g.settings.open], [['Beginner', 'Intermediate'], true]);
+  const walkIn = await user('Walk In');
+  assert.deepEqual(await svc.groups.join(beg.slug, walkIn, {}), { joined: true });
+  // A closed group still asks.
+  await svc.groups.updateGroup(inter.slug, mgr, { open: false, levels: [] });
+  assert.deepEqual(await svc.groups.join(inter.slug, walkIn, {}), { joined: false });
+  assert.deepEqual((await svc.groups.view(inter.slug, mgr)).settings.levels, []);
+  // The page lists the slots in time order, each with its level.
+  assert.deepEqual((await svc.groups.forOrgPage('rally-hub')).map((x) => x.name), ['Evening Beginners', 'Evening Intermediates']);
+  const html = await (await fetch(`${base}/@rally-hub`)).text();
+  assert.match(html, /Beginner &amp; Intermediate/);
+  assert.match(html, /All levels/);
+  assert.ok(html.indexOf('Evening Beginners') < html.indexOf('Evening Intermediates'));
+});

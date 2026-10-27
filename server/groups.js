@@ -8,7 +8,7 @@
 const crypto = require('node:crypto');
 const sports = require('./sports');
 const L = require('./group-logic');
-const { courtWord } = require('../public/sports/events');
+const { courtWord, levelsFor } = require('../public/sports/events');
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;
 const AUTO_CONFIRM_MINUTES = 10;
@@ -69,6 +69,17 @@ function createGroups({ db, fail, text, orgs }) {
       s.hours = n;
     }
     if (input.singles !== undefined) s.singles = Boolean(input.singles);
+    // Skill levels the slot is for (none: all levels), e.g. a venue's
+    // "Beginners 6–7 pm" and "Intermediate 7–9 pm" groups.
+    if (input.levels !== undefined) {
+      if (!Array.isArray(input.levels)) fail(400, 'levels must be a list');
+      const allowed = levelsFor(sport.id).filter((l) => l !== 'Open');
+      const bad = input.levels.find((l) => !allowed.includes(l));
+      if (bad) fail(400, `Level: one of ${allowed.join(', ')}`);
+      s.levels = allowed.filter((l) => input.levels.includes(l));
+    }
+    // Open: anyone who finds it (say, on the venue's page) joins straight away.
+    if (input.open !== undefined) s.open = Boolean(input.open);
     if (input.scoring !== undefined) s.scoring = sport.normalizeConfig(input.scoring);
     if (!s.scoring) s.scoring = sport.normalizeConfig({ ...sport.defaults, bestOf: 1 });
     return s;
@@ -149,7 +160,7 @@ function createGroups({ db, fail, text, orgs }) {
     const name = text(input.name, 'Group name', { max: 60 });
     const sport = sports.get(input.sport);
     if (!sport) fail(400, 'Choose a sport');
-    const settings = readSettings(input, {}, sport);
+    const settings = readSettings({ ...(input.host && input.open === undefined && { open: true }), ...input }, {}, sport);
     return db.tx(async (q) => {
       let slug = slugOf(input.slug || name);
       if (slug.length < 3) slug = `group-${crypto.randomBytes(3).toString('hex')}`;
@@ -203,7 +214,7 @@ function createGroups({ db, fail, text, orgs }) {
       const g = await load(q, slug, { lock: true, actor });
       const m = await memberOf(q, g, actor);
       if (m && m.status === 'active') return { joined: true };
-      const ok = typeof token === 'string' && token.length > 0 && token === g.invite_token;
+      const ok = Boolean(g.settings.open) || (typeof token === 'string' && token.length > 0 && token === g.invite_token);
       if (m) {
         if (ok) await q(`UPDATE group_members SET status = 'active', joined_at = now() WHERE group_id = $1 AND user_id = $2`, [g.id, user.id]);
       } else {
@@ -721,7 +732,7 @@ function createGroups({ db, fail, text, orgs }) {
         going,
         spots: g.settings.maxPlayers ? Math.max(0, g.settings.maxPlayers - going) : null,
       };
-    });
+    }).sort((a, b) => a.settings.time.localeCompare(b.settings.time) || a.name.localeCompare(b.name));
   }
 
   // The whole group page: details for anyone with the link; sessions, games,
