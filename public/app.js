@@ -493,7 +493,8 @@
           return;
         }
         if (parts[1] === 'new') {
-          S.route = { name: 'groupNew' };
+          S.route = { name: 'groupNew', host: params.get('host') || null };
+          ensureMyOrgs();
         } else {
           S.route = { name: 'groups' };
           S.groupsList = null;
@@ -4033,12 +4034,24 @@
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const gPath = (slug) => `/groups/${encodeURIComponent(slug)}`;
   const fmtTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  function fmtSessionDay(iso) {
+  // "Today, 6:00 – 9:00 am"
+  function fmtSessionDay(iso, endIso) {
     const d = new Date(iso);
     const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
     const diff = Math.round((day(d) - day(new Date())) / 86400000);
     const label = diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
-    return `${label}, ${fmtTime(iso)}`;
+    return `${label}, ${fmtTime(iso)}${endIso ? ` – ${fmtTime(endIso)}` : ''}`;
+  }
+  // Half-hour arrival times for a session: [{ value: '06:30', label: '6:30 am' }, …] (after the start, before the end).
+  function etaOptions(st) {
+    const [hh, mm] = String(st.time || '06:00').split(':').map(Number);
+    const out = [];
+    for (let m = 30; m < Math.round((st.hours || 3) * 60); m += 30) {
+      const t = (hh * 60 + mm + m) % 1440;
+      const value = `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+      out.push({ value, label: fmtClock(value) });
+    }
+    return out;
   }
   function scheduleText(s, sport) {
     const days = [...(s.days || [])].sort();
@@ -4046,8 +4059,7 @@
       : days.join() === '1,2,3,4,5,6' ? 'Mon–Sat'
         : days.join() === '1,2,3,4,5' ? 'Mon–Fri'
           : days.map((d) => DAYS[d]).join(', ');
-    const [hh, mm] = (s.time || '06:00').split(':').map(Number);
-    const time = new Date(2000, 0, 1, hh, mm).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const time = `${fmtClock(s.time || '06:00')}${s.endTime ? ` – ${fmtClock(s.endTime)}` : ''}`;
     return `${run} · ${time} · ${s.courts} ${CAT.courtWord(sport).toLowerCase()}${s.courts === 1 ? '' : 's'}`;
   }
   const teamName = (team) => team.map((p) => p.name).join(' & ');
@@ -4118,7 +4130,8 @@
         try {
           const { slug } = await api('POST', '/groups', {
             name: fd.get('name'), sport: sport.id, city: fd.get('city'), venue: fd.get('venue'),
-            days, time: fd.get('time'), courts: Number(fd.get('courts')),
+            days, time: fd.get('time'), endTime: fd.get('endTime'), courts: Number(fd.get('courts')),
+            ...(fd.get('host') && { host: fd.get('host') }),
             scoring: { ...sport.defaults, bestOf: 1, ...(pointOptions && { points: Number(fd.get('points')) }) },
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata',
           });
@@ -4142,7 +4155,9 @@
     groupField('Days', choiceGroup({ name: 'days', label: 'Days', multiple: true, value: [1, 2, 3, 4, 5, 6], options: [1, 2, 3, 4, 5, 6, 0].map((n) => ({ value: n, label: DAYS[n] })) })),
     h('div', { class: 'grid-2' },
       field('Start time', h('input', { name: 'time', type: 'time', required: true, value: '06:00' })),
-      groupField(`${CAT.courtWord(sport.id)}s`, choiceGroup({ name: 'courts', label: `${CAT.courtWord(sport.id)}s`, value: 2, options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: String(n) })) }))),
+      field('End time', h('input', { name: 'endTime', type: 'time', required: true, value: '09:00' }))),
+    groupField(`${CAT.courtWord(sport.id)}s`, choiceGroup({ name: 'courts', label: `${CAT.courtWord(sport.id)}s`, value: 2, options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: String(n) })) })),
+    hostField(S.route.host),
     pointOptions ? groupField('Games to', choiceGroup({ name: 'points', label: 'Games to', value: sport.defaults.points, options: pointOptions.map((n) => ({ value: n, label: String(n) })) }), null, 'One game per match, so courts turn over quickly.') : null,
     h('div', { class: 'grid-2' },
       field('Venue', h('input', { name: 'venue', maxlength: 120, placeholder: 'e.g. SDAT Indoor Stadium' })),
@@ -4161,8 +4176,9 @@
     const head = h('header', { class: 'group-head' },
       h('div', { class: 'group-head-icon' }, icon(g.sport.id)),
       h('div', {}, h('h1', {}, g.name),
-        h('p', { class: 'muted small' }, [g.sport.name, g.venue, g.city].filter(Boolean).join(' · ')),
-        h('p', { class: 'muted small' }, `${scheduleText(g.settings, g.sport.id)} · ${g.members} member${g.members === 1 ? '' : 's'}`)));
+        h('p', { class: 'muted small' }, [g.sport.name, g.venue || (g.host && g.host.address), g.city].filter(Boolean).join(' · ')),
+        h('p', { class: 'muted small' }, `${scheduleText(g.settings, g.sport.id)} · ${g.members} member${g.members === 1 ? '' : 's'}`),
+        g.host ? h('p', { class: 'host-chip' }, `Hosted by `, g.host.public ? h('a', { href: `/@${g.host.slug}` }, g.host.name) : h('strong', {}, g.host.name)) : null));
     if (!g.member) {
       const next = `/g/${g.slug}${S.route.join ? `?join=${encodeURIComponent(S.route.join)}` : ''}`;
       return [head, h('div', { class: 'card entry-card' },
@@ -4179,9 +4195,9 @@
           h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', onclick: () => act(async () => { await api('POST', `${gPath(g.slug)}/join`, {}); await loadGroup(); }, 'Request sent') }, 'Ask to join')),
         ])];
     }
-    const tabs = [...GROUP_TABS, ...(g.admin ? [['settings', 'Settings']] : [])];
+    const tabs = [...GROUP_TABS, ...(g.admin ? [['attendance', 'Attendance'], ['settings', 'Settings']] : [])];
     const tab = tabs.some(([id]) => id === S.route.tab) ? S.route.tab : 'today';
-    const body = { today: groupToday, leaderboard: groupLeaderboard, members: groupMembers, settings: groupSettings }[tab](g);
+    const body = { today: groupToday, leaderboard: groupLeaderboard, members: groupMembers, attendance: groupAttendance, settings: groupSettings }[tab](g);
     return [head,
       h('nav', { class: 'tabs' }, tabs.map(([id, label]) => h('a', { href: `/g/${g.slug}${id === 'today' ? '' : `?tab=${id}`}`, class: id === tab ? 'active' : '' }, label, id === 'members' && g.requests.length ? h('span', { class: 'tab-count' }, g.requests.length) : null))),
       h('section', {}, body)];
@@ -4193,22 +4209,49 @@
     const going = s.players.filter((p) => p.status === 'in');
     const waiting = s.players.filter((p) => p.status === 'waitlist');
     const set = (status) => groupAct(() => api('POST', `${gPath(g.slug)}/sessions/${s.id}/rsvp`, { status }), status === 'in' ? 'You\'re in ✓' : 'Got it — see you next time');
-    const share = () => {
-      const text = `${g.sport.name} · ${g.name}\n${fmtSessionDay(s.startsAt)}${g.venue ? ` at ${g.venue}` : ''}\n${going.length} in so far — tap to RSVP:\n${groupUrl(g, true)}`;
-      if (navigator.share) navigator.share({ text }).catch(() => {});
-      else window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
-    };
+    const share = () => shareSession(g, s);
     return h('div', { class: `card rsvp-card${small ? ' small' : ''}` },
       h('div', { class: 'card-head' },
-        h('h2', {}, fmtSessionDay(s.startsAt)),
+        h('h2', {}, fmtSessionDay(s.startsAt, s.endsAt)),
         h('button', { class: 'btn btn-small btn-ghost', onclick: share }, 'Share on WhatsApp')),
       h('div', { class: 'rsvp-buttons' },
         h('button', { class: `btn btn-lg${me && me.status !== 'out' ? ' btn-primary' : ''}`, 'aria-pressed': String(Boolean(me && me.status !== 'out')), onclick: () => set('in') },
           me && me.status === 'waitlist' ? 'On the waitlist' : me && me.status === 'in' ? 'I\'m in ✓' : 'I\'m in'),
         h('button', { class: `btn btn-lg${me && me.status === 'out' ? ' btn-dark' : ''}`, 'aria-pressed': String(Boolean(me && me.status === 'out')), onclick: () => set('out') }, 'Can\'t make it')),
+      me && me.status !== 'out' && !me.checkedIn ? etaPicker(g, s) : null,
       h('p', { class: 'muted small rsvp-count' }, `${going.length} in${g.settings.maxPlayers ? ` of ${g.settings.maxPlayers}` : ''}${waiting.length ? ` · ${waiting.length} waiting` : ''}${s.out.length ? ` · ${s.out.length} can't make it` : ''}`),
-      going.length ? h('p', { class: 'rsvp-names' }, going.map((p) => h('span', { class: `name-chip${p.checkedIn ? ' here' : ''}` }, p.name))) : null,
+      arrivalsLine(s),
+      going.length ? h('p', { class: 'rsvp-names' }, going.map(nameChip)) : null,
       waiting.length ? h('p', { class: 'rsvp-names muted small' }, 'Waitlist: ', waiting.map((p) => p.name).join(', ')) : null);
+  }
+
+  // "Coming at" for someone who's in: from the start, or a half hour later on.
+  function etaPicker(g, s) {
+    const me = s.me;
+    const sel = h('select', {
+      'aria-label': 'Coming at',
+      onchange: (e) => groupAct(() => api('POST', `${gPath(g.slug)}/sessions/${s.id}/rsvp`, { eta: e.target.value || null }), e.target.value ? `See you at ${fmtClock(e.target.value)}` : 'See you at the start'),
+    }, h('option', { value: '', selected: !me.eta }, 'From the start'),
+    etaOptions(g.settings).map((o) => h('option', { value: o.value, selected: me.eta === o.value }, o.label)));
+    return h('label', { class: 'eta-field' }, h('span', {}, 'Coming at'), sel);
+  }
+  // "By 6:00 — 4 · 6:30 — 7 · 7:00 — 10": who's here or coming by each time.
+  const arrivalsLine = (s) => (s.arrivals && s.arrivals.length
+    ? h('p', { class: 'arrivals small' }, s.arrivals.map((a, i) => [i ? ' · ' : 'By ', h('strong', {}, fmtClock(a.time)), ` ${a.count}`]))
+    : null);
+  const nameChip = (p) => h('span', { class: `name-chip${p.checkedIn ? ' here' : ''}` }, p.name, p.eta ? h('small', {}, ` ${fmtClock(p.eta)}`) : null);
+  // The session for the WhatsApp group: when, how many are going, spots left.
+  function shareSession(g, s) {
+    const going = s.players.filter((p) => p.status === 'in').length;
+    const max = g.settings.maxPlayers;
+    const where = g.host ? g.host.name : g.venue;
+    const text = [
+      `${g.sport.name} · ${g.name}${where && where !== g.name ? ` at ${where}` : ''}`,
+      `${fmtSessionDay(s.startsAt, s.endsAt)} · ${going} going${max ? (going < max ? `, ${max - going} spot${max - going === 1 ? '' : 's'} left` : ', full (waitlist open)') : ''}`,
+      `Say you're in (and when you're coming): ${groupUrl(g, true)}`,
+    ].join('\n');
+    if (navigator.share) navigator.share({ text }).catch(() => {});
+    else window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
   }
 
   function groupToday(g) {
@@ -4230,10 +4273,13 @@
     // 1. Me: check in.
     out.push(h('div', { class: `card checkin-card${here ? ' on' : ''}` },
       h('div', { class: 'card-head' },
-        h('div', {}, h('h2', {}, fmtSessionDay(s.startsAt)), h('p', { class: 'muted small' }, `${s.players.filter((p) => p.checkedIn).length} here · ${s.players.filter((p) => p.status === 'in').length} in`)),
+        h('div', {}, h('h2', {}, fmtSessionDay(s.startsAt, s.endsAt)), h('p', { class: 'muted small' }, `${s.players.filter((p) => p.checkedIn).length} here · ${s.players.filter((p) => p.status === 'in').length} in`)),
         here ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => checkIn(false) }, 'Leaving')
           : h('button', { class: 'btn btn-primary btn-lg', onclick: () => checkIn(true) }, 'I\'m here')),
-      here ? h('p', { class: 'small', style: 'margin:0' }, '✓ You\'re checked in — you\'ll be picked for games fairly.') : null));
+      here ? h('p', { class: 'small', style: 'margin:0' }, '✓ You\'re checked in — you\'ll be picked for games fairly.') : null,
+      s.started && !here && me && me.status === 'in' ? etaPicker(g, s) : null,
+      s.started ? arrivalsLine(s) : null,
+      s.started && s.players.some((p) => p.status === 'in' && !p.checkedIn && p.eta) ? h('p', { class: 'rsvp-names small' }, 'On the way: ', s.players.filter((p) => p.status === 'in' && !p.checkedIn).map(nameChip)) : null));
     // 2. Courts.
     const free = s.courts.filter((c) => !c.gameId);
     const sug = s.suggestion;
@@ -4356,6 +4402,59 @@
     ];
   }
 
+  // Hosted by: one of the venue / academy pages I manage (create form).
+  function hostField(preset) {
+    const mine = S.myOrgs || [];
+    if (!mine.length) return null;
+    return field('Hosted by (optional)', h('select', { name: 'host' },
+      h('option', { value: '' }, 'No venue or academy page'),
+      mine.map((o) => h('option', { value: o.slug, selected: o.slug === preset }, o.name))), null, 'The group shows on that page under "Play here", so new players can find and join it.');
+  }
+  // Settings: the pages this admin manages, plus the current host.
+  function groupHostField(g) {
+    const key = g.slug;
+    S.groupHosts = S.groupHosts || {};
+    if (S.groupHosts[key] === undefined) {
+      S.groupHosts[key] = null;
+      api('GET', `${gPath(g.slug)}/hosts`).then((list) => { S.groupHosts[key] = list; render(); }).catch(() => { S.groupHosts[key] = []; });
+    }
+    const list = S.groupHosts[key] || [];
+    const options = [...list];
+    if (g.host && !options.some((o) => o.slug === g.host.slug)) options.push({ slug: g.host.slug, name: g.host.name });
+    if (!options.length) return null;
+    return field('Hosted by', h('select', { name: 'host' },
+      h('option', { value: '' }, 'No venue or academy page'),
+      options.map((o) => h('option', { value: o.slug, selected: g.host && g.host.slug === o.slug }, o.name))), null, 'Shows this group on that page under "Play here".');
+  }
+
+  // Admins: who came to the last few sessions. For academies, the batch register.
+  function groupAttendance(g) {
+    S.groupAttendance = S.groupAttendance || {};
+    const a = S.groupAttendance[g.slug];
+    if (a === undefined) {
+      S.groupAttendance[g.slug] = null;
+      api('GET', `${gPath(g.slug)}/attendance`).then((x) => { S.groupAttendance[g.slug] = x; render(); }).catch((e) => { S.groupAttendance[g.slug] = { error: e.message }; render(); });
+      return loading();
+    }
+    if (!a) return loading();
+    if (a.error) return h('div', { class: 'card' }, h('p', { class: 'muted' }, a.error));
+    if (!a.sessions.length) return h('div', { class: 'card' }, h('h2', {}, 'Attendance'), h('p', { class: 'muted' }, 'Nobody has played yet. After each session you\'ll see who said they\'re in and who checked in.'));
+    const day = (iso) => new Date(iso).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+    const last = a.sessions[0];
+    const came = a.players.filter((p) => p.marks[last.id] === 'here').map((p) => p.name);
+    const copyText = `${g.name} · ${day(last.startsAt)}, ${fmtTime(last.startsAt)}${a.settings.endTime ? ` – ${fmtClock(a.settings.endTime)}` : ''}: ${came.length} came${came.length ? ` (${came.join(', ')})` : ''}`;
+    const mark = { here: '✓', in: 'in', waitlist: 'wl' };
+    return h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Attendance'),
+        h('button', { class: 'btn btn-small', onclick: () => copy(copyText, 'Copied — paste it in WhatsApp') }, 'Copy last session')),
+      h('p', { class: 'muted small' }, '✓ checked in · "in" said yes but didn\'t check in · wl on the waitlist'),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'attendance-table' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'Player'), a.sessions.map((x) => h('th', { class: 'num' }, day(x.startsAt))), h('th', { class: 'num' }, 'Came'))),
+        h('tbody', {},
+          a.players.map((p) => h('tr', {}, h('td', {}, p.name), a.sessions.map((x) => h('td', { class: `num${p.marks[x.id] === 'here' ? ' here' : ''}` }, mark[p.marks[x.id]] || '')), h('td', { class: 'num' }, h('strong', {}, p.came)))),
+          h('tr', { class: 'totals' }, h('td', {}, 'Came / said in'), a.sessions.map((x) => h('td', { class: 'num' }, `${x.came}/${x.said}`)), h('td', {}, ''))))));
+  }
+
   function groupSettings(g) {
     const s = g.settings;
     const sport = S.sports.find((x) => x.id === g.sport.id);
@@ -4368,7 +4467,8 @@
         const days = fd.getAll('days').map(Number);
         saveForm(form, async () => {
           await api('PATCH', gPath(g.slug), {
-            name: fd.get('name'), venue: fd.get('venue'), city: fd.get('city'), days, time: fd.get('time'),
+            name: fd.get('name'), venue: fd.get('venue'), city: fd.get('city'), days, time: fd.get('time'), endTime: fd.get('endTime'),
+            ...(fd.has('host') && { host: fd.get('host') || null }),
             courts: Number(fd.get('courts')), maxPlayers: fd.get('maxPlayers') || null, singles: fd.get('singles') === 'on',
             ...(pointsField && { scoring: { ...s.scoring, points: Number(fd.get('points')) } }),
           });
@@ -4381,15 +4481,18 @@
     groupField('Days', choiceGroup({ name: 'days', label: 'Days', multiple: true, value: s.days, options: [1, 2, 3, 4, 5, 6, 0].map((n) => ({ value: n, label: DAYS[n] })) })),
     h('div', { class: 'grid-2' },
       field('Start time', h('input', { name: 'time', type: 'time', required: true, value: s.time })),
-      field(`${CAT.courtWord(g.sport.id)}s`, h('input', { name: 'courts', type: 'number', min: 1, max: 12, required: true, value: s.courts }))),
+      field('End time', h('input', { name: 'endTime', type: 'time', required: true, value: s.endTime || '' }))),
     h('div', { class: 'grid-2' },
-      pointsField ? field('Games to', h('input', { name: 'points', type: 'number', min: pointsField.min || 5, max: pointsField.max || 50, value: s.scoring.points })) : null,
+      field(`${CAT.courtWord(g.sport.id)}s`, h('input', { name: 'courts', type: 'number', min: 1, max: 12, required: true, value: s.courts })),
+      pointsField ? field('Games to', h('input', { name: 'points', type: 'number', min: pointsField.min || 5, max: pointsField.max || 50, value: s.scoring.points })) : null),
+    h('div', { class: 'grid-2' },
       field('Max players (optional)', h('input', { name: 'maxPlayers', type: 'number', min: 2, max: 200, value: s.maxPlayers ?? '', placeholder: 'No limit' }), null, 'Extra RSVPs go on a waitlist.')),
     h('label', { class: 'check-field' }, h('input', { type: 'checkbox', name: 'singles', checked: Boolean(s.singles) }),
       h('span', {}, h('strong', {}, 'Allow singles'), h('small', {}, 'When only 2 or 3 players are free, suggest a singles game.'))),
     h('div', { class: 'grid-2' },
       field('Venue', h('input', { name: 'venue', maxlength: 120, value: g.venue || '' })),
       field('City', h('input', { name: 'city', maxlength: 60, value: g.city || '' }))),
+    groupHostField(g),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
     return [form,
       h('div', { class: 'card' }, h('h2', {}, 'Invite link'),
@@ -5070,6 +5173,10 @@
       panel(key, 'courts', 'Courts and timings', courts),
       panel(key, 'coaching', `Coaching programmes${o.coaching.length ? ` · ${o.coaching.length}` : ''}`, coaching),
       tournaments,
+      h('div', { class: 'card' },
+        h('h2', {}, 'Groups that play here'),
+        h('p', { class: 'muted small' }, 'Run your regular games as groups: players RSVP from WhatsApp with the time they\'re coming, check in, and get fair games. They show on your page under "Play here" so new players can join. For academies, a group per batch doubles as the attendance register.'),
+        h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary', href: `/groups/new?host=${encodeURIComponent(o.slug)}` }, 'Start a group here'))),
       panel(key, 'team', `Team · ${(o.members || []).length} ${(o.members || []).length === 1 ? 'person' : 'people'}`, team),
     ];
   }

@@ -295,10 +295,12 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['GET', '/api/me/groups', (c) => svc.groups.myGroups(c.actor)],
     ['GET', G, (c, slug) => svc.groups.view(slug, c.actor, { skip: Number(c.query.get('skip')) || 0 })],
     ['PATCH', G, (c, slug) => svc.groups.updateGroup(slug, c.actor, c.body)],
+    ['GET', `${G}/hosts`, (c, slug) => svc.groups.hostOptions(slug, c.actor)],
+    ['GET', `${G}/attendance`, (c, slug) => svc.groups.attendance(slug, c.actor)],
     ['POST', `${G}/join`, (c, slug) => svc.groups.join(slug, c.actor, c.body)],
     ['POST', `${G}/leave`, (c, slug) => svc.groups.leave(slug, c.actor)],
     ['POST', `${G}/members/${N}`, (c, slug, uid) => svc.groups.setMember(slug, c.actor, uid, c.body.action)],
-    ['POST', `${G}/sessions/${N}/rsvp`, (c, slug, sid) => svc.groups.rsvp(slug, c.actor, sid, c.body.status)],
+    ['POST', `${G}/sessions/${N}/rsvp`, (c, slug, sid) => svc.groups.rsvp(slug, c.actor, sid, c.body.status, { eta: c.body.eta })],
     ['POST', `${G}/sessions/${N}/checkin`, (c, slug, sid) => svc.groups.checkIn(slug, c.actor, sid, c.body.here !== false, c.body.user || null)],
     ['POST', `${G}/sessions/${N}/games`, (c, slug, sid) => svc.groups.startGame(slug, c.actor, sid, c.body)],
     ['GET', `${G}/games/${N}`, (c, slug, gid) => svc.groups.getGame(slug, c.actor, gid)],
@@ -449,6 +451,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(req.method === 'HEAD' ? undefined : await fs.readFile(path.join(PUBLIC_DIR, '404.html')));
     }
+    o = { ...o, groups: await svc.groups.forOrgPage(slug) };
     let html = pages.orgHtml({ base, o });
     if (!cacheable) html = html.replace('<meta name="theme-color"', '<meta name="robots" content="noindex">\n  <meta name="theme-color"');
     res.writeHead(200, {

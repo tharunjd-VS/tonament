@@ -14,7 +14,8 @@ const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;
 const AUTO_CONFIRM_MINUTES = 10;
 const MAX_COURTS = 12;
 
-function createGroups({ db, fail, text }) {
+// orgs: the venue / academy pages module (a group can be hosted by one).
+function createGroups({ db, fail, text, orgs }) {
   // ---------- helpers
 
   const slugOf = (value) => String(value || '').trim().toLowerCase()
@@ -24,6 +25,14 @@ function createGroups({ db, fail, text }) {
   const scoringOf = (g) => sportOf(g).normalizeConfig((g.settings || {}).scoring);
   const needUser = (actor) => { if (!actor?.user) fail(401, 'Sign in first'); return actor.user; };
 
+  const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+  const minutesOf = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+  const hhmmOf = (mins) => { const m = ((mins % 1440) + 1440) % 1440; return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
+  // Minutes from the start to `hhmm`, wrapping past midnight (20:00 -> 00:30 is 270).
+  const minutesAfter = (start, hhmm) => (((minutesOf(hhmm) - minutesOf(start)) % 1440) + 1440) % 1440;
+  // The finish time: set, or worked out from the session length (older groups).
+  const endTimeOf = (st) => st.endTime || hhmmOf(minutesOf(st.time || '06:00') + Math.round((st.hours || 3) * 60));
+
   function readSettings(input = {}, prev = {}, sport) {
     const s = { days: [1, 2, 3, 4, 5, 6], time: '06:00', timeZone: 'Asia/Kolkata', courts: 2, maxPlayers: null, hours: 3, singles: false, ...prev };
     if (input.days !== undefined) {
@@ -31,8 +40,18 @@ function createGroups({ db, fail, text }) {
       s.days = [...new Set(input.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort();
     }
     if (input.time !== undefined) {
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(input.time))) fail(400, 'Time: use HH:MM, like 06:00');
+      if (!TIME_RE.test(String(input.time))) fail(400, 'Time: use HH:MM, like 06:00');
       s.time = String(input.time);
+    }
+    // The finish time sets the session length (and moves with the start time).
+    if (input.endTime !== undefined && input.endTime !== null && input.endTime !== '') {
+      if (!TIME_RE.test(String(input.endTime))) fail(400, 'End time: use HH:MM, like 09:00');
+      s.endTime = String(input.endTime);
+    }
+    if (s.endTime) {
+      const mins = minutesAfter(s.time, s.endTime);
+      if (mins < 30 || mins > 12 * 60) fail(400, 'Sessions run from 30 minutes to 12 hours — check the start and end times');
+      s.hours = mins / 60;
     }
     if (input.courts !== undefined) {
       const n = Number(input.courts);
@@ -44,7 +63,7 @@ function createGroups({ db, fail, text }) {
       if (n !== null && (!Number.isInteger(n) || n < 2 || n > 200)) fail(400, 'Max players: 2 to 200, or leave it empty');
       s.maxPlayers = n;
     }
-    if (input.hours !== undefined) {
+    if (input.hours !== undefined && !s.endTime) {
       const n = Number(input.hours);
       if (!Number.isFinite(n) || n < 1 || n > 12) fail(400, 'Session length: 1 to 12 hours');
       s.hours = n;
@@ -59,13 +78,20 @@ function createGroups({ db, fail, text }) {
   async function load(q, slug, { lock = false, actor = null } = {}) {
     const uid = actor?.user?.id || 0;
     const [row] = await q(
-      `SELECT g.*, m.role AS m_role, m.status AS m_status, m.rating AS m_rating, m.games AS m_games, m.user_id AS m_user
-       FROM groups g LEFT JOIN group_members m ON m.group_id = g.id AND m.user_id = $2
+      `SELECT g.*, m.role AS m_role, m.status AS m_status, m.rating AS m_rating, m.games AS m_games, m.user_id AS m_user,
+              o.slug AS o_slug, o.name AS o_name, o.kind AS o_kind, o.paid_until AS o_paid, o.address AS o_address, o.city AS o_city
+       FROM groups g LEFT JOIN group_members m ON m.group_id = g.id AND m.user_id = $2 LEFT JOIN orgs o ON o.id = g.org_id
        WHERE g.slug = $1${lock ? ' FOR UPDATE OF g' : ''}`,
       [String(slug || '').toLowerCase(), uid],
     );
     if (!row) fail(404, 'Group not found');
-    const { m_role: role, m_status: status, m_rating: rating, m_games: games, m_user: user, ...g } = row;
+    const { m_role: role, m_status: status, m_rating: rating, m_games: games, m_user: user, o_slug: oSlug, o_name: oName, o_kind: oKind, o_paid: oPaid, o_address: oAddress, o_city: oCity, ...g } = row;
+    // The venue or academy hosting it (its page link only while the page is public).
+    g.host = oSlug ? {
+      slug: oSlug, name: oName, kind: oKind, kindName: (orgs?.KIND_NAMES || {})[oKind] || 'Venue',
+      address: [oAddress, oCity].filter(Boolean).join(', ') || null,
+      public: Boolean(oPaid && Date.parse(oPaid) + (orgs?.GRACE_DAYS || 14) * 86400000 > Date.now()),
+    } : null;
     g.member = user ? { group_id: g.id, user_id: user, role, status, rating, games } : null;
     g.memberFor = uid;
     return g;
@@ -92,6 +118,32 @@ function createGroups({ db, fail, text }) {
 
   // ---------- groups
 
+  // The venue / academy pages this person manages (to host groups).
+  async function hostsFor(q, actor) {
+    if (!actor?.user) return [];
+    return q(`SELECT o.id, o.slug, o.name, o.kind FROM org_members m JOIN orgs o ON o.id = m.org_id WHERE m.email = $1 ORDER BY o.name`, [actor.user.email]);
+  }
+  // input.host: a page's slug ('' or null: no host). Only that page's team can pick it.
+  async function readHost(q, actor, host) {
+    if (host === null || host === '') return null;
+    const slug = String(host).toLowerCase();
+    if (actor.user.isAdmin) {
+      const [o] = await q('SELECT id FROM orgs WHERE slug = $1', [slug]);
+      if (!o) fail(404, 'Page not found');
+      return o.id;
+    }
+    const o = (await hostsFor(q, actor)).find((x) => x.slug === slug);
+    if (!o) fail(403, 'Only that page\'s team can host a group there');
+    return o.id;
+  }
+  async function hostOptions(slug, actor) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug, { actor });
+      await needAdmin(q, g, actor);
+      return (await hostsFor(q, actor)).map((o) => ({ slug: o.slug, name: o.name, kindName: (orgs?.KIND_NAMES || {})[o.kind] || 'Venue' }));
+    });
+  }
+
   async function createGroup(actor, input = {}) {
     const user = needUser(actor);
     const name = text(input.name, 'Group name', { max: 60 });
@@ -102,11 +154,12 @@ function createGroups({ db, fail, text }) {
       let slug = slugOf(input.slug || name);
       if (slug.length < 3) slug = `group-${crypto.randomBytes(3).toString('hex')}`;
       for (let i = 2; (await q('SELECT 1 FROM groups WHERE slug = $1', [slug])).length; i++) slug = `${slugOf(name).slice(0, 34)}-${i}`;
+      const orgId = input.host ? await readHost(q, actor, input.host) : null;
       const [g] = await q(
-        `INSERT INTO groups (slug, name, sport, city, venue, about, invite_token, settings, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9) RETURNING *`,
+        `INSERT INTO groups (slug, name, sport, city, venue, about, invite_token, settings, created_by, org_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10) RETURNING *`,
         [slug, name, sport.id, text(input.city, 'City', { max: 60, optional: true }), text(input.venue, 'Venue', { max: 120, optional: true }),
-          text(input.about, 'About', { max: 500, optional: true }), crypto.randomBytes(9).toString('base64url'), JSON.stringify(settings), user.id],
+          text(input.about, 'About', { max: 500, optional: true }), crypto.randomBytes(9).toString('base64url'), JSON.stringify(settings), user.id, orgId],
       );
       await q(`INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'admin')`, [g.id, user.id]);
       return { slug: g.slug };
@@ -122,6 +175,7 @@ function createGroups({ db, fail, text }) {
       for (const [k, label, max] of [['city', 'City', 60], ['venue', 'Venue', 120], ['about', 'About', 500]]) {
         if (input[k] !== undefined) set[k] = text(input[k], label, { max, optional: true });
       }
+      if (input.host !== undefined) set.org_id = await readHost(q, actor, input.host);
       if (input.newInvite) set.invite_token = crypto.randomBytes(9).toString('base64url');
       const keys = Object.keys(set);
       await q(`UPDATE groups SET ${keys.map((k, i) => `${k} = $${i + 1}${k === 'settings' ? '::jsonb' : ''}`).join(', ')} WHERE id = $${keys.length + 1}`, [...keys.map((k) => set[k]), g.id]);
@@ -221,24 +275,39 @@ function createGroups({ db, fail, text }) {
 
   // I'm in / can't make it. With a player limit, extra RSVPs wait; when
   // someone drops out the first on the waitlist moves up.
-  async function rsvp(slug, actor, sessionId, status) {
-    if (!['in', 'out'].includes(status)) fail(400, 'status must be in or out');
+  // eta: when they expect to arrive ('HH:MM' within the session, or null for
+  // "from the start"). Sent alone, it just updates the time for someone in.
+  async function rsvp(slug, actor, sessionId, status, { eta } = {}) {
+    if (status !== undefined && status !== null && !['in', 'out'].includes(status)) fail(400, 'status must be in or out');
+    if (!status && eta === undefined) fail(400, 'status must be in or out');
     await db.tx(async (q) => {
       const g = await load(q, slug, { lock: true, actor });
       await needMember(q, g, actor);
       const s = await sessionOf(q, g, sessionId);
       const max = g.settings.maxPlayers;
       const [cur] = await q('SELECT * FROM session_players WHERE session_id = $1 AND user_id = $2', [s.id, actor.user.id]);
+      let time = null;
+      if (eta !== undefined && eta !== null && eta !== '') {
+        if (!TIME_RE.test(String(eta))) fail(400, 'Coming at: use HH:MM, like 07:30');
+        if (minutesAfter(g.settings.time, String(eta)) >= Math.round((g.settings.hours || 3) * 60)) fail(400, `Pick a time between ${g.settings.time} and ${endTimeOf(g.settings)}`);
+        time = minutesAfter(g.settings.time, String(eta)) === 0 ? null : String(eta);
+      }
+      if (!status) {
+        if (!cur || cur.status === 'out') fail(409, 'Say you\'re in first');
+        await q('UPDATE session_players SET eta = $3 WHERE session_id = $1 AND user_id = $2', [s.id, actor.user.id, time]);
+        return;
+      }
       let next = status;
       if (status === 'in' && max && (!cur || cur.status !== 'in')) {
         const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM session_players WHERE session_id = $1 AND status = 'in'`, [s.id]);
         if (n >= max) next = 'waitlist';
       }
       await q(
-        `INSERT INTO session_players (session_id, user_id, status) VALUES ($1, $2, $3)
+        `INSERT INTO session_players (session_id, user_id, status, eta) VALUES ($1, $2, $3, $4)
          ON CONFLICT (session_id, user_id) DO UPDATE SET status = EXCLUDED.status, rsvp_at = CASE WHEN session_players.status = EXCLUDED.status THEN session_players.rsvp_at ELSE now() END,
-           checked_in_at = CASE WHEN EXCLUDED.status = 'out' THEN NULL ELSE session_players.checked_in_at END`,
-        [s.id, actor.user.id, next],
+           checked_in_at = CASE WHEN EXCLUDED.status = 'out' THEN NULL ELSE session_players.checked_in_at END,
+           eta = CASE WHEN EXCLUDED.status = 'out' THEN NULL WHEN $5 THEN EXCLUDED.eta ELSE session_players.eta END`,
+        [s.id, actor.user.id, next, status === 'out' ? null : time, eta !== undefined],
       );
       if (status === 'out' && cur && cur.status === 'in' && max) {
         await q(`UPDATE session_players SET status = 'in' WHERE session_id = $1 AND user_id =
@@ -513,6 +582,20 @@ function createGroups({ db, fail, text }) {
     return gameViewOf(g, x, m, actor, await playersInfo(q, g, [x.a1, x.a2, x.b1, x.b2]));
   }
 
+  const etaRank = (st, p) => (p.eta ? minutesAfter(st.time, p.eta) : 0);
+  // Players in (not waitlisted) by each half hour of the session: who's here
+  // or coming by then. Only the times when the count changes.
+  function arrivalsOf(st, players) {
+    const going = players.filter((p) => p.status === 'in');
+    if (!going.some((p) => p.eta && !p.checked_in_at)) return [];
+    const out = [];
+    for (let m = 0; m < Math.round((st.hours || 3) * 60); m += 30) {
+      const n = going.filter((p) => p.checked_in_at || etaRank(st, p) <= m).length;
+      if (!out.length || out[out.length - 1].count !== n) out.push({ time: hhmmOf(minutesOf(st.time) + m), count: n });
+    }
+    return out;
+  }
+
   // players: this session's session_players rows (with name, handle);
   // games: its games, newest first; info: members by user id.
   function sessionViewOf(g, s, players, games, info, m, actor, { skip = 0 } = {}) {
@@ -531,11 +614,16 @@ function createGroups({ db, fail, text }) {
       id: s.id,
       startsAt: s.starts_at,
       endsAt: new Date(startMs + (g.settings.hours || 3) * 3600000).toISOString(),
+      // How many are here or expected by each half hour ("6:00 — 4 · 6:30 — 7").
+      arrivals: arrivalsOf(g.settings, players),
       today: now >= startMs - 3 * 3600000,
       started: now >= startMs,
-      me: mine ? { status: mine.status, checkedIn: Boolean(mine.checked_in_at) } : null,
-      players: ordered.filter((p) => p.status !== 'out').map((p) => ({
-        id: p.user_id, name: p.name, handle: p.handle, status: p.status, checkedIn: Boolean(p.checked_in_at),
+      me: mine ? { status: mine.status, checkedIn: Boolean(mine.checked_in_at), eta: mine.eta || null } : null,
+      // Here first, then by when they're coming (from the start before later times).
+      players: ordered.filter((p) => p.status !== 'out')
+        .sort((a, b) => Number(Boolean(b.checked_in_at)) - Number(Boolean(a.checked_in_at)) || etaRank(g.settings, a) - etaRank(g.settings, b))
+        .map((p) => ({
+          id: p.user_id, name: p.name, handle: p.handle, status: p.status, checkedIn: Boolean(p.checked_in_at), eta: p.checked_in_at ? null : p.eta || null,
         onCourt: onCourt.has(p.user_id), games: count(p.user_id), rating: info.get(p.user_id)?.rating ?? L.START,
       })),
       out: ordered.filter((p) => p.status === 'out').map((p) => ({ id: p.user_id, name: p.name })),
@@ -574,6 +662,68 @@ function createGroups({ db, fail, text }) {
     }));
   }
 
+  // Admins: who came to the last few sessions (✓ checked in, 'in' said yes
+  // but didn't check in). For academies it's the batch register.
+  async function attendance(slug, actor, { sessions: count = 8 } = {}) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug, { actor });
+      await needAdmin(q, g, actor);
+      const sessions = await q(
+        `SELECT s.id, s.starts_at FROM group_sessions s WHERE s.group_id = $1 AND s.starts_at <= now()
+           AND EXISTS (SELECT 1 FROM session_players p WHERE p.session_id = s.id AND p.status <> 'out')
+         ORDER BY s.starts_at DESC LIMIT $2`,
+        [g.id, Math.min(Math.max(Number(count) || 8, 1), 30)],
+      );
+      const ids = sessions.map((x) => x.id);
+      const rows = ids.length ? await q(
+        `SELECT p.session_id, p.user_id, p.status, p.checked_in_at, u.name FROM session_players p JOIN users u ON u.id = p.user_id
+         WHERE p.session_id = ANY($1::int[]) AND p.status <> 'out'`, [ids]) : [];
+      const people = new Map();
+      for (const r of rows) {
+        const p = people.get(r.user_id) || { id: r.user_id, name: r.name, marks: {}, came: 0 };
+        p.marks[r.session_id] = r.checked_in_at ? 'here' : r.status === 'in' ? 'in' : 'waitlist';
+        if (r.checked_in_at) p.came += 1;
+        people.set(r.user_id, p);
+      }
+      return {
+        settings: { ...g.settings, endTime: endTimeOf(g.settings) },
+        sessions: sessions.map((x) => ({
+          id: x.id, startsAt: x.starts_at,
+          came: rows.filter((r) => r.session_id === x.id && r.checked_in_at).length,
+          said: rows.filter((r) => r.session_id === x.id && r.status === 'in').length,
+        })),
+        players: [...people.values()].sort((a, b) => b.came - a.came || a.name.localeCompare(b.name)),
+      };
+    });
+  }
+
+  // For a venue / academy page: its groups, with the next session and how
+  // many are going. Read-only (sessions not made yet just show the time).
+  async function forOrgPage(orgSlug) {
+    const gs = await db.query(
+      `SELECT g.* FROM groups g JOIN orgs o ON o.id = g.org_id WHERE o.slug = $1 ORDER BY g.name`, [String(orgSlug || '').toLowerCase()]);
+    if (!gs.length) return [];
+    const nexts = gs.map((g) => L.upcomingStarts(g.settings, new Date(), { count: 1, hours: g.settings.hours || 3 })[0] || null);
+    const counts = await db.query(
+      `SELECT s.group_id, s.starts_at, COUNT(p.user_id) FILTER (WHERE p.status = 'in')::int AS going
+       FROM group_sessions s LEFT JOIN session_players p ON p.session_id = s.id
+       WHERE s.group_id = ANY($1::int[]) AND s.starts_at = ANY($2::timestamptz[]) GROUP BY s.group_id, s.starts_at`,
+      [gs.map((g) => g.id), nexts.filter(Boolean).map((d) => d.toISOString())],
+    );
+    return gs.map((g, i) => {
+      const next = nexts[i];
+      const c = next && counts.find((x) => x.group_id === g.id && Date.parse(x.starts_at) === next.getTime());
+      const going = c ? c.going : 0;
+      return {
+        slug: g.slug, name: g.name, sport: { id: g.sport, name: sportOf(g).name },
+        settings: { ...g.settings, endTime: endTimeOf(g.settings) },
+        next: next ? next.toISOString() : null,
+        going,
+        spots: g.settings.maxPlayers ? Math.max(0, g.settings.maxPlayers - going) : null,
+      };
+    });
+  }
+
   // The whole group page: details for anyone with the link; sessions, games,
   // members and the leaderboard for members. About 7 round trips.
   async function view(slug, actor, { skip = 0 } = {}) {
@@ -588,7 +738,8 @@ function createGroups({ db, fail, text }) {
         city: g.city,
         venue: g.venue,
         about: g.about,
-        settings: g.settings,
+        host: g.host,
+        settings: { ...g.settings, endTime: endTimeOf(g.settings) },
         role: m ? (m.status === 'requested' ? 'requested' : m.role) : actor?.user?.isAdmin ? 'admin' : null,
         member,
       };
@@ -637,7 +788,7 @@ function createGroups({ db, fail, text }) {
   }
 
   return {
-    slugOf, createGroup, updateGroup, myGroups, join, setMember, leave, view, rsvp, checkIn,
+    slugOf, createGroup, updateGroup, myGroups, join, setMember, leave, view, rsvp, checkIn, hostOptions, attendance, forOrgPage,
     startGame, getGame, rally, undo, setResult, confirm, dispute, voidGame,
   };
 }

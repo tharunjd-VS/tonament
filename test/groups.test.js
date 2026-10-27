@@ -360,3 +360,95 @@ test('a carrom group game: a whole board in one tap, and undo takes it off', asy
   x = await svc.groups.rally(slug, admin, id, 'a', 2, { points: 3 });
   assert.deepEqual([x.status, x.summary], ['done', '27-0']);
 });
+
+test('end time sets the session length, past midnight too', async () => {
+  const a = await user('Night Owl');
+  const { slug } = await svc.groups.createGroup(a, { name: 'Late Shuttlers', sport: 'badminton', days: [1, 2, 3, 4, 5], time: '20:00', endTime: '00:30' });
+  let g = await svc.groups.view(slug, a);
+  assert.deepEqual([g.settings.endTime, g.settings.hours], ['00:30', 4.5]);
+  g = await svc.groups.updateGroup(slug, a, { time: '06:00', endTime: '09:00' });
+  assert.deepEqual([g.settings.time, g.settings.endTime, g.settings.hours], ['06:00', '09:00', 3]);
+  // Moving the start keeps the end; the length follows.
+  g = await svc.groups.updateGroup(slug, a, { time: '07:00' });
+  assert.deepEqual([g.settings.endTime, g.settings.hours], ['09:00', 2]);
+  await assert.rejects(svc.groups.updateGroup(slug, a, { endTime: '07:10' }), /30 minutes to 12 hours/);
+  await assert.rejects(svc.groups.updateGroup(slug, a, { endTime: '9am' }), /HH:MM/);
+  // Older groups (no end time): start + their length.
+  const { slug: old } = await svc.groups.createGroup(a, { name: 'Old Timers', sport: 'badminton', time: '06:00', hours: 2 });
+  assert.equal((await svc.groups.view(old, a)).settings.endTime, '08:00');
+});
+
+test('coming at: RSVP with a time, change it, arrivals by the half hour, check-in clears it', async () => {
+  const admin = await user('Venue Manager');
+  const sched = nowSchedule(); // started an hour ago, 3 hours long
+  const { slug } = await svc.groups.createGroup(admin, { name: 'Arena Evenings', sport: 'badminton', courts: 2, ...sched });
+  const { invite, session } = await svc.groups.view(slug, admin);
+  const [hh, mm] = sched.time.split(':').map(Number);
+  const at = (mins) => { const t = (hh * 60 + mm + mins) % 1440; return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; };
+  const ps = [];
+  for (const name of ['Bala', 'Chitra', 'Dev']) { const p = await user(name); await svc.groups.join(slug, p, { token: invite }); ps.push(p); }
+  await svc.groups.rsvp(slug, admin, session.id, 'in');
+  await svc.groups.rsvp(slug, ps[0], session.id, 'in', { eta: at(90) });
+  await svc.groups.rsvp(slug, ps[1], session.id, 'in', { eta: at(30) });
+  await assert.rejects(svc.groups.rsvp(slug, ps[2], session.id, null, { eta: at(30) }), /in first/);
+  await svc.groups.rsvp(slug, ps[2], session.id, 'in');
+  await assert.rejects(svc.groups.rsvp(slug, ps[2], session.id, null, { eta: at(180) }), /Pick a time between/);
+  await svc.groups.rsvp(slug, ps[2], session.id, null, { eta: at(60) });
+  let s = (await svc.groups.view(slug, ps[2])).session;
+  assert.equal(s.me.eta, at(60));
+  assert.deepEqual(s.players.map((p) => [p.name, p.eta]), [['Venue Manager', null], ['Chitra', at(30)], ['Dev', at(60)], ['Bala', at(90)]]);
+  assert.deepEqual(s.arrivals.map((x) => [x.time, x.count]), [[at(0), 1], [at(30), 2], [at(60), 3], [at(90), 4]]);
+  // Saying "in" again keeps the time; checking in clears it from the list; "out" clears it.
+  await svc.groups.rsvp(slug, ps[0], session.id, 'in');
+  await svc.groups.checkIn(slug, ps[1], session.id, true);
+  s = (await svc.groups.view(slug, admin)).session;
+  assert.deepEqual(s.players.map((p) => [p.name, p.eta]), [['Chitra', null], ['Venue Manager', null], ['Dev', at(60)], ['Bala', at(90)]]);
+  await svc.groups.rsvp(slug, ps[0], session.id, 'out');
+  await svc.groups.rsvp(slug, ps[0], session.id, 'in');
+  assert.equal((await svc.groups.view(slug, ps[0])).session.me.eta, null);
+});
+
+test('venues and academies host groups: "Play here" on their page, attendance for admins', async () => {
+  const mgr = await user('Arena Owner');
+  const other = await user('Someone Else');
+  const [o] = await db.query(`INSERT INTO orgs (slug, name, kind, city, address, paid_until) VALUES ('smash-arena', 'Smash Arena', 'venue', 'Chennai', '12 Court Road', now() + interval '300 days') RETURNING id`);
+  await db.query(`INSERT INTO org_members (org_id, email, role) VALUES ($1, $2, 'owner')`, [o.id, mgr.user.email]);
+  await assert.rejects(svc.groups.createGroup(other, { name: 'Pirates', sport: 'badminton', host: 'smash-arena' }), /that page's team/);
+  const sched = nowSchedule();
+  const { slug } = await svc.groups.createGroup(mgr, { name: 'Arena Mornings', sport: 'badminton', host: 'smash-arena', maxPlayers: 12, ...sched });
+  let g = await svc.groups.view(slug, mgr);
+  assert.deepEqual([g.host.slug, g.host.name, g.host.kindName, g.host.address, g.host.public], ['smash-arena', 'Smash Arena', 'Venue', '12 Court Road, Chennai', true]);
+  assert.deepEqual((await svc.groups.hostOptions(slug, mgr)).map((x) => x.slug), ['smash-arena']);
+  // Unhosting and hosting again from settings.
+  g = await svc.groups.updateGroup(slug, mgr, { host: null });
+  assert.equal(g.host, null);
+  g = await svc.groups.updateGroup(slug, mgr, { host: 'smash-arena' });
+  assert.equal(g.host.slug, 'smash-arena');
+
+  // People RSVP; the venue's page lists the group with how many are going.
+  const ps = [];
+  for (const name of ['Asha', 'Bala', 'Chitra']) { const p = await user(name); await svc.groups.join(slug, p, { token: g.invite }); ps.push(p); }
+  for (const p of ps) await svc.groups.rsvp(slug, p, g.session.id, 'in');
+  const list = await svc.groups.forOrgPage('smash-arena');
+  assert.deepEqual(list.map((x) => [x.slug, x.going, x.spots]), [[slug, 3, 9]]);
+  const html = await (await fetch(`${base}/@smash-arena`)).text();
+  assert.match(html, /Play here/);
+  assert.match(html, /Arena Mornings/);
+  assert.match(html, /3 going · 9 spots left/);
+
+  // Attendance: this session plus two earlier ones.
+  await svc.groups.checkIn(slug, ps[0], g.session.id, true);
+  await svc.groups.checkIn(slug, ps[1], g.session.id, true);
+  const gid = (await db.query('SELECT id FROM groups WHERE slug = $1', [slug]))[0].id;
+  for (const daysAgo of [1, 2]) {
+    const [s] = await db.query(`INSERT INTO group_sessions (group_id, starts_at) VALUES ($1, now() - ($2 || ' days')::interval) RETURNING id`, [gid, daysAgo]);
+    await db.query(`INSERT INTO session_players (session_id, user_id, status, checked_in_at) VALUES ($1, $2, 'in', now())`, [s.id, ps[0].user.id]);
+    if (daysAgo === 1) await db.query(`INSERT INTO session_players (session_id, user_id, status) VALUES ($1, $2, 'in')`, [s.id, ps[2].user.id]);
+  }
+  await assert.rejects(svc.groups.attendance(slug, ps[0]), /admins/);
+  const a = await svc.groups.attendance(slug, mgr);
+  assert.equal(a.sessions.length, 3);
+  assert.deepEqual(a.sessions.map((x) => [x.came, x.said]), [[2, 3], [1, 2], [1, 1]]);
+  assert.deepEqual(a.players.map((p) => [p.name, p.came]), [['Asha', 3], ['Bala', 1], ['Chitra', 0]]);
+  assert.equal(a.players[2].marks[a.sessions[1].id], 'in');
+});

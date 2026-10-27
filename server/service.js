@@ -2986,7 +2986,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     tournamentAccess: (q, id, actor) => lockWith(q, id, actor, 'manage'),
   });
 
-  const groups = createGroups({ db, fail, text });
+  const groups = createGroups({ db, fail, text, orgs });
 
   return {
     orgs,

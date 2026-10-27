@@ -1076,6 +1076,14 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .name-chip { padding: 3px 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); font-size: 0.88rem; }
 .name-chip.here { border-color: var(--accent); }
 .name-chip small { color: var(--muted); }
+.eta-field { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; font-weight: 600; }
+.eta-field select { width: auto; flex: 0 1 auto; }
+.arrivals { margin: 4px 0 0; color: var(--muted); }
+.arrivals strong { color: var(--text); font-weight: 600; }
+.host-chip { margin: 4px 0 0; font-size: 0.88rem; color: var(--muted); }
+.host-chip a, .host-chip strong { font-weight: 600; }
+.attendance-table td.here { color: var(--accent-text); font-weight: 700; }
+.attendance-table tr.totals td { color: var(--muted); border-top: 1px solid var(--border); }
 .checkin-card.on { border-left: 4px solid var(--accent); }
 .checkin-card .card-head { align-items: center; gap: 12px; flex-wrap: wrap; }
 .court-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); margin-bottom: 16px; }
