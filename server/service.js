@@ -7,6 +7,7 @@ const regions = require('../public/regions');
 const catalog = require('../public/sports/events');
 const schedule = require('../public/schedule');
 const league = require('../public/sports/league');
+const { fromScores } = require('../public/sports/result');
 const pages = require('./pages');
 const { HttpError } = require('./errors');
 const { normalizeEmail, validEmail } = require('./auth');
@@ -2249,25 +2250,53 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
       const tap = sports.tapFor(scoreOf(t, m), { ...extra, side });
       if (tap.error) fail(400, tap.error);
-      const rallies = m.rallies + tap.ch;
-      const score = scoreOf(t, m, rallies);
-      const winnerId = score.winner ? (score.winner === 'a' ? m.a_id : m.b_id) : null;
-      const over = league.finished(score); // won, or drawn in a 2-game league match
-      const [row] = await q(
-        `UPDATE matches SET rallies = $1, status = $2, winner_id = $3, updated_at = now() WHERE id = $4 RETURNING *`,
-        [rallies, over ? 'done' : 'live', winnerId, m.id],
-      );
-      if (over) {
-        if (m.stage === 'knockout') {
-          if (m.round === t.config.knockoutRounds) await setStatus(q, t, 'completed');
-          else await advance(q, t, m, winnerId);
-        } else if (t.format === 'league' && (await pendingLeague(q, t)) === 0) {
-          await setStatus(q, t, 'completed');
-        }
-        await autoCall(q, tournament, m.court);
-      }
-      return viewOfRow(q, t, row);
+      return saveRallies(q, tournament, t, m, m.rallies + tap.ch);
     });
+  }
+
+  // A match's points, saved; when that finishes it, the bracket moves on,
+  // the event may complete and the court calls its next match.
+  async function saveRallies(q, tournament, t, m, rallies) {
+    const score = scoreOf(t, m, rallies);
+    const winnerId = score.winner ? (score.winner === 'a' ? m.a_id : m.b_id) : null;
+    const over = league.finished(score); // won, or drawn in a 2-game league match
+    const [row] = await q(
+      `UPDATE matches SET rallies = $1, status = $2, winner_id = $3, updated_at = now() WHERE id = $4 RETURNING *`,
+      [rallies, over ? 'done' : 'live', winnerId, m.id],
+    );
+    if (over) {
+      if (m.stage === 'knockout') {
+        if (m.round === t.config.knockoutRounds) await setStatus(q, t, 'completed');
+        else await advance(q, t, m, winnerId);
+      } else if (t.format === 'league' && (await pendingLeague(q, t)) === 0) {
+        await setStatus(q, t, 'completed');
+      }
+      await autoCall(q, tournament, m.court);
+    }
+    return viewOfRow(q, t, row);
+  }
+
+  // The score entered at the end ([{ a, b }] per game / set / frame) instead
+  // of point by point. It replaces any live points and must finish the match.
+  async function resultIn(id, actor, mid, games, at) {
+    return db.tx(async (q) => {
+      const { t: tournament } = await lockWith(q, id, actor, 'score');
+      const m = await matchOf(q, tournament, mid);
+      const t = await eventFor(q, tournament, m.event_id);
+      if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished — undo the last point to change it');
+      if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
+      requireStageOpen(t, m);
+      checkAt(m, at);
+      const built = fromScores((log) => scoreOf(t, m, log), games);
+      if (built.error) fail(400, built.error);
+      if (!league.finished(built.score)) fail(400, `That doesn't finish the match — enter every ${(built.score.unit || 'game').toLowerCase()} played`);
+      return saveRallies(q, tournament, t, m, built.rallies);
+    });
+  }
+  async function setResult(id, actor, mid, games, at) {
+    const m = await resultIn(id, actor, mid, games, at);
+    if (m.status === 'done' && dupr.enabled()) await sendToDupr(m.id).catch((err) => console.error('DUPR:', err.message));
+    return m;
   }
 
   // Removes the last rally. Undoing the winning point reopens the match, as
@@ -3061,6 +3090,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     start,
     startKnockout,
     rally,
+    setResult,
     undo,
     updateMatch,
   };

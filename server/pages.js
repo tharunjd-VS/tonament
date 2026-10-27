@@ -326,6 +326,57 @@ function groupCardHtml(g) {
       </a>`;
 }
 
+// /g/<slug>: the app page with a preview that says what the link is for —
+// joining the group, or (with ?s=<session>) coming to play. The images are
+// fixed (made once); the details are in the title and description.
+// g: groups.shareInfo() or null.
+function groupHtml(shell, { base, g }) {
+  const meta = (attr, name, content) => `<meta ${attr}="${name}" content="${esc(content)}">`;
+  let title;
+  let description;
+  let image;
+  if (g) {
+    const st = g.settings;
+    const where = g.host ? g.host.name : g.venue;
+    const at = where && where !== g.name ? ` at ${where}` : '';
+    const level = levelText(st.levels);
+    const time = hours(st.time, st.endTime);
+    const s = g.session;
+    if (s) {
+      const left = s.spots == null ? '' : s.spots ? `, ${s.spots} spot${s.spots === 1 ? '' : 's'} left` : ', full (waitlist open)';
+      title = `${nextLabel(s.startsAt, st.timeZone)} ${time} · ${s.going} going${left}`;
+      description = `${g.name}${at} · ${g.sport.name} · ${level}. Tap to say you're in (and when you're coming).`;
+      image = 'og-group-today.png';
+    } else {
+      title = `Join ${g.name}${at}`;
+      description = `${g.sport.name} · ${level} · ${daysText(st.days)} ${time}${g.city ? ` · ${g.city}` : ''}. Tap to join, then say you're in.`;
+      image = 'og-group-join.png';
+    }
+  } else {
+    title = 'Tonament — One platform. Every sport. Every tournament.';
+    description = 'Run league and knockout tournaments and score every match live.';
+    image = 'og.png';
+  }
+  const head = [
+    `<title>${esc(g ? `${title} · Tonament` : title)}</title>`,
+    meta('name', 'description', description),
+    meta('name', 'robots', 'noindex'),
+    meta('property', 'og:type', 'website'),
+    meta('property', 'og:site_name', 'Tonament'),
+    meta('property', 'og:title', title),
+    meta('property', 'og:description', description),
+    ...(g ? [meta('property', 'og:url', `${base}/g/${g.slug}`)] : []),
+    meta('property', 'og:image', `${base}/brand/${image}`),
+    meta('property', 'og:image:width', 1200),
+    meta('property', 'og:image:height', 630),
+    meta('name', 'twitter:card', 'summary_large_image'),
+    meta('name', 'twitter:title', title),
+    meta('name', 'twitter:description', description),
+    meta('name', 'twitter:image', `${base}/brand/${image}`),
+  ].join('\n  ');
+  return shell.replace(/<!-- head:start[\s\S]*?<!-- head:end -->/, head);
+}
+
 // sport: { id, name, presets: [label], courtWord }, content: server/sport-pages.js entry,
 // tournaments: upcoming public cards, others: [{ id, name }].
 function sportHtml({ base, sport, content, tournaments, others }) {
@@ -651,4 +702,4 @@ function rankingsTableHtml({ base, sport, category, name, table, places, scope, 
   return sitePage({ base, path: path + qs({ state: scope.region, city: scope.city }), title, description: `${sport.name} ${name} player rankings in ${where}, from tournaments on Tonament. ${table.players.slice(0, 3).map((r) => `#${r.rank} ${r.name}`).join(', ')}`, ld, body });
 }
 
-module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, sitemap, esc, sportHtml, sportsHubHtml, orgHtml, playerHtml, rankingsHubHtml, rankingsSportHtml, rankingsTableHtml };
+module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, groupHtml, sitemap, esc, sportHtml, sportsHubHtml, orgHtml, playerHtml, rankingsHubHtml, rankingsSportHtml, rankingsTableHtml };

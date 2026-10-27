@@ -246,6 +246,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${T}/matches/${N}/call`, (c, id, mid) => svc.callMatch(id, c.actor, mid, c.body.court)],
     ['POST', `${T}/matches/${N}/queue`, (c, id, mid) => svc.queueMatch(id, c.actor, mid, c.body.top !== false)],
     ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.actor, mid, c.body.side, c.body.at, { points: c.body.points, foul: c.body.foul, end: c.body.end })],
+    ['POST', `${T}/matches/${N}/result`, (c, id, mid) => svc.setResult(id, c.actor, mid, c.body.games, c.body.at)],
     ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid, c.body.at)],
 
     ['GET', '/api/auth/me', (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled })],
@@ -303,6 +304,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${G}/sessions/${N}/rsvp`, (c, slug, sid) => svc.groups.rsvp(slug, c.actor, sid, c.body.status, { eta: c.body.eta })],
     ['POST', `${G}/sessions/${N}/checkin`, (c, slug, sid) => svc.groups.checkIn(slug, c.actor, sid, c.body.here !== false, c.body.user || null)],
     ['POST', `${G}/sessions/${N}/games`, (c, slug, sid) => svc.groups.startGame(slug, c.actor, sid, c.body)],
+    ['POST', `${G}/sessions/${N}/results`, (c, slug, sid) => svc.groups.addResult(slug, c.actor, sid, c.body)],
     ['GET', `${G}/games/${N}`, (c, slug, gid) => svc.groups.getGame(slug, c.actor, gid)],
     ['POST', `${G}/games/${N}/rally`, (c, slug, gid) => svc.groups.rally(slug, c.actor, gid, c.body.side, c.body.at, { points: c.body.points, foul: c.body.foul, end: c.body.end })],
     ['POST', `${G}/games/${N}/undo`, (c, slug, gid) => svc.groups.undo(slug, c.actor, gid, c.body.at)],
@@ -393,6 +395,22 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       // Briefly cached at the CDN (the app fetches live data itself); private ones never.
       'Cache-Control': visible ? 'public, max-age=0, s-maxage=60' : 'no-store',
       ...(visible && { 'Vercel-CDN-Cache-Control': 'max-age=60, stale-while-revalidate=600' }),
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(req.method === 'HEAD' ? undefined : html);
+  }
+
+  // /g/<slug> (on Vercel, rewritten to /api/group/<slug>): the app page with a
+  // link preview for joining the group, or with ?s=<session> for coming to play.
+  async function groupPage(req, res, slug, sessionId) {
+    const base = baseUrl(req) || SITE;
+    const g = await svc.groups.shareInfo(slug, sessionId);
+    const html = pages.groupHtml(await readShell(), { base, g });
+    res.writeHead(g ? 200 : 404, {
+      'Content-Type': 'text/html; charset=utf-8',
+      // Briefly cached at the CDN: the going count in the preview moves.
+      'Cache-Control': g ? 'public, max-age=0, s-maxage=60' : 'no-store',
+      ...(g && { 'Vercel-CDN-Cache-Control': 'max-age=60, stale-while-revalidate=600' }),
       'X-Content-Type-Options': 'nosniff',
     });
     res.end(req.method === 'HEAD' ? undefined : html);
@@ -612,6 +630,9 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         });
         return res.end(req.method === 'HEAD' ? undefined : html);
       }
+      // Group pages: /g/<slug> (on Vercel, /api/group/<slug>); its games stay plain app pages.
+      const groupPath = pathname.match(/^\/(?:g|api\/group)\/([a-z0-9-]{3,40})\/?$/);
+      if (groupPath && read) return await groupPage(req, res, groupPath[1], url.searchParams.get('s'));
       // Academy / venue pages: /@slug (on Vercel, /api/org/<slug>).
       const orgPath = pathname.match(/^\/(?:@|api\/org\/)([a-z0-9-]{3,30})\/?$/);
       if (orgPath && read) return await orgPage(req, res, orgPath[1], url.searchParams.has('preview'));

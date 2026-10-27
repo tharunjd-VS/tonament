@@ -521,7 +521,7 @@
         if (join && S.me) {
           try {
             const r = await api('POST', `${gPath(slug)}/join`, { token: join });
-            toast(r.joined ? 'Welcome to the group! Tap "I\'m in" for the next session.' : 'Request sent to the group admins');
+            if (!r.already) toast(r.joined ? 'Welcome to the group! Tap "I\'m in" for the next session.' : 'Request sent to the group admins');
           } catch (e) { toast(e.message, true); }
           history.replaceState(null, '', `/g/${slug}`);
           S.route.join = null;
@@ -3039,7 +3039,19 @@
     }, h('span', { class: `sbtn-plus${tap(s) === '+1' ? '' : ' sbtn-word'}` }, tap(s)), h('span', { class: 'sbtn-name' }, m[s].name));
 
     const courtInput = h('input', { name: 'court', maxlength: 20, placeholder: 'e.g. 3', value: m.court || '', 'aria-label': CAT.courtWord(t.sport.id) });
+    // Score live, or type the result in at the end (remembered per tournament, for catching up).
+    const modeKey = `tonament.resultMode.${t.id}`;
+    if (!S.resultMode) S.resultMode = {};
+    if (S.resultMode[t.id] === undefined) { try { S.resultMode[t.id] = sessionStorage.getItem(modeKey) === '1'; } catch { S.resultMode[t.id] = false; } }
+    const atEnd = Boolean(S.resultMode[t.id]);
+    const modeSwitch = h('div', { class: 'seg score-mode', role: 'group', 'aria-label': 'How to score' },
+      [[false, 'Score live'], [true, 'Enter result']].map(([v, label]) => h('button', {
+        'aria-pressed': String(atEnd === v),
+        onclick: () => { S.resultMode[t.id] = v; try { sessionStorage.setItem(modeKey, v ? '1' : '0'); } catch { /* private mode */ } render(); },
+      }, label)));
+    if (atEnd) return h('div', { class: 'scorer' }, modeSwitch, resultForm(t, m));
     return h('div', { class: 'scorer' },
+      modeSwitch,
       fresh ? h('div', { class: 'card', style: 'margin:0' },
         h('div', { class: 'scorer-tools' },
           h('span', {}, h('span', { class: 'label' }, `${m.score.firstLabel || 'First serve'}: `),
@@ -3063,6 +3075,64 @@
       h('p', { class: 'hint center', style: 'margin:0' }, `${m.score.hint || 'Tap the side that won the rally.'} ${m.score.taps && m.score.taps.max > 1
         ? 'Keyboard: A / L to pick the player, 1–9 to score, Z to undo.'
         : 'Keyboard: A / ← and L / → to score, Z to undo.'}`));
+  }
+
+  // The result at the end: each game's (set's, frame's) score, checked with
+  // the sport's rules here first, then saved as if it had been scored live.
+  function resultForm(t, m) {
+    const sport = window.TonamentSports[t.sport.id];
+    const sc0 = m.score;
+    const rows = sc0.single ? 1 : Math.min(sport.normalizeConfig(t.config.scoring).bestOf || 3, 11);
+    const unit = sc0.single ? 'Result' : sc0.unit || 'Game';
+    const need = sc0.single ? 1 : Math.ceil(rows / 2);
+    const msg = h('p', { class: 'hint result-msg', role: 'status' }, sc0.single ? (sc0.note || '') : `Fill in each ${unit.toLowerCase()} played — best of ${rows}.`);
+    const inputs = Array.from({ length: rows }, (_, i) => ['a', 'b'].map((s) => h('input', {
+      type: 'number', min: 0, max: 999, inputmode: 'numeric', name: `${s}${i}`, 'aria-label': `${m[s].name}, ${unit.toLowerCase()} ${i + 1}`,
+    })));
+    const read = () => {
+      const games = [];
+      for (const [a, b] of inputs) {
+        if (a.value === '' && b.value === '') continue;
+        games.push({ a: Number(a.value), b: Number(b.value) });
+      }
+      return games;
+    };
+    const check = () => {
+      const games = read();
+      if (!games.length) return { error: `Enter the score of each ${unit.toLowerCase()}` };
+      const r = TonamentResult.fromScores(matchCompute(t, m), games);
+      if (r.error) return r;
+      if (!TonamentLeague.finished(r.score)) return { error: `That doesn't finish the match — enter every ${unit.toLowerCase()} played` };
+      return r;
+    };
+    const form = h('form', {
+      class: 'card form result-form',
+      // Say what's wrong once enough is filled in; say who won once it adds up.
+      oninput: () => {
+        const r = check();
+        if (!r.error) msg.textContent = `${sport.summary(r.score)} — ${r.score.winner ? `${m[r.score.winner].name} wins` : 'a draw'}`;
+        else if (read().length >= need) msg.textContent = r.error;
+      },
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const r = check();
+        if (r.error) { toast(r.error, true); return; }
+        if (m.rallies && !confirm(`This replaces the ${m.rallies} point${m.rallies === 1 ? '' : 's'} scored live. Save ${sport.summary(r.score)}?`)) return;
+        await act(async () => {
+          const updated = await api('POST', `${tPath(t)}/matches/${m.id}/result`, { games: read(), at: m.rallies }, t.id);
+          form.removeAttribute('data-dirty');
+          mergeMatch(updated);
+          render(true);
+          refresh();
+        }, 'Result saved ✓');
+      },
+    },
+    h('table', { class: 'result-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, m.a.name), h('th', {}, m.b.name))),
+      h('tbody', {}, inputs.map(([a, b], i) => h('tr', {}, h('th', { scope: 'row' }, sc0.single ? (sc0.unit ? `${sc0.unit}s` : 'Score') : `${unit} ${i + 1}`), h('td', {}, a), h('td', {}, b))))),
+    msg,
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save result')));
+    return form;
   }
 
   // Snooker (ball by ball) and carrom: pick the player, then tap what they
@@ -3136,6 +3206,13 @@
   }
   const unitOf = (t) => sportUnit(t.sport.id);
 
+  // A match's score from its taps, under its event's rules (as the server works it out).
+  function matchCompute(t, m) {
+    const sport = window.TonamentSports[t.sport.id];
+    const scoring = t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring;
+    return (log) => TonamentLeague.score(sport, log, scoring, m.firstServer, { draws: m.stage === 'league' && Boolean(t.config.leagueDraws) });
+  }
+
   // The match as the umpire should see it: confirmed state plus queued taps.
   function withPending(t, m) {
     const ops = pendingOps(m.id);
@@ -3143,8 +3220,7 @@
     if (!ops.length || !sport) return m;
     let log = m.log;
     for (const op of ops) log = op.type === 'rally' ? log + op.ch : log.slice(0, -1);
-    const scoring = t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring;
-    const score = TonamentLeague.score(sport, log, scoring, m.firstServer, { draws: m.stage === 'league' && Boolean(t.config.leagueDraws) });
+    const score = matchCompute(t, m)(log);
     return {
       ...m,
       log,
@@ -4267,7 +4343,8 @@
     const text = [
       `${g.sport.name} · ${g.name}${where && where !== g.name ? ` at ${where}` : ''}${g.settings.levels && g.settings.levels.length ? ` · ${levelText(g.settings.levels)}` : ''}`,
       `${fmtSessionDay(s.startsAt, s.endsAt)} · ${going} going${max ? (going < max ? `, ${max - going} spot${max - going === 1 ? '' : 's'} left` : ', full (waitlist open)') : ''}`,
-      `Say you're in (and when you're coming): ${groupUrl(g, true)}`,
+      // ?s= gives the link a "come and play" preview with today's count.
+      `Say you're in (and when you're coming): ${groupUrl(g, true)}${g.invite ? '&' : '?'}s=${s.id}`,
     ].join('\n');
     if (navigator.share) navigator.share({ text }).catch(() => {});
     else window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
@@ -4348,8 +4425,51 @@
       out.push(h('div', { class: 'card' }, h('h2', {}, 'Results today'),
         h('ul', { class: 'result-list' }, s.results.map((x) => gameResultRow(g, x)))));
     }
+    if (s.started) out.push(addResultCard(g, s));
     if (g.nextSession) out.push(rsvpCard(g, g.nextSession, true));
     return out;
+  }
+
+  // A game played without the app: who played and how it ended. The other
+  // side confirms it, like any result.
+  function addResultCard(g, s) {
+    const inSession = s.players.filter((p) => p.status === 'in');
+    const others = g.leaderboard.filter((r) => !inSession.some((p) => p.id === r.id));
+    const options = (optional) => [
+      h('option', { value: '' }, optional ? 'No partner (singles)' : 'Pick a player'),
+      inSession.length ? h('optgroup', { label: 'Playing today' }, inSession.map((p) => h('option', { value: p.id }, p.name))) : null,
+      others.length ? h('optgroup', { label: 'Everyone else' }, others.map((p) => h('option', { value: p.id }, p.name))) : null,
+    ];
+    const me = S.me && g.leaderboard.some((r) => r.id === S.me.id) ? String(S.me.id) : '';
+    const pick = (name, optional, value = '') => h('select', { name, 'aria-label': name, required: !optional }, options(optional).map((o) => {
+      if (o && o.tagName === 'OPTGROUP') for (const x of o.children) x.selected = x.value === value;
+      return o;
+    }));
+    const form = h('form', {
+      class: 'add-result',
+      onchange: () => form.setAttribute('data-dirty', ''), // picking players holds back live redraws
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const team = (k) => [fd.get(`${k}1`), fd.get(`${k}2`)].filter(Boolean).map(Number);
+        const a = team('a');
+        const b = team('b');
+        if (a.length !== b.length) { toast('Both sides need the same number of players', true); return; }
+        act(async () => {
+          await api('POST', `${gPath(g.slug)}/sessions/${s.id}/results`, { a, b, score: { a: Number(fd.get('sa')), b: Number(fd.get('sb')) } });
+          form.removeAttribute('data-dirty');
+          S.addResultOpen = false;
+          await loadGroup(S.route.skip || 0);
+        }, 'Result added — the other side confirms it');
+      },
+    },
+    h('div', { class: 'add-result-sides' },
+      h('fieldset', {}, h('legend', {}, 'Side 1'), pick('a1', false, me), pick('a2', true), h('input', { name: 'sa', type: 'number', min: 0, max: 99, required: true, inputmode: 'numeric', placeholder: 'Score', 'aria-label': 'Side 1 score' })),
+      h('fieldset', {}, h('legend', {}, 'Side 2'), pick('b1', false), pick('b2', true), h('input', { name: 'sb', type: 'number', min: 0, max: 99, required: true, inputmode: 'numeric', placeholder: 'Score', 'aria-label': 'Side 2 score' }))),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add result')));
+    return h('details', { class: 'card add-result-card', open: Boolean(S.addResultOpen), ontoggle: (e) => { S.addResultOpen = e.target.open; } },
+      h('summary', {}, h('strong', {}, 'Add a result'), h('small', { class: 'muted' }, ' · played a game without scoring it here?')),
+      form);
   }
 
   function gameResultRow(g, x) {
@@ -4601,18 +4721,28 @@
     const finalForm = () => {
       const fa = h('input', { type: 'number', min: 0, max: 99, required: true, 'aria-label': teamName(x.a), inputmode: 'numeric' });
       const fb = h('input', { type: 'number', min: 0, max: 99, required: true, 'aria-label': teamName(x.b), inputmode: 'numeric' });
-      return h('details', { class: 'card' }, h('summary', {}, 'Enter the final score instead'),
+      return h('div', { class: 'card' },
+        h('p', { class: 'muted small', style: 'margin-top:0' }, x.rallies ? `This replaces the ${x.rallies} point${x.rallies === 1 ? '' : 's'} scored live.` : 'Played it already? Enter how it ended.'),
         h('form', {
           class: 'final-form',
-          onsubmit: (e) => { e.preventDefault(); act(async () => { S.groupGame = await api('POST', `${gPath(g.slug)}/games/${x.id}/result`, { a: Number(fa.value), b: Number(fb.value) }); }, 'Score saved'); },
+          onsubmit: (e) => { e.preventDefault(); act(async () => { S.groupGame = await api('POST', `${gPath(g.slug)}/games/${x.id}/result`, { a: Number(fa.value), b: Number(fb.value) }); }, 'Score saved — the other side confirms it'); },
         }, h('label', {}, h('span', {}, teamName(x.a)), fa), h('label', {}, h('span', {}, teamName(x.b)), fb), h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save score')));
     };
+    // Score live, or just the final score (remembered per game).
+    S.gameMode = S.gameMode || {};
+    const atEnd = Boolean(S.gameMode[x.id]);
+    const modeSwitch = h('div', { class: 'seg score-mode', role: 'group', 'aria-label': 'How to score' },
+      [[false, 'Score live'], [true, 'Final score']].map(([v, label]) => h('button', {
+        'aria-pressed': String(atEnd === v), onclick: () => { S.gameMode[x.id] = v; render(); },
+      }, label)));
     const tap = (s) => (x.score && x.score.tap && x.score.tap[s]) || '+1';
     const post = (what, msg) => act(async () => { S.groupGame = await api('POST', `${gPath(g.slug)}/games/${x.id}/${what}`, {}); }, msg);
     return [
-      h('p', {}, h('a', { class: 'back-link', href: `/g/${g.slug}` }, `← ${g.name}`), h('span', { class: 'muted small' }, ` · ${CAT.courtWord(g.sport.id)} ${x.court}`)),
+      h('p', {}, h('a', { class: 'back-link', href: `/g/${g.slug}` }, `← ${g.name}`), x.court ? h('span', { class: 'muted small' }, ` · ${CAT.courtWord(g.sport.id)} ${x.court}`) : null),
       x.score ? scoreboard(m) : h('div', { class: 'card final-score' }, h('strong', {}, `${teamName(x.a)} ${x.final.a} – ${x.final.b} ${teamName(x.b)}`)),
-      x.can.score && x.status === 'live' && !x.final ? h('div', { class: 'scorer' },
+      x.can.score && x.status === 'live' && !x.final ? modeSwitch : null,
+      x.can.score && x.status === 'live' && !x.final && atEnd ? finalForm() : null,
+      x.can.score && x.status === 'live' && !x.final && !atEnd ? h('div', { class: 'scorer' },
         x.score && x.score.taps && x.score.taps.max > 1
           ? pointPad(`g${x.id}`, x.score, { a: teamName(x.a), b: teamName(x.b) }, (extra) => groupTap(g, x, { type: 'rally', ...extra }))
           : h('div', { class: 'score-btns' }, ['a', 'b'].map((s) => h('button', { class: `score-btn side-${s}`, onclick: () => groupTap(g, x, { type: 'rally', side: s }) },
@@ -4621,7 +4751,6 @@
           S.offline && x.pending ? `No connection — ${x.pending} point${x.pending === 1 ? '' : 's'} waiting` : x.pending ? 'Saving…' : 'All points saved'),
         h('div', { class: 'scorer-tools' }, h('button', { class: 'btn', disabled: !x.rallies, onclick: () => groupTap(g, x, { type: 'undo' }) }, '↶ Undo')),
         h('p', { class: 'hint center', style: 'margin:0' }, `${(x.score && x.score.hint) || 'Tap the side that won the rally.'} Everyone in the game sees the score live.`)) : null,
-      x.can.score && x.status === 'live' && !x.rallies ? finalForm() : null,
       x.status === 'live' && !x.can.score ? h('p', { class: 'muted small center' }, 'Live — the players are scoring this game.') : null,
       x.status !== 'live' ? h('div', { class: 'card' },
         h('h2', {}, x.status === 'confirmed' ? 'Confirmed ✓' : x.status === 'disputed' ? 'Disputed — an admin will check it' : x.status === 'void' ? 'Voided' : 'Game over'),

@@ -476,3 +476,67 @@ test('a venue\'s daily slots by level: levels, anyone can join, listed by time',
   assert.match(html, /All levels/);
   assert.ok(html.indexOf('Evening Beginners') < html.indexOf('Evening Intermediates'));
 });
+
+test('scores at the end: a final score after live points, and results for games played without the app', async () => {
+  const admin = await user('Result Admin');
+  const { slug } = await svc.groups.createGroup(admin, { name: 'Weekend Doubles', sport: 'badminton', courts: 2, singles: true, ...nowSchedule() });
+  const { invite, session } = await svc.groups.view(slug, admin);
+  const ps = [];
+  for (const name of ['Asha', 'Bala', 'Chitra', 'Dev']) { const p = await user(name); await svc.groups.join(slug, p, { token: invite }); ps.push(p); }
+  const outsider = await user('Outsider');
+  const id = (p) => p.user.id;
+  // A game played without the app, added by one of its players.
+  await assert.rejects(svc.groups.addResult(slug, outsider, session.id, { a: [id(ps[0])], b: [id(ps[1])], score: { a: 21, b: 10 } }), /Join the group/);
+  await assert.rejects(svc.groups.addResult(slug, ps[2], session.id, { a: [id(ps[0])], b: [id(ps[1])], score: { a: 21, b: 10 } }), /Only the players/);
+  await assert.rejects(svc.groups.addResult(slug, ps[0], session.id, { a: [id(ps[0]), id(ps[1])], b: [id(ps[2])], score: { a: 21, b: 10 } }), /2 or 4/);
+  await assert.rejects(svc.groups.addResult(slug, ps[0], session.id, { a: [id(ps[0])], b: [id(outsider)], score: { a: 21, b: 10 } }), /in the group/);
+  await assert.rejects(svc.groups.addResult(slug, ps[0], session.id, { a: [id(ps[0])], b: [id(ps[1])], score: { a: 21, b: 21 } }), /Enter both scores/);
+  const { id: gid } = await svc.groups.addResult(slug, ps[0], session.id, { a: [id(ps[0]), id(ps[2])], b: [id(ps[1]), id(ps[3])], score: { a: 21, b: 18 } });
+  let x = await svc.groups.getGame(slug, ps[1], gid);
+  assert.deepEqual([x.status, x.court, x.summary, x.can.confirm], ['done', 0, '21–18', true]);
+  x = await svc.groups.confirm(slug, ps[1], gid);
+  assert.equal(x.status, 'confirmed');
+  const board = (await svc.groups.view(slug, admin)).leaderboard;
+  assert.ok(board.find((r) => r.id === id(ps[0])).rating > 1000);
+  // An admin can add one for others.
+  const { id: g2 } = await svc.groups.addResult(slug, admin, session.id, { a: [id(ps[2])], b: [id(ps[3])], score: { a: 15, b: 21 } });
+  assert.equal((await svc.groups.getGame(slug, admin, g2)).winner, 'b');
+  // A live game: some points, then the final score replaces them.
+  for (const p of [ps[0], ps[1]]) await svc.groups.checkIn(slug, p, session.id, true);
+  const { id: live } = await svc.groups.startGame(slug, admin, session.id, { court: 1, a: [id(ps[0])], b: [id(ps[1])] });
+  await svc.groups.rally(slug, ps[0], live, 'a', 0);
+  await svc.groups.rally(slug, ps[0], live, 'a', 1);
+  x = await svc.groups.setResult(slug, ps[0], live, { a: 21, b: 12 });
+  assert.deepEqual([x.status, x.summary, x.rallies], ['done', '21–12', 0]);
+});
+
+test('group links preview with context: joining, or coming to play today', async () => {
+  const mgr = await user('Preview Owner');
+  const [o] = await db.query(`INSERT INTO orgs (slug, name, kind, paid_until) VALUES ('court-house', 'Court House', 'venue', now() + interval '300 days') RETURNING id`);
+  await db.query(`INSERT INTO org_members (org_id, email, role) VALUES ($1, $2, 'owner')`, [o.id, mgr.user.email]);
+  const { slug } = await svc.groups.createGroup(mgr, { name: 'Evening Beginners', sport: 'badminton', host: 'court-house', levels: ['Beginner'], maxPlayers: 12, city: 'Chennai', ...nowSchedule() });
+  const g = await svc.groups.view(slug, mgr);
+  const p = await user('Secret Name');
+  await svc.groups.join(slug, p, {});
+  await svc.groups.rsvp(slug, p, g.session.id, 'in');
+  const head = (html) => html.slice(0, html.indexOf('</head>'));
+  // Join link.
+  let r = await fetch(`${base}/g/${slug}?join=${g.invite}`);
+  assert.equal(r.status, 200);
+  let html = await r.text();
+  assert.match(head(html), /<meta property="og:title" content="Join Evening Beginners at Court House">/);
+  assert.match(head(html), /og:description" content="Badminton · Beginner · Every day .* · Chennai\. Tap to join, then say you&#39;re in\."/);
+  assert.match(head(html), /og:image" content="[^"]+\/brand\/og-group-join\.png"/);
+  assert.ok(html.includes('/app.js'), 'the app still loads');
+  // Session link: today's count.
+  html = await (await fetch(`${base}/g/${slug}?join=${g.invite}&s=${g.session.id}`)).text();
+  assert.match(head(html), /og:title" content="(Today|On now) .* · 1 going, 11 spots left"/);
+  assert.match(head(html), /og-group-today\.png/);
+  assert.ok(!html.includes('Secret Name'), 'no member names in the preview');
+  // A session from another group falls back to the join preview; an unknown group is a 404.
+  html = await (await fetch(`${base}/api/group/${slug}?s=999999`)).text();
+  assert.match(head(html), /Join Evening Beginners/);
+  r = await fetch(`${base}/g/no-such-group`);
+  assert.equal(r.status, 404);
+  assert.match(head(await r.text()), /og\.png/);
+});

@@ -213,7 +213,7 @@ function createGroups({ db, fail, text, orgs }) {
     return db.tx(async (q) => {
       const g = await load(q, slug, { lock: true, actor });
       const m = await memberOf(q, g, actor);
-      if (m && m.status === 'active') return { joined: true };
+      if (m && m.status === 'active') return { joined: true, already: true };
       const ok = Boolean(g.settings.open) || (typeof token === 'string' && token.length > 0 && token === g.invite_token);
       if (m) {
         if (ok) await q(`UPDATE group_members SET status = 'active', joined_at = now() WHERE group_id = $1 AND user_id = $2`, [g.id, user.id]);
@@ -484,6 +484,33 @@ function createGroups({ db, fail, text, orgs }) {
     });
   }
 
+  // A game played without the app: the players and the final score, added
+  // afterwards by one of them (or an admin). It waits for the other side to
+  // confirm, like any other result. No court (0).
+  async function addResult(slug, actor, sessionId, input = {}) {
+    return db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true, actor });
+      const m = await needMember(q, g, actor);
+      const s = await sessionOf(q, g, sessionId);
+      const a = (input.a || []).map(Number);
+      const b = (input.b || []).map(Number);
+      const all = [...a, ...b];
+      if (!(a.length === b.length && [1, 2].includes(a.length)) || new Set(all).size !== all.length) fail(400, 'Pick 2 or 4 different players');
+      const members = await q(`SELECT user_id FROM group_members WHERE group_id = $1 AND status = 'active' AND user_id = ANY($2::int[])`, [g.id, all]);
+      if (members.length !== all.length) fail(400, 'Everyone in the game has to be in the group');
+      if (!isAdmin(m, actor) && !all.includes(actor.user.id)) fail(403, 'Only the players in the game (or an admin) can add its result');
+      const sa = Number(input.score?.a);
+      const sb = Number(input.score?.b);
+      if (![sa, sb].every((n) => Number.isInteger(n) && n >= 0 && n <= 99) || sa === sb) fail(400, 'Enter both scores, like 21 and 17');
+      const [row] = await q(
+        `INSERT INTO group_games (group_id, session_id, court, a1, a2, b1, b2, status, winner, final, ended_at)
+         VALUES ($1, $2, 0, $3, $4, $5, $6, 'done', $7, $8::jsonb, now()) RETURNING id`,
+        [g.id, s.id, a[0], a[1] || null, b[0], b[1] || null, sa > sb ? 'a' : 'b', JSON.stringify({ a: sa, b: sb })],
+      );
+      return { id: row.id };
+    });
+  }
+
   // Ratings move when a game is confirmed (and move back if it's voided).
   async function applyRating(q, g, x) {
     const ids = [x.a1, x.a2, x.b1, x.b2].filter(Boolean);
@@ -735,6 +762,30 @@ function createGroups({ db, fail, text, orgs }) {
     }).sort((a, b) => a.settings.time.localeCompare(b.settings.time) || a.name.localeCompare(b.name));
   }
 
+  // For link previews (WhatsApp): what anyone with the link can see, plus,
+  // for a shared session, how many are going. Read-only; null if no group.
+  async function shareInfo(slug, sessionId) {
+    const g = await db.tx((q) => load(q, slug).catch(() => null));
+    if (!g) return null;
+    let session = null;
+    if (sessionId) {
+      const [s] = await db.query(
+        `SELECT s.starts_at, COUNT(p.user_id) FILTER (WHERE p.status = 'in')::int AS going
+         FROM group_sessions s LEFT JOIN session_players p ON p.session_id = s.id
+         WHERE s.id = $1 AND s.group_id = $2 GROUP BY s.id`, [Number(sessionId) || 0, g.id]);
+      if (s) {
+        const max = g.settings.maxPlayers;
+        session = { startsAt: s.starts_at, going: s.going, spots: max ? Math.max(0, max - s.going) : null };
+      }
+    }
+    return {
+      slug: g.slug, name: g.name, sport: { id: g.sport, name: sportOf(g).name }, venue: g.venue, city: g.city,
+      host: g.host ? { name: g.host.name } : null,
+      settings: { ...g.settings, endTime: endTimeOf(g.settings) },
+      session,
+    };
+  }
+
   // The whole group page: details for anyone with the link; sessions, games,
   // members and the leaderboard for members. About 7 round trips.
   async function view(slug, actor, { skip = 0 } = {}) {
@@ -799,8 +850,8 @@ function createGroups({ db, fail, text, orgs }) {
   }
 
   return {
-    slugOf, createGroup, updateGroup, myGroups, join, setMember, leave, view, rsvp, checkIn, hostOptions, attendance, forOrgPage,
-    startGame, getGame, rally, undo, setResult, confirm, dispute, voidGame,
+    slugOf, createGroup, updateGroup, myGroups, join, setMember, leave, view, rsvp, checkIn, hostOptions, attendance, forOrgPage, shareInfo,
+    startGame, getGame, rally, undo, setResult, addResult, confirm, dispute, voidGame,
   };
 }
 

@@ -46,6 +46,10 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/g/:slug([a-z0-9-]{3,40})",
+      "destination": "/api/index?__path=group/:slug"
+    },
+    {
       "source": "/g/:path*",
       "destination": "/api/index?__path=app"
     },

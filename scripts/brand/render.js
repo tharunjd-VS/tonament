@@ -37,6 +37,13 @@ const jobs = [['icon.svg', 'icon-192.png', 192], ['icon.svg', 'icon-512.png', 51
   await og.evaluate(() => document.fonts.ready);
   await og.waitForFunction(() => [...document.images].every((i) => i.complete && i.naturalWidth > 0));
   await og.screenshot({ path: `${B}/og-features.png` });
+  // Group links: joining the group, and coming to play (?s=<session>)
+  for (const name of ['og-group-join', 'og-group-today']) {
+    await og.goto('file://' + path.join(__dirname, `${name}.html`));
+    await og.evaluate(() => document.fonts.ready);
+    await og.waitForFunction(() => [...document.images].every((i) => i.complete && i.naturalWidth > 0));
+    await og.screenshot({ path: `${B}/${name}.png` });
+  }
   await b.close();
   // favicon.ico = 16 + 32 px PNGs
   const imgs = [`${B}/favicon-16.png`, `${B}/favicon-32.png`].map((f) => fs.readFileSync(f));
