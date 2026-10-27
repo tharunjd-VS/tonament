@@ -221,6 +221,54 @@ legend { font-weight: 700; padding: 0 6px; }
 .hero .lead { color: #CBD5E1; }
 .hero .btn-ghost { color: #fff; border-color: rgba(255, 255, 255, 0.4); }
 .hero .btn-ghost:hover { border-color: #fff; }
+/* Home hero slider: slides share one grid cell, so the hero keeps the
+   height of the tallest and nothing below it jumps. */
+.hero.hero-slider > * { max-width: none; }
+.hero-track { display: grid; }
+.hero-slide {
+  grid-area: 1 / 1; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: clamp(20px, 4vw, 48px); align-items: center;
+  opacity: 0; visibility: hidden; transform: translateX(18px);
+  transition: opacity 0.5s ease, transform 0.5s ease, visibility 0s linear 0.5s;
+}
+.hero-slide.active { opacity: 1; visibility: visible; transform: none; transition: opacity 0.5s ease, transform 0.5s ease; }
+.hero-text { max-width: 34rem; min-width: 0; }
+.hero .hero-title { font-size: clamp(2rem, 6.5vw, 3.2rem); line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 14px; color: #fff; }
+.hero .hero-title .accent { color: var(--lime); }
+.hero-text .actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
+.hero-visual { flex: none; justify-self: end; }
+.hero-visual img { display: block; width: 100%; height: auto; }
+.hero-visual.phone { width: 230px; max-height: 420px; overflow: hidden; border: 7px solid #000; border-radius: 34px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); outline: 1px solid #2A3550; }
+.hero-visual.card { width: 300px; overflow: hidden; border-radius: 18px; border: 1px solid #2A3550; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+.hero-visual.tv { width: min(440px, 40vw); overflow: hidden; border: 7px solid #000; border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); outline: 1px solid #2A3550; }
+.hero-visual.sports { display: grid; grid-template-columns: repeat(4, 76px); gap: 8px; }
+.hero-visual.sports a { display: grid; justify-items: center; gap: 6px; padding: 10px 4px; border-radius: 12px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.12); color: #E5E7EB; text-decoration: none; font-size: 0.68rem; font-weight: 600; text-align: center; line-height: 1.2; }
+.hero-visual.sports a:hover { border-color: var(--lime); }
+.hero-visual.sports .icon { width: 26px; height: 26px; color: var(--lime); }
+.hero-nav { display: flex; align-items: center; gap: 10px; margin-top: 26px; }
+.hero-dots { display: flex; flex-wrap: wrap; gap: 6px; }
+.hero-dots button { font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer; border-radius: 999px; padding: 5px 12px; border: 1px solid rgba(255, 255, 255, 0.22); background: rgba(255, 255, 255, 0.04); color: #CBD5E1; transition: background 0.2s, color 0.2s; }
+.hero-dots button:hover { border-color: #fff; color: #fff; }
+.hero-dots button[aria-current="true"] { background: var(--lime); border-color: var(--lime); color: var(--navy); }
+.hero-arrow { font: inherit; font-size: 1.4rem; line-height: 1; width: 36px; height: 36px; flex: none; border-radius: 50%; cursor: pointer; border: 1px solid rgba(255, 255, 255, 0.3); background: transparent; color: #fff; }
+.hero-arrow:hover { border-color: #fff; }
+.hero-slider :focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.hero-slider { touch-action: pan-y; }
+@media (max-width: 860px) {
+  .hero-slide { grid-template-columns: 1fr; align-items: start; }
+  .hero-visual, .hero-visual.sports { display: none; }
+  /* Keep the hero within a phone screen: headline, line, buttons. */
+  .hero-slider .features { display: none; }
+  .hero-slider .lead { font-size: 1rem; margin-bottom: 18px; }
+  /* Phones: the dots, without labels. */
+  .hero-dots button { width: 10px; height: 10px; padding: 0; border: 0; background: rgba(255, 255, 255, 0.3); }
+  .hero-dots button[aria-current="true"] { width: 26px; background: var(--lime); }
+  .hero-dot-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .hero-arrow { display: none; }
+  .hero-nav { justify-content: center; margin-top: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-slide, .hero-slide.active { transition: none; transform: none; }
+}
 .lead { font-size: 1.08rem; color: var(--muted); max-width: 40em; margin-bottom: 22px; }
 .features { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 24px; padding: 0; list-style: none; }
 .features li { border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 999px; padding: 4px 12px; font-size: 0.85rem; color: #E5E7EB; background: rgba(255, 255, 255, 0.04); }
@@ -593,7 +641,7 @@ fieldset.details-set { display: grid; gap: 12px; }
 .step-text h3 { margin: 6px 0 6px; font-size: 1.25rem; }
 .step-text p { color: var(--muted); margin: 0 0 14px; }
 .step-no { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-weight: 700; }
-.step-shots { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x mandatory; }
+.step-shots { display: flex; align-items: flex-start; gap: 14px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x mandatory; }
 .shot { flex: 0 0 auto; width: min(260px, 72vw); margin: 0; scroll-snap-align: start; border: 1px solid var(--border); border-radius: 22px; overflow: hidden; background: var(--surface); box-shadow: 0 10px 30px rgba(11, 18, 32, 0.25); }
 .shot img { display: block; width: 100%; height: auto; }
 @media (min-width: 820px) {

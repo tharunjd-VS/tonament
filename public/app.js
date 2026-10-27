@@ -796,6 +796,151 @@
   }
 
   // ---------- home
+  // ---------- home hero: a slider through what Tonament does best.
+  // All slides sit in one grid cell (so the hero never changes height) and
+  // only the active one shows. It moves on every 7 s, pauses on hover or
+  // focus, stops for good once someone picks a slide, and never moves for
+  // people who'd rather not see motion. Swipe on phones.
+  const HERO_MS = 7000;
+  let heroTimer = null;
+  const heroReduced = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function heroShow(root) {
+    root.querySelectorAll('.hero-slide').forEach((el, k) => {
+      const on = k === S.heroSlide;
+      el.classList.toggle('active', on);
+      el.setAttribute('aria-hidden', String(!on));
+      el.inert = !on;
+    });
+    root.querySelectorAll('.hero-dots button').forEach((b, k) => b.setAttribute('aria-current', String(k === S.heroSlide)));
+  }
+  function heroGo(i, byHand = false) {
+    const root = app.querySelector('.hero-slider');
+    if (!root) return;
+    const n = root.querySelectorAll('.hero-slide').length;
+    S.heroSlide = ((i % n) + n) % n;
+    if (byHand) S.heroStopped = true;
+    heroShow(root);
+  }
+  function heroTick() {
+    clearTimeout(heroTimer);
+    heroTimer = setTimeout(() => {
+      const root = app.querySelector('.hero-slider');
+      if (root && !S.heroStopped && !document.hidden && !heroReduced() && !root.matches(':hover, :focus-within')) heroGo((S.heroSlide || 0) + 1);
+      heroTick();
+    }, HERO_MS);
+  }
+
+  function heroSlider(explore) {
+    if (S.heroSlide == null) S.heroSlide = 0;
+    if (!heroTimer) heroTick();
+    const join = (path) => (S.me ? path : `/signup?next=${encodeURIComponent(path)}`);
+    const shot = (src, alt, cls = 'phone') => h('div', { class: `hero-visual ${cls}` }, h('img', { src, alt, loading: 'lazy', width: cls === 'tv' ? 640 : 390 }));
+    const sportCount = liveSports().length || 13;
+    const slides = [
+      {
+        label: 'Tournaments',
+        eyebrow: ['One platform.', 'Every sport.', h('b', {}, 'Every tournament.')],
+        title: ['Run your tournament. ', 'Score it live.'],
+        lead: 'Entries and UPI fees, groups, a league, a knockout bracket and an order of play across your courts — and everyone follows every point on their phone.',
+        chips: ['League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'],
+        actions: [
+          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'),
+        ],
+        visual: shot('/guide/umpire-dark.jpg', 'An umpire scoring a badminton match point by point'),
+      },
+      {
+        label: 'Groups',
+        eyebrow: ['Groups', h('b', {}, 'Your daily games')],
+        title: ['Your daily games, ', 'sorted.'],
+        lead: 'One link in the group chat. Tap "I\'m in" and say when you\'re coming, get fair teams at the court, score live or add it at the end — and a leaderboard settles who\'s best.',
+        chips: ['I\'m in + coming at', 'Fair games', 'No score arguments', 'Group leaderboard'],
+        actions: [
+          h('a', { class: 'btn btn-primary btn-lg', href: join('/groups/new') }, 'Start a group'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/features#groups' }, 'How groups work'),
+        ],
+        visual: shot('/guide/group-rsvp-dark.jpg', 'A group session: I\'m in, coming at 7:30 pm, and who else is coming', 'card'),
+      },
+      {
+        label: 'Venue display',
+        eyebrow: ['On the day', h('b', {}, 'The big screen')],
+        title: ['Your venue, ', 'on the big screen.'],
+        lead: 'Courts, live scores, who\'s up next and the standings on any TV or projector — just open a link. No app, no cables, no whiteboard.',
+        chips: ['Live courts', 'Up next', 'Standings', 'Your logo and sponsors'],
+        actions: [
+          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/features' }, 'All features'),
+        ],
+        visual: shot('/guide/display.jpg', 'The venue display: courts with live scores, up next and standings', 'tv'),
+      },
+      {
+        label: 'Every sport',
+        eyebrow: [`${sportCount} sports`, h('b', {}, 'Each with its own rules')],
+        title: ['Every sport. ', 'Its own rules.'],
+        lead: 'Badminton rally scoring, pickleball side-out, tennis tie-breaks, snooker ball by ball, carrom a board at a time — score live, or just enter the result at the end.',
+        chips: ['Scored live or at the end', 'Serve and side called for you', 'Singles, doubles and teams'],
+        actions: [
+          h('a', { class: 'btn btn-primary btn-lg', href: '/sports' }, 'See all sports'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/rankings' }, 'Player rankings'),
+        ],
+        visual: h('div', { class: 'hero-visual sports' }, liveSports().map((s) => h('a', { href: `/${s.id}`, title: s.name }, icon(s.id), h('span', {}, s.name)))),
+      },
+      {
+        label: 'Venues & academies',
+        eyebrow: ['Venues & academies', h('b', {}, 'Fill your courts')],
+        title: ['Daily slots, ', 'by level.'],
+        lead: 'Post your slots — Beginners at 6, Intermediates at 7. Players find them on your page and join in one tap, and you see who actually turned up. For academies, it\'s your batch register.',
+        chips: ['Your own page', 'Beginner · Intermediate · Advanced', 'Attendance'],
+        actions: [
+          h('a', { class: 'btn btn-primary btn-lg', href: join('/academy/new') }, 'Create your venue page'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/pricing' }, 'Pricing'),
+        ],
+        visual: shot('/guide/venue-slots-dark.jpg', 'A venue page listing daily slots by level with how many are going'),
+      },
+    ];
+    const n = slides.length;
+    let x0 = null;
+    const root = h('section', {
+      class: 'hero hero-slider',
+      'aria-roledescription': 'carousel',
+      'aria-label': 'What Tonament does',
+      onpointerdown: (e) => { x0 = e.pointerType === 'mouse' ? null : e.clientX; },
+      onpointerup: (e) => {
+        if (x0 == null) return;
+        const dx = e.clientX - x0;
+        x0 = null;
+        if (Math.abs(dx) > 50) heroGo(S.heroSlide + (dx < 0 ? 1 : -1), true);
+      },
+      onkeydown: (e) => {
+        if (e.target.closest('.hero-dots') && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+          e.preventDefault();
+          heroGo(S.heroSlide + (e.key === 'ArrowRight' ? 1 : -1), true);
+          root.querySelector('.hero-dots [aria-current="true"]')?.focus();
+        }
+      },
+    },
+    h('div', { class: 'hero-track' }, slides.map((s, k) => h('div', {
+      class: `hero-slide${k === S.heroSlide ? ' active' : ''}`,
+      role: 'group', 'aria-roledescription': 'slide', 'aria-label': `${k + 1} of ${n}: ${s.label}`,
+      'aria-hidden': String(k !== S.heroSlide), inert: k === S.heroSlide ? null : true,
+    },
+    h('div', { class: 'hero-text' },
+      h('p', { class: 'eyebrow' }, s.eyebrow.map((x, i) => [i ? h('br') : null, x])),
+      // Only the first slide's headline is the page's h1.
+      h(k ? 'h2' : 'h1', { class: 'hero-title' }, s.title[0], h('span', { class: 'accent' }, s.title[1])),
+      h('p', { class: 'lead' }, s.lead),
+      h('ul', { class: 'features' }, s.chips.map((x) => h('li', {}, x))),
+      h('div', { class: 'actions' }, s.actions)),
+    s.visual))),
+    h('div', { class: 'hero-nav' },
+      h('button', { class: 'hero-arrow', type: 'button', 'aria-label': 'Previous', onclick: () => heroGo(S.heroSlide - 1, true) }, '‹'),
+      h('div', { class: 'hero-dots', role: 'group', 'aria-label': 'Choose a slide' }, slides.map((s, k) => h('button', {
+        type: 'button', 'aria-label': s.label, 'aria-current': String(k === S.heroSlide), onclick: () => heroGo(k, true),
+      }, h('span', { class: 'hero-dot-label' }, s.label)))),
+      h('button', { class: 'hero-arrow', type: 'button', 'aria-label': 'Next', onclick: () => heroGo(S.heroSlide + 1, true) }, '›')));
+    return root;
+  }
+
   function viewHome() {
     document.title = 'Tonament — One platform. Every sport. Every tournament.';
     const explore = (e) => {
@@ -803,18 +948,7 @@
       document.getElementById('all-tournaments')?.scrollIntoView({ behavior: 'smooth' });
     };
     return [
-      h('section', { class: 'hero' },
-        h('p', { class: 'eyebrow' }, 'One platform.', h('br'), 'Every sport.', h('br'), h('b', {}, 'Every tournament.')),
-        h('h1', {}, 'Run your tournament. ', h('span', { class: 'accent' }, 'Score it live.')),
-        h('p', { class: 'lead' }, `${liveSportNames()} today, more sports on the way. Draw groups, play a round-robin league, send the best into a knockout bracket — and let everyone follow every point as it happens.`),
-        h('ul', { class: 'features' },
-          ['League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'].map((x) => h('li', {}, x))),
-        h('div', { class: 'actions' },
-          S.me
-            ? h('a', { class: 'btn btn-primary btn-lg', href: '/new' }, 'Create tournament')
-            : h('a', { class: 'btn btn-primary btn-lg', href: '/signup' }, 'Get started — it\'s free'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/features' }, 'All features'))),
+      heroSlider(explore),
       S.me && S.myEntries && S.myEntries.length ? h('section', { class: 'section' },
         h('h2', {}, 'My entries'),
         h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
