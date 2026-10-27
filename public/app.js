@@ -1439,7 +1439,7 @@
 
   function tabsWithTeam(t) {
     const tabs = tabsFor(t);
-    if (t.courts) tabs.push({ id: 'courts', label: 'Courts' });
+    if (t.courts) tabs.push({ id: 'courts', label: `${CAT.courtWord(t.sport.id)}s` });
     if (hasPage(t)) tabs.push({ id: 'about', label: 'About' });
     if (t.can.manage) tabs.push({ id: 'events', label: 'Events' }, { id: 'team', label: 'Team' });
     return tabs;
@@ -2218,7 +2218,7 @@
       class: 'form',
       onsubmit: (e) => {
         e.preventDefault();
-        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), { ...readTournament(form), courts: readCourts(form), payment: readPayment(form) }, t.id); }, 'Tournament settings saved');
+        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), { ...readTournament(form), courts: readCourts(form, t.sport.id), payment: readPayment(form) }, t.id); }, 'Tournament settings saved');
       },
     },
     field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: t.name })),
@@ -2277,11 +2277,11 @@
   }
 
   // Courts for the order of play (shared by every event).
-  const defaultCourtName = (i) => `Court ${i + 1}`;
+  const defaultCourtName = (i, sport) => `${CAT.courtWord(sport)} ${i + 1}`;
   function courtFields(t) {
     const c = t.courts;
     const names = c ? c.names : [];
-    const custom = names.some((n, i) => n !== defaultCourtName(i));
+    const custom = names.some((n, i) => n !== defaultCourtName(i, t.sport.id));
     return h('fieldset', { class: 'details-set' }, h('legend', {}, `${CAT.courtWord(t.sport.id)}s`),
       h('p', { class: 'hint', style: 'margin:0' }, 'Set your courts to run an order of play: call matches to free courts and show players when they\'re likely on.'),
       h('div', { class: 'grid-2' },
@@ -2296,11 +2296,11 @@
         h('span', {}, h('strong', {}, 'Call the next match automatically'), h('small', {}, 'When a match ends, the next match in the order of play goes to that court.'))));
   }
 
-  function readCourts(form) {
+  function readCourts(form, sport) {
     const fd = new FormData(form);
     const named = (fd.get('courtNames') || '').split(',').map((x) => x.trim()).filter(Boolean);
     const count = Number(fd.get('courtCount')) || 0;
-    const names = named.length ? named : Array.from({ length: count }, (_, i) => defaultCourtName(i));
+    const names = named.length ? named : Array.from({ length: count }, (_, i) => defaultCourtName(i, sport));
     return names.length ? { names, minutes: fd.get('courtMinutes') || '', auto: fd.get('courtAuto') === 'on' } : null;
   }
 
@@ -2650,23 +2650,23 @@
       const cur = sc.games[sc.games.length - 1] || { a: 0, b: 0 };
       const live = m.status === 'live' && m.rallies > 0;
       const flag = live ? (sc.matchPoint[s] ? 'Match point' : sc.gamePoint[s] ? `${sc.unit || 'Game'} point` : null) : null;
-      return h('div', { class: `dc-side${m.winner && m[s] && m.winner === m[s].id ? ' won' : ''}` },
+      return h('div', { class: `dc-side${m.winner && m[s] && m.winner === m[s].id ? ' won' : ''}${sc.single ? ' single' : ''}` },
         h('span', { class: 'dc-serve' }, live && sc.server === s ? h('span', { class: 'serve' }) : null),
         h('span', { class: 'dc-name' }, h('span', {}, nameOf(m[s])), flag ? h('span', { class: 'flag' }, flag) : null),
-        live ? h('span', { class: 'dc-games' }, sc.gamesWon[s]) : null,
+        live && !sc.single ? h('span', { class: 'dc-games' }, sc.gamesWon[s]) : null,
         live && sc.setGames ? h('span', { class: 'dc-games' }, sc.setGames[s]) : null,
         h('span', { class: 'dc-points' }, live ? (sc.points ? sc.points[s] : cur[s]) : ''));
     };
     const courtCard = (name, m, ev, next) => h('div', { class: `dc-court${m ? (m.rallies ? ' live' : ' called') : ' free'}` },
       h('div', { class: 'dc-court-head' },
         h('span', { class: 'dc-court-name' }, name),
-        m ? h('span', { class: 'dc-court-meta' }, [evLabel(ev), m.rallies ? `${m.score.unit || 'Game'} ${m.score.games.length}` : 'Starting'].filter(Boolean).join(' · ')) : h('span', { class: 'dc-court-meta' }, 'Free')),
+        m ? h('span', { class: 'dc-court-meta' }, [evLabel(ev), m.rallies ? (m.score.single ? m.score.note : `${m.score.unit || 'Game'} ${m.score.games.length}`) : 'Starting'].filter(Boolean).join(' · ')) : h('span', { class: 'dc-court-meta' }, 'Free')),
       m ? [side(m, 'a'), side(m, 'b')]
         : h('div', { class: 'dc-free' }, next ? ['Next: ', h('strong', {}, vsName(next.match))] : 'Nothing waiting'));
     // Courts: the tournament's own, or every match on court now.
     const courts = plan
       ? plan.courts.map((c) => courtCard(c.name, c.match, c.event, c.next))
-      : all.filter(({ m }) => m.status === 'live').map(({ m, ev }, i) => courtCard(m.court ? (/^\d/.test(m.court) ? `Court ${m.court}` : m.court) : `Match ${i + 1}`, m, ev));
+      : all.filter(({ m }) => m.status === 'live').map(({ m, ev }, i) => courtCard(m.court ? (/^\d/.test(m.court) ? `${CAT.courtWord(t.sport.id)} ${m.court}` : m.court) : `Match ${i + 1}`, m, ev));
 
     // Up next: the order of play, or the matches ready to play.
     const upNext = plan
@@ -2756,7 +2756,7 @@
         ? h('div', { class: 'dc-wait' }, white ? orgMark('dc-wait-org') : h('img', { src: '/brand/logo-stacked-white.svg', alt: 'Tonament' }), h('h2', {}, 'Starting soon'), h('p', {}, fmtSchedule(t) || 'Play starts once the draw is made.'))
         : h('div', { class: 'dc-body' },
           h('section', { class: 'dc-courts' },
-            h('h2', {}, plan ? 'Courts' : 'On court now'),
+            h('h2', {}, plan ? `${CAT.courtWord(t.sport.id)}s` : CAT.courtWord(t.sport.id) === 'Court' ? 'On court now' : 'Playing now'),
             courts.length ? h('div', { class: 'dc-court-grid' }, courts) : h('p', { class: 'dc-empty' }, 'No matches on court right now.')),
           h('section', { class: 'dc-next' },
             h('h2', {}, 'Up next'),
@@ -2841,7 +2841,7 @@
     return [
       m.stage === 'league' ? `${m.groupName} · ${m.roundName}` : m.roundName,
       m.catchUp && m.status !== 'done' ? 'Catch-up' : null,
-      m.court ? (/^\d/.test(m.court) ? `Court ${m.court}` : m.court) : null, // "3" -> "Court 3"; "Court 3" or "Centre" as is
+      m.court ? (/^\d/.test(m.court) ? `${CAT.courtWord(S.t && S.t.sport && S.t.sport.id)} ${m.court}` : m.court) : null, // "3" -> "Court 3"; "Court 3" or "Centre" as is
     ].filter(Boolean).join(' · ');
   }
 
@@ -3000,10 +3000,10 @@
       const won = Boolean(m.winner && p && m.winner === p.id);
       const flag = live ? (sc.matchPoint[s] ? 'Match point' : sc.gamePoint[s] ? `${sc.unit || 'Game'} point` : null) : null;
       // Tennis-style sports also show the games in this set, and calls (15, 30, 40, AD) for points.
-      return h('div', { class: `sb-row side-${s}${won ? ' won' : ''}${sc.setGames ? ' has-set' : ''}` },
+      return h('div', { class: `sb-row side-${s}${won ? ' won' : ''}${sc.setGames ? ' has-set' : ''}${sc.single ? ' single' : ''}` },
         h('div', { class: 'sb-serve' }, live && sc.server === s ? h('span', { class: 'serve', title: 'Serving' }) : null),
         h('div', { class: 'sb-name' }, nameOf(p), flag ? h('span', { class: 'flag' }, flag) : null, won ? h('span', { class: 'flag' }, 'Winner') : null),
-        h('div', { class: 'sb-games', title: `${sc.unit || 'Game'}s won` }, sc.gamesWon[s]),
+        sc.single ? null : h('div', { class: 'sb-games', title: `${sc.unit || 'Game'}s won` }, sc.gamesWon[s]),
         sc.setGames ? h('div', { class: 'sb-games sb-set', title: 'Games in this set' }, sc.setGames[s]) : null,
         h('div', { class: 'sb-points' }, m.status === 'done' || m.status === 'bye' ? '' : sc.points ? sc.points[s] : cur[s]));
     };
@@ -3031,11 +3031,11 @@
       'aria-label': ['+1', 'Point'].includes(tap(s)) ? `Point to ${m[s].name}` : `${m[s].name} won the rally: ${tap(s)}`,
     }, h('span', { class: `sbtn-plus${tap(s) === '+1' ? '' : ' sbtn-word'}` }, tap(s)), h('span', { class: 'sbtn-name' }, m[s].name));
 
-    const courtInput = h('input', { name: 'court', maxlength: 20, placeholder: 'e.g. 3', value: m.court || '', 'aria-label': 'Court' });
+    const courtInput = h('input', { name: 'court', maxlength: 20, placeholder: 'e.g. 3', value: m.court || '', 'aria-label': CAT.courtWord(t.sport.id) });
     return h('div', { class: 'scorer' },
       fresh ? h('div', { class: 'card', style: 'margin:0' },
         h('div', { class: 'scorer-tools' },
-          h('span', {}, h('span', { class: 'label' }, 'First serve: '),
+          h('span', {}, h('span', { class: 'label' }, `${m.score.firstLabel || 'First serve'}: `),
             h('span', { class: 'seg' }, ['a', 'b'].map((s) => h('button', {
               'aria-pressed': String(m.firstServer === s),
               onclick: () => patchMatch(t, m, { firstServer: s }),
@@ -3049,14 +3049,14 @@
         h('button', { class: 'btn', disabled: fresh, onclick: () => undo(t, m) }, '↶ Undo'),
         h('form', {
           class: 'inline-form',
-          onsubmit: (e) => { e.preventDefault(); patchMatch(t, m, { court: courtInput.value }, 'Court saved'); courtInput.blur(); },
-        }, h('span', { class: 'label' }, 'Court'), courtInput, h('button', { class: 'btn btn-small', type: 'submit' }, 'Save'))),
-      h('p', { class: 'hint center', style: 'margin:0' }, 'Tap the side that won the rally. Keyboard: A / ← and L / → to score, Z to undo.'));
+          onsubmit: (e) => { e.preventDefault(); patchMatch(t, m, { court: courtInput.value }, `${CAT.courtWord(t.sport.id)} saved`); courtInput.blur(); },
+        }, h('span', { class: 'label' }, CAT.courtWord(t.sport.id)), courtInput, h('button', { class: 'btn btn-small', type: 'submit' }, 'Save'))),
+      h('p', { class: 'hint center', style: 'margin:0' }, `${m.score.hint || 'Tap the side that won the rally.'} Keyboard: A / ← and L / → to score, Z to undo.`));
   }
 
   function gamesTable(m) {
     const games = m.score.games.filter((g) => g.a + g.b > 0);
-    if (!games.length) return null;
+    if (!games.length || m.score.single) return null; // frames: the scoreboard already says it all
     return h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'games-table' },
       h('thead', {}, h('tr', {}, h('th', {}, ''), games.map((_, i) => h('th', { class: 'num' }, `${m.score.unit || 'Game'} ${i + 1}`)))),
       h('tbody', {}, ['a', 'b'].map((s) => h('tr', {},
@@ -3988,7 +3988,7 @@
     const label = diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
     return `${label}, ${fmtTime(iso)}`;
   }
-  function scheduleText(s) {
+  function scheduleText(s, sport) {
     const days = [...(s.days || [])].sort();
     const run = days.length === 7 ? 'Every day'
       : days.join() === '1,2,3,4,5,6' ? 'Mon–Sat'
@@ -3996,7 +3996,7 @@
           : days.map((d) => DAYS[d]).join(', ');
     const [hh, mm] = (s.time || '06:00').split(':').map(Number);
     const time = new Date(2000, 0, 1, hh, mm).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    return `${run} · ${time} · ${s.courts} court${s.courts === 1 ? '' : 's'}`;
+    return `${run} · ${time} · ${s.courts} ${CAT.courtWord(sport).toLowerCase()}${s.courts === 1 ? '' : 's'}`;
   }
   const teamName = (team) => team.map((p) => p.name).join(' & ');
   const groupUrl = (g, withInvite) => `${location.origin}/g/${g.slug}${withInvite && g.invite ? `?join=${g.invite}` : ''}`;
@@ -4090,7 +4090,7 @@
     groupField('Days', choiceGroup({ name: 'days', label: 'Days', multiple: true, value: [1, 2, 3, 4, 5, 6], options: [1, 2, 3, 4, 5, 6, 0].map((n) => ({ value: n, label: DAYS[n] })) })),
     h('div', { class: 'grid-2' },
       field('Start time', h('input', { name: 'time', type: 'time', required: true, value: '06:00' })),
-      groupField('Courts', choiceGroup({ name: 'courts', label: 'Courts', value: 2, options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: String(n) })) }))),
+      groupField(`${CAT.courtWord(sport.id)}s`, choiceGroup({ name: 'courts', label: `${CAT.courtWord(sport.id)}s`, value: 2, options: [1, 2, 3, 4, 5, 6].map((n) => ({ value: n, label: String(n) })) }))),
     pointOptions ? groupField('Games to', choiceGroup({ name: 'points', label: 'Games to', value: sport.defaults.points, options: pointOptions.map((n) => ({ value: n, label: String(n) })) }), null, 'One game per match, so courts turn over quickly.') : null,
     h('div', { class: 'grid-2' },
       field('Venue', h('input', { name: 'venue', maxlength: 120, placeholder: 'e.g. SDAT Indoor Stadium' })),
@@ -4110,7 +4110,7 @@
       h('div', { class: 'group-head-icon' }, icon(g.sport.id)),
       h('div', {}, h('h1', {}, g.name),
         h('p', { class: 'muted small' }, [g.sport.name, g.venue, g.city].filter(Boolean).join(' · ')),
-        h('p', { class: 'muted small' }, `${scheduleText(g.settings)} · ${g.members} member${g.members === 1 ? '' : 's'}`)));
+        h('p', { class: 'muted small' }, `${scheduleText(g.settings, g.sport.id)} · ${g.members} member${g.members === 1 ? '' : 's'}`)));
     if (!g.member) {
       const next = `/g/${g.slug}${S.route.join ? `?join=${encodeURIComponent(S.route.join)}` : ''}`;
       return [head, h('div', { class: 'card entry-card' },
@@ -4192,10 +4192,10 @@
     });
     out.push(h('div', { class: 'court-grid' }, s.courts.map((c) => {
       const x = c.gameId && s.live.find((y) => y.id === c.gameId);
-      if (!x) return h('div', { class: 'card court-card free' }, h('span', { class: 'court-no' }, `Court ${c.no}`), h('span', { class: 'muted' }, 'Free'));
+      if (!x) return h('div', { class: 'card court-card free' }, h('span', { class: 'court-no' }, `${CAT.courtWord(g.sport.id)} ${c.no}`), h('span', { class: 'muted' }, 'Free'));
       const cur = x.score && x.score.games[x.score.games.length - 1];
       return h('a', { class: 'card court-card', href: `/g/${g.slug}/game/${x.id}` },
-        h('span', { class: 'court-no' }, `Court ${c.no}`, h('span', { class: 'live-dot' }, ' LIVE')),
+        h('span', { class: 'court-no' }, `${CAT.courtWord(g.sport.id)} ${c.no}`, h('span', { class: 'live-dot' }, ' LIVE')),
         h('span', { class: 'court-team' }, teamName(x.a), h('strong', {}, cur ? cur.a : '–')),
         h('span', { class: 'court-team' }, teamName(x.b), h('strong', {}, cur ? cur.b : '–')));
     })));
@@ -4209,7 +4209,7 @@
           h('span', { class: 'vs' }, 'v'),
           h('span', { class: 'team' }, sug.b.map((p) => p.name).join(' & '))),
         free.length && (here || g.admin)
-          ? h('div', { class: 'actions' }, free.slice(0, 3).map((c, i) => h('button', { class: `btn${i ? '' : ' btn-primary'}`, onclick: () => start(c.no) }, `Start on Court ${c.no}`)))
+          ? h('div', { class: 'actions' }, free.slice(0, 3).map((c, i) => h('button', { class: `btn${i ? '' : ' btn-primary'}`, onclick: () => start(c.no) }, `Start on ${CAT.courtWord(g.sport.id)} ${c.no}`)))
           : h('p', { class: 'muted small', style: 'margin:0' }, !free.length ? 'All courts are busy — they\'re next when one frees up.' : 'Check in to start games.')));
     } else if (here) {
       out.push(h('p', { class: 'muted small center' }, s.players.filter((p) => p.checkedIn).length < 4 ? 'Waiting for more players to check in (4 for a game).' : 'Everyone free is on court.'));
@@ -4329,7 +4329,7 @@
     groupField('Days', choiceGroup({ name: 'days', label: 'Days', multiple: true, value: s.days, options: [1, 2, 3, 4, 5, 6, 0].map((n) => ({ value: n, label: DAYS[n] })) })),
     h('div', { class: 'grid-2' },
       field('Start time', h('input', { name: 'time', type: 'time', required: true, value: s.time })),
-      field('Courts', h('input', { name: 'courts', type: 'number', min: 1, max: 12, required: true, value: s.courts }))),
+      field(`${CAT.courtWord(g.sport.id)}s`, h('input', { name: 'courts', type: 'number', min: 1, max: 12, required: true, value: s.courts }))),
     h('div', { class: 'grid-2' },
       pointsField ? field('Games to', h('input', { name: 'points', type: 'number', min: pointsField.min || 5, max: pointsField.max || 50, value: s.scoring.points })) : null,
       field('Max players (optional)', h('input', { name: 'maxPlayers', type: 'number', min: 2, max: 200, value: s.maxPlayers ?? '', placeholder: 'No limit' }), null, 'Extra RSVPs go on a waitlist.')),
@@ -4420,7 +4420,7 @@
     const tap = (s) => (x.score && x.score.tap && x.score.tap[s]) || '+1';
     const post = (what, msg) => act(async () => { S.groupGame = await api('POST', `${gPath(g.slug)}/games/${x.id}/${what}`, {}); }, msg);
     return [
-      h('p', {}, h('a', { class: 'back-link', href: `/g/${g.slug}` }, `← ${g.name}`), h('span', { class: 'muted small' }, ` · Court ${x.court}`)),
+      h('p', {}, h('a', { class: 'back-link', href: `/g/${g.slug}` }, `← ${g.name}`), h('span', { class: 'muted small' }, ` · ${CAT.courtWord(g.sport.id)} ${x.court}`)),
       x.score ? scoreboard(m) : h('div', { class: 'card final-score' }, h('strong', {}, `${teamName(x.a)} ${x.final.a} – ${x.final.b} ${teamName(x.b)}`)),
       x.can.score && x.status === 'live' && !x.final ? h('div', { class: 'scorer' },
         h('div', { class: 'score-btns' }, ['a', 'b'].map((s) => h('button', { class: `score-btn side-${s}`, onclick: () => groupTap(g, x, { type: 'rally', side: s }) },
@@ -4428,7 +4428,7 @@
         h('div', { class: `sync ${S.offline && x.pending ? 'offline' : x.pending ? 'saving' : 'saved'}`, role: 'status' },
           S.offline && x.pending ? `No connection — ${x.pending} point${x.pending === 1 ? '' : 's'} waiting` : x.pending ? 'Saving…' : 'All points saved'),
         h('div', { class: 'scorer-tools' }, h('button', { class: 'btn', disabled: !x.rallies, onclick: () => groupTap(g, x, { type: 'undo' }) }, '↶ Undo')),
-        h('p', { class: 'hint center', style: 'margin:0' }, 'Tap the side that won the rally. Everyone in the game sees the score live.')) : null,
+        h('p', { class: 'hint center', style: 'margin:0' }, `${(x.score && x.score.hint) || 'Tap the side that won the rally.'} Everyone in the game sees the score live.`)) : null,
       x.can.score && x.status === 'live' && !x.rallies ? finalForm() : null,
       x.status === 'live' && !x.can.score ? h('p', { class: 'muted small center' }, 'Live — the players are scoring this game.') : null,
       x.status !== 'live' ? h('div', { class: 'card' },

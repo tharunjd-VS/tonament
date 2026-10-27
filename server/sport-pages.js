@@ -177,6 +177,57 @@ const SPORTS = {
       ['Do spectators see live scores?', 'Yes — on their phones, and on a TV at the venue with the venue display.'],
     ],
   },
+  snooker: {
+    title: 'Snooker Tournament App — Draws, Tables & Live Frame Scores',
+    description: 'Run a snooker tournament: online entries, groups and knockouts, table scheduling and frame-by-frame live scores, best of 3 to best of 11. Free for up to 16 entries.',
+    lead: 'Club nights, café leagues and ranking events: take entries online, draw the groups and the knockout, call matches to free tables and post every frame live.',
+    rules: [
+      'Best of 1, 3, 5, 7, 9 or 11 frames — shorter in the groups, longer for the final',
+      'The marker taps who won each frame; the score shows frames won',
+      'Singles and doubles, plus age groups and handicap levels as separate events',
+      'An order of play across your tables, with estimated start times',
+    ],
+    formats: 'Groups of four into a knockout suit a weekend event; for a club, a league where everyone plays everyone over a few nights builds a proper table.',
+    faqs: [
+      ['Do markers need to enter every break?', 'No. They tap who won each frame — quick enough for a busy club night. The match ends automatically when someone reaches the frames needed.'],
+      ['Can I make the final longer than the group matches?', 'Yes. Each event has its own match length, so groups can be best of 3 and the knockout best of 5 or 7 when run as separate events.'],
+      ['We have six tables. Will it schedule them?', 'Yes. Add your tables and Tonament keeps one order of play — call the next match to a free table in one tap, or let it call matches automatically.'],
+    ],
+  },
+  pool: {
+    title: 'Pool Tournament App — 8-ball & 9-ball Draws, Race-to Scoring',
+    description: 'Run an 8-ball, 9-ball or 10-ball pool tournament: online entries, groups and knockouts, race-to scoring rack by rack and live scores on every phone. Free for up to 16 entries.',
+    lead: 'Pool halls and cafés run events every week. Tonament takes the entries, makes the draw, calls matches to tables and shows every rack live — so the bar TV can show the scores.',
+    rules: [
+      'Race to 2, 3, 4, 5, 6 or 7 — or a single rack for a quick shoot-out',
+      '8-ball, 9-ball or 10-ball, set per event',
+      'The ref (or a player) taps who won each rack',
+      'A venue display for a TV: every table\'s live score and who\'s up next',
+    ],
+    formats: 'A straight knockout with races to 3 keeps a busy night moving; groups into a knockout guarantee every player several matches.',
+    faqs: [
+      ['Can players score their own matches?', 'Yes. Give players a scorer link or add them as umpires — they tap who won each rack and everyone sees the score live.'],
+      ['Can I run 8-ball and 9-ball on the same night?', 'Yes. Add each as its own event, with its own race length and draw.'],
+      ['Can the hall show scores on a TV?', 'Yes. Open the venue display on any TV or laptop: live scores from every table and what\'s up next.'],
+    ],
+  },
+  carrom: {
+    title: 'Carrom Tournament App — Draws, Boards & Live Scoring',
+    description: 'Run a carrom tournament: singles and doubles, online entries, groups and knockouts, board scheduling and live scores to 25 or 29 points. Free for up to 16 entries.',
+    lead: 'From apartment and office championships to district events: take entries online, draw the groups, call matches to free boards and score every board live.',
+    rules: [
+      'Games to 25 points (or 29), best of 1 or 3',
+      'After each board the umpire adds the winner\'s points — the opponent\'s coins left, plus 3 for the queen',
+      'Singles and doubles, with age groups and levels as separate events',
+      'An order of play across your boards, with estimated start times',
+    ],
+    formats: 'Groups of four into a knockout are the favourite for office and apartment events: everyone plays three matches before the knockout.',
+    faqs: [
+      ['How is a carrom game scored?', 'After each board, the umpire taps +1 for each point the board winner scores — the opponent\'s coins left on the board, plus 3 for the queen. First to 25 (or 29) wins the game.'],
+      ['Can I run singles and doubles together?', 'Yes. Add both as events; each gets its own entries and draw, and a player in both is never called to two boards at once.'],
+      ['Do players need the app?', 'No. Everything runs in the browser — players enter from your link, and umpires score on their phones.'],
+    ],
+  },
 };
 
 module.exports = { SPORTS };

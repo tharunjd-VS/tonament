@@ -24,6 +24,9 @@
     'sepak-takraw': TEAM,
     'beach-volleyball': { disciplines: ['doubles'] },
     padel: { disciplines: ['doubles'] },
+    snooker: { disciplines: ['singles', 'doubles'] },
+    pool: { disciplines: ['singles', 'doubles'] },
+    carrom: { disciplines: ['singles', 'doubles'] },
     pickleball: {
       levels: ['Open', 'Beginner', 'Intermediate', 'Advanced', '3.0', '3.5', '4.0', '4.5', '5.0+'],
       ages: ['Open', 'U19', '35+', '50+', '60+', '65+', '70+'],
@@ -70,7 +73,7 @@
     firstaid: 'First aid / physio on site',
   };
   const placeLabel = (place) => PLACES[place] || place;
-  const perkLabel = (key, sport) => (key === 'shuttles' && sport && sport !== 'badminton' ? 'Balls provided' : PERKS[key]);
+  const perkLabel = (key, sport) => (key === 'shuttles' && sport && sport !== 'badminton' ? (sport === 'carrom' ? 'Boards, coins and strikers provided' : 'Balls provided') : PERKS[key]);
 
   const GENDER_WORD = { men: 'Men\'s', women: 'Women\'s', mixed: 'Mixed', open: 'Open' };
   const DISCIPLINE_WORD = { singles: 'Singles', doubles: 'Doubles', team: 'Team' };
@@ -125,7 +128,7 @@
   }
 
   // What a playing area is called: table tennis is played on tables.
-  const courtWord = (sport) => (sport === 'table-tennis' ? 'Table' : 'Court');
+  const courtWord = (sport) => (['table-tennis', 'snooker', 'pool'].includes(sport) ? 'Table' : sport === 'carrom' ? 'Board' : 'Court');
 
   return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName, courtWord };
 });

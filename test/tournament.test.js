@@ -588,7 +588,7 @@ test('sport catalogue lists playable and upcoming sports', async () => {
   const badminton = list.find((s) => s.id === 'badminton');
   assert.equal(badminton.status, 'live');
   assert.ok(badminton.fields.length > 0);
-  assert.deepEqual(list.filter((s) => s.status === 'live').map((s) => s.id), ['badminton', 'pickleball', 'table-tennis', 'squash', 'volleyball', 'beach-volleyball', 'throwball', 'sepak-takraw', 'tennis', 'padel']);
+  assert.deepEqual(list.filter((s) => s.status === 'live').map((s) => s.id), ['badminton', 'pickleball', 'table-tennis', 'squash', 'volleyball', 'beach-volleyball', 'throwball', 'sepak-takraw', 'tennis', 'padel', 'snooker', 'pool', 'carrom']);
   const vb = list.find((s) => s.id === 'football');
   assert.equal(vb.status, 'soon');
   assert.equal(vb.fields, undefined);

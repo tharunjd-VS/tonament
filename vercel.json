@@ -14,7 +14,7 @@
       "destination": "/api/index?__path=sitemap"
     },
     {
-      "source": "/:sport(badminton|pickleball|table-tennis|squash|tennis|padel|volleyball|beach-volleyball|throwball|sepak-takraw)",
+      "source": "/:sport(badminton|pickleball|table-tennis|squash|tennis|padel|volleyball|beach-volleyball|throwball|sepak-takraw|snooker|pool|carrom)",
       "destination": "/api/index?__path=sport/:sport"
     },
     {
