@@ -723,6 +723,7 @@
       for (const e of allEntries(S.t)) if (S.pendingCheckIns.has(e.id)) e.checkedIn = S.pendingCheckIns.get(e.id);
     }
     let view;
+    clickerCtx = null; // the scoring screen sets it again
     if (S.error) view = errorView(S.error, S.errorCode);
     else if (S.route.name === 'new') view = viewNew();
     else if (S.route.name === 'signin' || S.route.name === 'signup') view = viewAuth();
@@ -749,6 +750,7 @@
     wasDisplaying = displaying;
     app.replaceChildren(...[view].flat(Infinity).filter(Boolean));
     keepDetails();
+    syncWakeLock();
     applyBranding(['tournament', 'match', 'display'].includes(S.route.name) && S.t && !S.error ? S.t.branding : null);
     renderNav();
   }
@@ -3300,6 +3302,13 @@
           ? pointPad(m.id, m.score, { a: m.a.name, b: m.b.name }, (extra) => rally(t, m, extra.side, extra))
           : h('div', { class: 'score-btns' }, btn('a'), btn('b')),
       syncLine(m),
+      useClicker({
+        key: `m${m.id}`,
+        names: { a: m.a.name, b: m.b.name },
+        state: () => { const tt = forMatch(m.id); const c = tt && tt.matches.find((x) => x.id === m.id); return c ? withPending(tt, c) : null; },
+        score: (side) => { const tt = forMatch(m.id); const c = tt && tt.matches.find((x) => x.id === m.id); if (c) rally(tt, withPending(tt, c), side); },
+        undo: () => { const tt = forMatch(m.id); const c = tt && tt.matches.find((x) => x.id === m.id); if (c) undo(tt, withPending(tt, c)); },
+      }),
       h('div', { class: 'scorer-tools' },
         h('button', { class: 'btn', disabled: fresh, onclick: () => undo(t, m) }, '↶ Undo'),
         h('form', {
@@ -3584,6 +3593,161 @@
 
   function patchMatch(t, m, body, msg) {
     act(async () => { mergeMatch(await api('PATCH', `${tPath(t)}/matches/${m.id}`, body, t.id)); }, msg);
+  }
+
+  // ---------- clicker mode
+  // A one-button Bluetooth remote (a selfie shutter sends Enter) strapped to
+  // the wrist or racket: 1 press = point to my side, 2 quick presses = the
+  // other side, 3 = undo. Each press beeps; the score can be read out, so
+  // nobody has to look at the phone. The scoring screen registers clickerCtx
+  // on each render: { key, names: {a, b}, side, score(s), undo(), state() }.
+  const CLICKER_KEY = 'tonament:clicker';
+  const CLICKER_GAP = 450; // ms between presses of one burst
+  let clickerCtx = null;
+  S.clicker = (() => { try { return { on: false, voice: true, ...JSON.parse(localStorage.getItem(CLICKER_KEY) || '{}') }; } catch { return { on: false, voice: true }; } })();
+  S.clickerSide = {};
+  const saveClicker = () => { try { localStorage.setItem(CLICKER_KEY, JSON.stringify({ on: S.clicker.on, voice: S.clicker.voice })); } catch { /* fine */ } };
+  // Only sports where a press is simply "a point to that side" (not 2s and 3s, or snooker balls).
+  const clickable = (sc) => Boolean(sc) && !(sc.taps && sc.taps.max > 1);
+
+  let audio;
+  function beep(kind) {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      if (audio.state === 'suspended') audio.resume();
+      const tones = { us: [[880, 0]], them: [[660, 0], [660, 0.16]], undo: [[300, 0]], end: [[880, 0], [1100, 0.14], [1320, 0.28]] }[kind];
+      for (const [f, at] of tones) {
+        const o = audio.createOscillator();
+        const v = audio.createGain();
+        o.frequency.value = f;
+        v.gain.setValueAtTime(0.25, audio.currentTime + at);
+        v.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + at + 0.12);
+        o.connect(v).connect(audio.destination);
+        o.start(audio.currentTime + at);
+        o.stop(audio.currentTime + at + 0.13);
+      }
+    } catch { /* no audio */ }
+    if (navigator.vibrate) navigator.vibrate(kind === 'them' ? [60, 60, 60] : kind === 'undo' ? 150 : 60);
+  }
+  function say(text) {
+    if (!S.clicker.voice || !text || !window.speechSynthesis) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.05;
+      speechSynthesis.speak(u);
+    } catch { /* no voice */ }
+  }
+  // What to say after a point: the server's score first, as umpires call it.
+  // m: { a: {name}, b: {name}, status, summary, score }.
+  function scoreSpeech(m) {
+    if (!m || !m.score) return '';
+    const sc = m.score;
+    const first = (name) => String(name || '').split(/\s*(?:&|\/)\s*/).map((n) => n.split(' ')[0]).join(' and ');
+    if (['done', 'bye'].includes(m.status) || sc.winner) return `${first(m[sc.winner || (m.winner === m.b.id ? 'b' : 'a')].name)} win. ${m.summary || ''}`;
+    const cur = sc.games[sc.games.length - 1] || { a: 0, b: 0 };
+    const pts = (s) => String(sc.points ? sc.points[s] : cur[s]);
+    const call = (v) => (v === '0' && sc.server ? 'love' : v);
+    const lead = sc.server || 'a';
+    const other = lead === 'a' ? 'b' : 'a';
+    const a = pts(lead);
+    const b = pts(other);
+    let text = a === b && sc.server ? `${call(a)} all` : `${call(a)}, ${call(b)}`;
+    if (sc.setGames) text = `${text}. Games ${sc.setGames[lead]}, ${sc.setGames[other]}`;
+    const flag = sc.matchPoint && (sc.matchPoint.a || sc.matchPoint.b) ? 'Match point' : sc.gamePoint && (sc.gamePoint.a || sc.gamePoint.b) ? `${sc.unit || 'Game'} point` : '';
+    if (flag) text = `${text}. ${flag}`;
+    if (sc.server) text = `${text}. ${first(m[sc.server].name)} to serve`;
+    return text;
+  }
+
+  let presses = 0;
+  let pressTimer;
+  function firePresses() {
+    const n = presses;
+    presses = 0;
+    const ctx = clickerCtx;
+    if (!ctx || !S.clicker.on) return;
+    const before = ctx.state();
+    if (n >= 3) {
+      if (!before || !before.rallies) { beep('undo'); return; }
+      ctx.undo();
+      beep('undo');
+    } else {
+      if (!before || ['done', 'bye'].includes(before.status)) return; // tournament matches start out 'scheduled'
+      const side = n === 1 ? ctx.side : ctx.side === 'a' ? 'b' : 'a';
+      ctx.score(side);
+      beep(n === 1 ? 'us' : 'them');
+    }
+    S.clickerLast = n >= 3 ? 'Undo' : `Point to ${ctx.names[n === 1 ? ctx.side : ctx.side === 'a' ? 'b' : 'a']}`;
+    // After the redraw, read the new score out.
+    setTimeout(() => {
+      const now = ctx.state(); // the screen may have moved on once the match ends
+      if (now && now.status === 'done') beep('end');
+      say(scoreSpeech(now));
+    }, 60);
+  }
+  const CLICKER_KEYS = new Set(['Enter', 'NumpadEnter', ' ', 'AudioVolumeUp', 'VolumeUp', 'MediaPlayPause', 'Camera']);
+  document.addEventListener('keydown', (e) => {
+    if (!S.clicker.on || !clickerCtx || !CLICKER_KEYS.has(e.key) || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (isEditing() && document.activeElement.type !== 'checkbox') return;
+    // Enter would also press whichever button has focus.
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.repeat) return;
+    presses += 1;
+    clearTimeout(pressTimer);
+    pressTimer = setTimeout(firePresses, CLICKER_GAP);
+  }, true);
+
+  // Keeps the screen on while scoring with the clicker (a locked phone stops listening).
+  let clickerLock = null;
+  async function syncWakeLock() {
+    const want = S.clicker.on && clickerCtx && !document.hidden;
+    if (want && !clickerLock && navigator.wakeLock) {
+      try {
+        clickerLock = await navigator.wakeLock.request('screen');
+        clickerLock.addEventListener('release', () => { clickerLock = null; });
+      } catch { clickerLock = null; }
+    } else if (!want && clickerLock) {
+      clickerLock.release().catch(() => {});
+      clickerLock = null;
+    }
+  }
+  document.addEventListener('visibilitychange', syncWakeLock);
+
+  // The scoring screens call this while rendering; returns the clicker card.
+  function useClicker(ctx) {
+    if (!clickable(ctx.state() && ctx.state().score)) return null;
+    const side = S.clickerSide[ctx.key] || ctx.side || 'a';
+    clickerCtx = { ...ctx, side };
+    const c = S.clicker;
+    const toggle = () => {
+      c.on = !c.on;
+      saveClicker();
+      if (c.on) {
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        beep('us'); // also unlocks sound on phones (needs a tap)
+        say(`Clicker on. One press, ${clickerCtx.names[side]}. Two presses, ${clickerCtx.names[side === 'a' ? 'b' : 'a']}. Three, undo.`);
+      }
+      render();
+    };
+    if (!c.on) {
+      return h('div', { class: 'clicker-off' },
+        h('button', { class: 'btn btn-small btn-ghost', onclick: toggle }, '⦿ Use a clicker'),
+        h('small', { class: 'muted' }, 'Score with a Bluetooth button on your wrist'));
+    }
+    const names = clickerCtx.names;
+    return h('div', { class: 'card clicker-card' },
+      h('div', { class: 'card-head' }, h('h3', {}, 'Clicker on'), h('button', { class: 'btn btn-small btn-ghost', onclick: toggle }, 'Turn off')),
+      h('p', { class: 'clicker-help' },
+        h('span', {}, h('b', {}, '1 press'), ` ${names[side]}`),
+        h('span', {}, h('b', {}, '2 presses'), ` ${names[side === 'a' ? 'b' : 'a']}`),
+        h('span', {}, h('b', {}, '3 presses'), ' undo')),
+      h('div', { class: 'seg', role: 'group', 'aria-label': 'One press scores for' },
+        ['a', 'b'].map((s) => h('button', { 'aria-pressed': String(side === s), onclick: () => { S.clickerSide[ctx.key] = s; render(); } }, `1 press: ${names[s]}`))),
+      h('label', { class: 'check-field' }, h('input', { type: 'checkbox', checked: c.voice, onchange: (e) => { c.voice = e.target.checked; saveClicker(); if (c.voice) say(scoreSpeech(clickerCtx.state())); } }),
+        h('span', {}, h('strong', {}, 'Read the score out'), h('small', {}, 'After every point, through the phone or a speaker'))),
+      h('p', { class: 'muted small', role: 'status' }, S.clickerLast ? `Last: ${S.clickerLast}` : 'Press your remote to test it. Nothing happening? Use its "Android" button — the iOS one changes the volume.'));
   }
 
   // Keyboard scoring for umpires on a laptop.
@@ -5182,6 +5346,19 @@
             h('span', { class: `sbtn-plus${tap(s) === '+1' ? '' : ' sbtn-word'}` }, tap(s)), h('span', { class: 'sbtn-name' }, teamName(x[s]))))),
         h('div', { class: `sync ${S.offline && x.pending ? 'offline' : x.pending ? 'saving' : 'saved'}`, role: 'status' },
           S.offline && x.pending ? `No connection — ${x.pending} point${x.pending === 1 ? '' : 's'} waiting` : x.pending ? 'Saving…' : 'All points saved'),
+        useClicker({
+          key: `g${x.id}`,
+          names: { a: teamName(x.a), b: teamName(x.b) },
+          // My side first, when I'm playing.
+          side: S.me && x.b.some((p) => p.id === S.me.id) ? 'b' : 'a',
+          state: () => {
+            if (!S.groupGame || S.groupGame.id !== x.id) return null;
+            const y = groupGameNow(S.group, S.groupGame);
+            return { a: { id: 'a', name: teamName(y.a) }, b: { id: 'b', name: teamName(y.b) }, status: y.status === 'live' ? 'live' : 'done', winner: y.winner, summary: y.summary, score: y.score, rallies: y.rallies };
+          },
+          score: (side) => groupTap(S.group, groupGameNow(S.group, S.groupGame), { type: 'rally', side }),
+          undo: () => groupTap(S.group, groupGameNow(S.group, S.groupGame), { type: 'undo' }),
+        }),
         h('div', { class: 'scorer-tools' }, h('button', { class: 'btn', disabled: !x.rallies, onclick: () => groupTap(g, x, { type: 'undo' }) }, '↶ Undo')),
         h('p', { class: 'hint center', style: 'margin:0' }, `${(x.score && x.score.hint) || 'Tap the side that won the rally.'} Everyone in the game sees the score live.`)) : null,
       x.status === 'live' && !x.can.score ? h('p', { class: 'muted small center' }, 'Live — the players are scoring this game.') : null,
