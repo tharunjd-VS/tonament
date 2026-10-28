@@ -3664,13 +3664,20 @@
 
   let presses = 0;
   let pressTimer;
-  // One button: presses are counted (1 mine, 2 theirs, 3 undo).
+  let burstDir = null;
+  // One button: presses are counted (1 mine, 2 theirs, 3 undo). A remote
+  // with a button per side (page turners, next / previous track): one press
+  // is that side's point, and 3 quick presses on any button undo.
   function firePresses() {
     const n = presses;
+    const dir = burstDir;
     presses = 0;
-    clickerDo(n === 1 ? 'mine' : n === 2 ? 'theirs' : 'undo');
+    burstDir = null;
+    if (dir) clickerDo(n >= 3 ? 'undo' : dir);
+    else clickerDo(n === 1 ? 'mine' : n === 2 ? 'theirs' : 'undo');
   }
-  function clickerPress() {
+  function clickerPress(dir = null) {
+    if (dir) burstDir = dir;
     presses += 1;
     clearTimeout(pressTimer);
     pressTimer = setTimeout(firePresses, CLICKER_GAP);
@@ -3703,8 +3710,12 @@
   // two or more buttons (page turners send Page Down / Page Up, media
   // remotes next / previous track).
   const COUNTED_KEYS = new Set(['Enter', 'NumpadEnter', ' ', 'AudioVolumeUp', 'VolumeUp', 'MediaPlayPause', 'Camera']);
-  const DIRECT_KEYS = { PageDown: 'mine', MediaTrackNext: 'mine', ArrowDown: 'mine', PageUp: 'theirs', MediaTrackPrevious: 'theirs', ArrowUp: 'theirs', Backspace: 'undo', MediaStop: 'undo' };
-  const KEY_NAMES = { ' ': 'Space', AudioVolumeUp: 'Volume up', MediaPlayPause: 'Play/pause', MediaTrackNext: 'Next track', MediaTrackPrevious: 'Previous track', PageDown: 'Page down', PageUp: 'Page up', ArrowDown: 'Down arrow', ArrowUp: 'Up arrow' };
+  const DIRECT_KEYS = {
+    PageDown: 'mine', ArrowRight: 'mine', ArrowDown: 'mine', MediaTrackNext: 'mine',
+    PageUp: 'theirs', ArrowLeft: 'theirs', ArrowUp: 'theirs', MediaTrackPrevious: 'theirs',
+    Backspace: 'undo', MediaStop: 'undo',
+  };
+  const KEY_NAMES = { ArrowRight: 'Right arrow', ArrowLeft: 'Left arrow', ' ': 'Space', AudioVolumeUp: 'Volume up', MediaPlayPause: 'Play/pause', MediaTrackNext: 'Next track', MediaTrackPrevious: 'Previous track', PageDown: 'Page down', PageUp: 'Page up', ArrowDown: 'Down arrow', ArrowUp: 'Up arrow' };
   // What the remote last sent, so anyone can test a remote before relying on it.
   const sawInput = (name) => { S.clickerSaw = name; };
   document.addEventListener('keydown', (e) => {
@@ -3717,8 +3728,8 @@
     e.stopPropagation();
     if (e.repeat) return;
     sawInput(KEY_NAMES[e.key] || e.key);
-    if (direct) clickerDo(direct);
-    else clickerPress();
+    if (direct === 'undo') clickerDo('undo');
+    else clickerPress(direct);
   }, true);
 
   // Media buttons (Bluetooth media remotes, earbuds): browsers only pass them
@@ -3752,8 +3763,8 @@
   }
   function mediaAction(name, what) {
     sawInput(name);
-    if (what) clickerDo(what);
-    else clickerPress();
+    if (what === 'undo') clickerDo('undo');
+    else clickerPress(what);
     if (clickerAudio && clickerAudio.paused) clickerAudio.play().catch(() => {});
     render();
   }
@@ -3846,7 +3857,7 @@
         ? [h('span', { class: 'ok' }, '✓'), ` Your remote sent: ${S.clickerSaw}`, S.clickerLast ? ` → ${S.clickerLast}` : '']
         : 'Press your remote to test it. Nothing showing? It\'s changing the phone\'s volume instead — websites can\'t read volume buttons. Use a remote with play / next buttons, or one that sends Enter.'),
       h('details', { class: 'clicker-more' }, h('summary', {}, 'Remotes with more buttons'),
-        h('p', { class: 'muted small' }, 'Next track, Page Down or ↓ — point to you. Previous track, Page Up or ↑ — point to them. Play / pause or Enter — counted: 1 press yours, 2 theirs, 3 undo.')));
+        h('p', { class: 'muted small' }, 'Page turners and media remotes: → / ↓ / Page Down / Next track — point to you. ← / ↑ / Page Up / Previous track — point to them. 3 quick presses on any button — undo. Play / pause or Enter count like a one-button remote.')));
   }
 
   // Keyboard scoring for umpires on a laptop.
