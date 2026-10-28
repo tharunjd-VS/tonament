@@ -3635,6 +3635,8 @@
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
       u.rate = 1.05;
+      // Speaking can pause other sound on phones; media buttons need it playing.
+      u.onend = () => { if (S.clicker.on && clickerAudio && clickerAudio.paused) clickerAudio.play().catch(() => {}); };
       speechSynthesis.speak(u);
     } catch { /* no voice */ }
   }
@@ -3662,23 +3664,34 @@
 
   let presses = 0;
   let pressTimer;
+  // One button: presses are counted (1 mine, 2 theirs, 3 undo).
   function firePresses() {
     const n = presses;
     presses = 0;
+    clickerDo(n === 1 ? 'mine' : n === 2 ? 'theirs' : 'undo');
+  }
+  function clickerPress() {
+    presses += 1;
+    clearTimeout(pressTimer);
+    pressTimer = setTimeout(firePresses, CLICKER_GAP);
+  }
+  // what: 'mine' | 'theirs' | 'undo'.
+  function clickerDo(what) {
     const ctx = clickerCtx;
     if (!ctx || !S.clicker.on) return;
     const before = ctx.state();
-    if (n >= 3) {
+    const other = ctx.side === 'a' ? 'b' : 'a';
+    if (what === 'undo') {
       if (!before || !before.rallies) { beep('undo'); return; }
       ctx.undo();
       beep('undo');
     } else {
       if (!before || ['done', 'bye'].includes(before.status)) return; // tournament matches start out 'scheduled'
-      const side = n === 1 ? ctx.side : ctx.side === 'a' ? 'b' : 'a';
-      ctx.score(side);
-      beep(n === 1 ? 'us' : 'them');
+      ctx.score(what === 'mine' ? ctx.side : other);
+      beep(what === 'mine' ? 'us' : 'them');
     }
-    S.clickerLast = n >= 3 ? 'Undo' : `Point to ${ctx.names[n === 1 ? ctx.side : ctx.side === 'a' ? 'b' : 'a']}`;
+    S.clickerLast = what === 'undo' ? 'Undo' : `Point to ${ctx.names[what === 'mine' ? ctx.side : other]}`;
+    updateNowPlaying();
     // After the redraw, read the new score out.
     setTimeout(() => {
       const now = ctx.state(); // the screen may have moved on once the match ends
@@ -3686,22 +3699,98 @@
       say(scoreSpeech(now));
     }, 60);
   }
-  const CLICKER_KEYS = new Set(['Enter', 'NumpadEnter', ' ', 'AudioVolumeUp', 'VolumeUp', 'MediaPlayPause', 'Camera']);
+  // Keys a remote can send. Counted: one-button remotes. Direct: remotes with
+  // two or more buttons (page turners send Page Down / Page Up, media
+  // remotes next / previous track).
+  const COUNTED_KEYS = new Set(['Enter', 'NumpadEnter', ' ', 'AudioVolumeUp', 'VolumeUp', 'MediaPlayPause', 'Camera']);
+  const DIRECT_KEYS = { PageDown: 'mine', MediaTrackNext: 'mine', ArrowDown: 'mine', PageUp: 'theirs', MediaTrackPrevious: 'theirs', ArrowUp: 'theirs', Backspace: 'undo', MediaStop: 'undo' };
+  const KEY_NAMES = { ' ': 'Space', AudioVolumeUp: 'Volume up', MediaPlayPause: 'Play/pause', MediaTrackNext: 'Next track', MediaTrackPrevious: 'Previous track', PageDown: 'Page down', PageUp: 'Page up', ArrowDown: 'Down arrow', ArrowUp: 'Up arrow' };
+  // What the remote last sent, so anyone can test a remote before relying on it.
+  const sawInput = (name) => { S.clickerSaw = name; };
   document.addEventListener('keydown', (e) => {
-    if (!S.clicker.on || !clickerCtx || !CLICKER_KEYS.has(e.key) || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!S.clicker.on || !clickerCtx || e.metaKey || e.ctrlKey || e.altKey) return;
+    const direct = DIRECT_KEYS[e.key];
+    if (!COUNTED_KEYS.has(e.key) && !direct) return;
     if (isEditing() && document.activeElement.type !== 'checkbox') return;
     // Enter would also press whichever button has focus.
     e.preventDefault();
     e.stopPropagation();
     if (e.repeat) return;
-    presses += 1;
-    clearTimeout(pressTimer);
-    pressTimer = setTimeout(firePresses, CLICKER_GAP);
+    sawInput(KEY_NAMES[e.key] || e.key);
+    if (direct) clickerDo(direct);
+    else clickerPress();
   }, true);
+
+  // Media buttons (Bluetooth media remotes, earbuds): browsers only pass them
+  // to a page that is playing sound, so clicker mode plays an inaudible loop
+  // and the lock screen shows the score. Play/pause is counted like a
+  // one-button remote; next / previous track score directly.
+  let clickerAudio = null;
+  function silentLoop() {
+    // One second of near-silence (tiny dither: some phones drop a truly silent track).
+    const rate = 8000;
+    const n = rate;
+    const buf = new DataView(new ArrayBuffer(44 + n * 2));
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) buf.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, 'RIFF'); buf.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); buf.setUint32(16, 16, true);
+    buf.setUint16(20, 1, true); buf.setUint16(22, 1, true); buf.setUint32(24, rate, true); buf.setUint32(28, rate * 2, true);
+    buf.setUint16(32, 2, true); buf.setUint16(34, 16, true); str(36, 'data'); buf.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) buf.setInt16(44 + i * 2, i % 2 ? 1 : -1, true);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  function updateNowPlaying() {
+    if (!('mediaSession' in navigator) || !clickerAudio || !window.MediaMetadata) return;
+    const ctx = clickerCtx;
+    const m = ctx && ctx.state();
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: m && m.score ? scoreSpeech(m).split('.')[0] : 'Clicker on',
+        artist: ctx ? `${ctx.names.a} v ${ctx.names.b}` : 'Tonament',
+        album: 'Tonament clicker',
+      });
+    } catch { /* fine */ }
+  }
+  function mediaAction(name, what) {
+    sawInput(name);
+    if (what) clickerDo(what);
+    else clickerPress();
+    if (clickerAudio && clickerAudio.paused) clickerAudio.play().catch(() => {});
+    render();
+  }
+  // Called from a tap (turning the clicker on, or "Arm"): phones only start sound after one.
+  function startMediaKeys() {
+    if (!('mediaSession' in navigator)) return;
+    if (!clickerAudio) {
+      clickerAudio = new Audio(silentLoop());
+      clickerAudio.loop = true;
+      clickerAudio.setAttribute('playsinline', '');
+      const ms = navigator.mediaSession;
+      const on = (action, fn) => { try { ms.setActionHandler(action, fn); } catch { /* not supported here */ } };
+      on('play', () => mediaAction('Play/pause'));
+      on('pause', () => mediaAction('Play/pause'));
+      on('nexttrack', () => mediaAction('Next track', 'mine'));
+      on('previoustrack', () => mediaAction('Previous track', 'theirs'));
+      on('seekforward', () => mediaAction('Skip forward', 'mine'));
+      on('seekbackward', () => mediaAction('Skip back', 'theirs'));
+      on('stop', () => mediaAction('Stop', 'undo'));
+    }
+    clickerAudio.play().then(() => { S.clickerArmed = true; updateNowPlaying(); render(); }).catch(() => { S.clickerArmed = false; render(); });
+  }
+  function stopMediaKeys() {
+    if (clickerAudio) clickerAudio.pause();
+    S.clickerArmed = false;
+    if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = null; } catch { /* fine */ } }
+  }
 
   // Keeps the screen on while scoring with the clicker (a locked phone stops listening).
   let clickerLock = null;
   async function syncWakeLock() {
+    // The media-button loop only while a scoring screen is open.
+    if (clickerAudio) {
+      const listen = S.clicker.on && clickerCtx;
+      if (!listen && !clickerAudio.paused) clickerAudio.pause();
+      else if (listen && clickerAudio.paused && S.clickerArmed) clickerAudio.play().catch(() => { S.clickerArmed = false; });
+    }
     const want = S.clicker.on && clickerCtx && !document.hidden;
     if (want && !clickerLock && navigator.wakeLock) {
       try {
@@ -3726,9 +3815,11 @@
       saveClicker();
       if (c.on) {
         if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        startMediaKeys();
         beep('us'); // also unlocks sound on phones (needs a tap)
         say(`Clicker on. One press, ${clickerCtx.names[side]}. Two presses, ${clickerCtx.names[side === 'a' ? 'b' : 'a']}. Three, undo.`);
       }
+      else stopMediaKeys();
       render();
     };
     if (!c.on) {
@@ -3747,7 +3838,15 @@
         ['a', 'b'].map((s) => h('button', { 'aria-pressed': String(side === s), onclick: () => { S.clickerSide[ctx.key] = s; render(); } }, `1 press: ${names[s]}`))),
       h('label', { class: 'check-field' }, h('input', { type: 'checkbox', checked: c.voice, onchange: (e) => { c.voice = e.target.checked; saveClicker(); if (c.voice) say(scoreSpeech(clickerCtx.state())); } }),
         h('span', {}, h('strong', {}, 'Read the score out'), h('small', {}, 'After every point, through the phone or a speaker'))),
-      h('p', { class: 'muted small', role: 'status' }, S.clickerLast ? `Last: ${S.clickerLast}` : 'Press your remote to test it. Nothing happening? Use its "Android" button — the iOS one changes the volume.'));
+      'mediaSession' in navigator && !S.clickerArmed
+        ? h('div', { class: 'actions', style: 'margin:6px 0' }, h('button', { class: 'btn btn-small', onclick: startMediaKeys }, 'Tap to listen for media buttons'),
+          h('small', { class: 'muted' }, 'For remotes and earbuds with play / next buttons'))
+        : null,
+      h('p', { class: 'clicker-saw', role: 'status' }, S.clickerSaw
+        ? [h('span', { class: 'ok' }, '✓'), ` Your remote sent: ${S.clickerSaw}`, S.clickerLast ? ` → ${S.clickerLast}` : '']
+        : 'Press your remote to test it. Nothing showing? It\'s changing the phone\'s volume instead — websites can\'t read volume buttons. Use a remote with play / next buttons, or one that sends Enter.'),
+      h('details', { class: 'clicker-more' }, h('summary', {}, 'Remotes with more buttons'),
+        h('p', { class: 'muted small' }, 'Next track, Page Down or ↓ — point to you. Previous track, Page Up or ↑ — point to them. Play / pause or Enter — counted: 1 press yours, 2 theirs, 3 undo.')));
   }
 
   // Keyboard scoring for umpires on a laptop.

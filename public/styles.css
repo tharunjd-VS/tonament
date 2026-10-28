@@ -1176,6 +1176,9 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .clicker-help b { display: inline-block; min-width: 0; padding: 1px 8px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-weight: 700; font-size: 0.82rem; }
 .clicker-card .seg { display: flex; flex-wrap: wrap; }
 .clicker-card .check-field { margin: 10px 0 4px; }
+.clicker-saw { margin: 8px 0 0; font-size: 0.92rem; color: var(--muted); }
+.clicker-saw .ok { color: var(--accent-text); font-weight: 700; }
+.clicker-more summary { cursor: pointer; font-size: 0.9rem; color: var(--muted); margin-top: 6px; }
 .claim-card h2 { margin: 4px 0 2px; font-size: 1.6rem; }
 .claim-standing { display: inline-block; margin: 4px 0 10px; padding: 4px 12px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 0.92rem; }
 .find-name h2 { margin: 0 0 4px; }
