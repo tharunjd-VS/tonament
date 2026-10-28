@@ -1169,13 +1169,6 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .name-chip { padding: 3px 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); font-size: 0.88rem; }
 .name-chip.here { border-color: var(--accent); }
 .claim-card { border-color: var(--accent); }
-.clicker-off { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; }
-.clicker-card { margin: 0; border-color: var(--accent); }
-.clicker-card h3 { margin: 0; }
-.clicker-help { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 10px; }
-.clicker-help b { display: inline-block; min-width: 0; padding: 1px 8px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-weight: 700; font-size: 0.82rem; }
-.clicker-card .seg { display: flex; flex-wrap: wrap; }
-.clicker-card .check-field { margin: 10px 0 4px; }
 .claim-card h2 { margin: 4px 0 2px; font-size: 1.6rem; }
 .claim-standing { display: inline-block; margin: 4px 0 10px; padding: 4px 12px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 0.92rem; }
 .find-name h2 { margin: 0 0 4px; }
