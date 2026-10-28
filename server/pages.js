@@ -342,7 +342,13 @@ function groupHtml(shell, { base, g }) {
     const level = levelText(st.levels);
     const time = hours(st.time, st.endTime);
     const s = g.session;
-    if (s) {
+    if (g.guest) {
+      const r = g.guest;
+      title = `${r.name}, your spot in ${g.name} is waiting`;
+      const standing = r.rank ? `#${r.rank} on the leaderboard · ${r.wins} win${r.wins === 1 ? '' : 's'} in ${r.games} game${r.games === 1 ? '' : 's'}` : 'Your name is already on the list';
+      description = `${standing}. Tap to claim it — your games and rating come with you.`;
+      image = 'og-group-join.png';
+    } else if (s) {
       const left = s.spots == null ? '' : s.spots ? `, ${s.spots} spot${s.spots === 1 ? '' : 's'} left` : ', full (waitlist open)';
       title = `${nextLabel(s.startsAt, st.timeZone)} ${time} · ${s.going} going${left}`;
       description = `${g.name}${at} · ${g.sport.name} · ${level}. Tap to say you're in (and when you're coming).`;

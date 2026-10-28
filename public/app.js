@@ -516,9 +516,12 @@
           await loadGroupGame();
           return;
         }
-        S.route = { name: 'group', slug, tab: params.get('tab') || 'today', join, skip: 0 };
+        // claim: a guest's spot from a personal link ("Rahul, your spot is waiting"):
+        // asked about first, so the link doesn't join on its own.
+        const claim = Number(params.get('claim')) || null;
+        S.route = { name: 'group', slug, tab: params.get('tab') || 'today', join, claim, skip: 0 };
         if (!S.group || S.group.slug !== slug) S.group = null;
-        if (join && S.me) {
+        if (join && S.me && !claim) {
           try {
             const r = await api('POST', `${gPath(slug)}/join`, { token: join });
             if (!r.already) toast(r.joined ? 'Welcome to the group! Tap "I\'m in" for the next session.' : 'Request sent to the group admins');
@@ -4451,7 +4454,8 @@
   async function loadGroup(skip = 0) {
     const slug = S.route.slug;
     try {
-      const g = await api('GET', `${gPath(slug)}${skip ? `?skip=${skip}` : ''}`);
+      const qs = [skip && `skip=${skip}`, S.route.join && `join=${encodeURIComponent(S.route.join)}`].filter(Boolean).join('&');
+      const g = await api('GET', `${gPath(slug)}${qs ? `?${qs}` : ''}`);
       if (S.route.slug === slug) { S.group = g; S.error = null; }
     } catch (e) {
       S.error = e.message;
@@ -4576,8 +4580,10 @@
         h('p', { class: 'group-level' }, h('span', { class: 'event-tag level-tag' }, levelText(g.settings.levels))),
         h('p', { class: 'muted small' }, `${scheduleText(g.settings, g.sport.id)} · ${g.members} member${g.members === 1 ? '' : 's'}`),
         g.host ? h('p', { class: 'host-chip' }, `Hosted by `, g.host.public ? h('a', { href: `/@${g.host.slug}` }, g.host.name) : h('strong', {}, g.host.name)) : null));
+    const claimCard = groupClaimCard(g);
     if (!g.member) {
       const next = `/g/${g.slug}${S.route.join ? `?join=${encodeURIComponent(S.route.join)}` : ''}`;
+      if (claimCard) return [head, claimCard];
       return [head, h('div', { class: 'card entry-card' },
         !S.me ? [
           h('h2', {}, `Join ${g.name}`),
@@ -4592,12 +4598,12 @@
             ? h('p', { class: 'muted' }, `${levelText(g.settings.levels)} · ${scheduleText(g.settings, g.sport.id)}. Join, then say you're in for the days you're coming.`)
             : h('p', { class: 'muted' }, 'Ask to join — a group admin will let you in. (With the invite link from the group, you join straight away.)'),
           h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', onclick: () => act(async () => { const r = await api('POST', `${gPath(g.slug)}/join`, {}); await loadGroup(); return r; }, g.settings.open ? 'You\'re in the group ✓' : 'Request sent') }, g.settings.open ? 'Join' : 'Ask to join')),
-        ])];
+        ]), g.role === 'requested' ? null : groupFindName(g, g.guests || [])];
     }
     const tabs = [...GROUP_TABS, ...(g.admin ? [['attendance', 'Attendance'], ['settings', 'Settings']] : [])];
     const tab = tabs.some(([id]) => id === S.route.tab) ? S.route.tab : 'today';
     const body = { today: groupToday, leaderboard: groupLeaderboard, members: groupMembers, attendance: groupAttendance, settings: groupSettings }[tab](g);
-    return [head,
+    return [head, claimCard,
       h('nav', { class: 'tabs' }, tabs.map(([id, label]) => h('a', { href: `/g/${g.slug}${id === 'today' ? '' : `?tab=${id}`}`, class: id === tab ? 'active' : '' }, label, id === 'members' && g.requests.length ? h('span', { class: 'tab-count' }, g.requests.length) : null))),
       h('section', {}, body)];
   }
@@ -4660,7 +4666,7 @@
       return h('div', { class: 'card' }, h('h2', {}, 'No sessions scheduled'),
         h('p', { class: 'muted' }, g.admin ? 'Pick the days you play in Settings.' : 'An admin hasn\'t set the days yet.'));
     }
-    const out = [];
+    const out = [groupFindNameForMember(g)];
     if (!s.today) {
       out.push(rsvpCard(g, s));
       return out;
@@ -4794,6 +4800,115 @@
         x.status === 'disputed' && x.can.void ? h('button', { class: 'btn btn-small btn-ghost danger', onclick: () => confirm('Void this game? It won\'t count for ratings.') && post('void', 'Game voided') }, 'Void game') : null) : null);
   }
 
+  // ---------- claim your spot
+
+  const groupClaimUrl = (g, r) => `${groupUrl(g, true)}${g.invite ? '&' : '?'}claim=${r.id}`;
+  const standingText = (r) => (r.rank ? `#${r.rank} on the leaderboard · ${r.wins} win${r.wins === 1 ? '' : 's'} in ${r.games} game${r.games === 1 ? '' : 's'}` : 'Your name is already on the list');
+  const pickClaim = (id) => {
+    S.route.claim = id;
+    const qs = new URLSearchParams(location.search);
+    if (id) qs.set('claim', id); else qs.delete('claim');
+    history.replaceState(null, '', `${location.pathname}${qs.toString() ? `?${qs}` : ''}`);
+    render();
+    window.scrollTo(0, 0);
+  };
+  // The spot from a claim link (or a name picked): "Is this you?"
+  function groupClaimCard(g) {
+    if (!S.route.claim) return null;
+    const list = g.member ? g.leaderboard.filter((r) => r.guest) : g.guests || [];
+    const r = list.find((x) => x.id === S.route.claim);
+    if (!r) {
+      if (g.member || (g.guests || []).length || !S.route.join) {
+        return h('div', { class: 'card claim-card' }, h('h2', {}, 'This spot has been claimed'),
+          h('p', { class: 'muted' }, 'Someone has already claimed it. If that was a mistake, ask a group admin.'),
+          h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => pickClaim(null) }, 'OK')));
+      }
+      return null;
+    }
+    const first = r.name.split(' ')[0];
+    const here = `/g/${g.slug}?${S.route.join ? `join=${encodeURIComponent(S.route.join)}&` : ''}claim=${r.id}`;
+    const take = () => act(async () => {
+      await api('POST', `${gPath(g.slug)}/claim/${r.id}`, { token: S.route.join || undefined });
+      S.route.join = null;
+      pickClaim(null);
+      history.replaceState(null, '', `/g/${g.slug}`);
+      await loadGroup();
+    }, `Welcome, ${first}! Your games and rating are yours now`);
+    return h('div', { class: 'card claim-card' },
+      h('p', { class: 'eyebrow' }, 'Your spot is waiting'),
+      h('h2', {}, r.name),
+      h('p', { class: 'claim-standing' }, standingText(r)),
+      h('p', { class: 'muted' }, `${g.name} already has you on the list. Claim it to say you're in, score your games and climb the leaderboard — everything so far comes with you.`),
+      !S.me
+        ? h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary btn-lg', href: `/signin?next=${encodeURIComponent(here)}` }, `I'm ${first} — claim it`),
+          h('button', { class: 'btn btn-ghost', onclick: () => pickClaim(null) }, 'Not me'))
+        : h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', onclick: take }, `I'm ${first} — claim it`),
+          h('button', { class: 'btn btn-ghost', onclick: () => pickClaim(null) }, 'Not me')),
+      !S.me ? h('p', { class: 'muted small' }, 'Sign in with your email — no password needed.') : null);
+  }
+  // "Already on the list? Find your name." For someone joining, or a member
+  // who's new here while names are still unclaimed.
+  function groupFindName(g, guests, { dismiss } = {}) {
+    if (!guests.length) return null;
+    const ranked = guests.filter((r) => r.rank).sort((a, b) => a.rank - b.rank);
+    const rest = guests.filter((r) => !r.rank).sort((a, b) => a.name.localeCompare(b.name));
+    return h('div', { class: 'card find-name' },
+      h('h2', {}, 'Already on the list? Find your name'),
+      h('p', { class: 'muted small' }, `${guests.length} player${guests.length === 1 ? ' is' : 's are'} waiting to claim their spot${ranked.length ? ` — ${ranked.length} already on the leaderboard` : ''}.`),
+      h('div', { class: 'name-picks' }, [...ranked, ...rest].map((r) => h('button', { class: 'name-pick', onclick: () => pickClaim(r.id) },
+        r.rank ? h('span', { class: 'name-pick-rank' }, `#${r.rank}`) : null, r.name))),
+      dismiss ? h('p', { class: 'center', style: 'margin:10px 0 0' }, h('button', { class: 'link-btn small', onclick: dismiss }, 'I\'m new here')) : null);
+  }
+  const findNameKey = (g) => `tonament:new-here:${g.slug}`;
+  // A member with no games yet, while spots are unclaimed (once, until "I'm new here").
+  function groupFindNameForMember(g) {
+    const me = S.me && g.leaderboard.find((r) => r.id === S.me.id);
+    if (!me || me.games || me.guest) return null;
+    try { if (localStorage.getItem(findNameKey(g))) return null; } catch { /* storage unavailable */ }
+    return groupFindName(g, g.leaderboard.filter((r) => r.guest), {
+      dismiss: () => { try { localStorage.setItem(findNameKey(g), '1'); } catch { /* fine */ } render(); },
+    });
+  }
+  // Admins: add players by name, pasted from the WhatsApp group.
+  function groupGuestsCard(g) {
+    const form = h('form', {
+      class: 'form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const names = form.querySelector('textarea').value;
+        act(async () => {
+          const r = await api('POST', `${gPath(g.slug)}/guests`, { names });
+          S.group = r.group;
+          form.reset();
+          toast(r.added ? `${r.added} added${r.skipped ? ` (${r.skipped} already in the group)` : ''} — now share the claim link` : 'They\'re all in the group already');
+        });
+      },
+    },
+    h('textarea', { name: 'names', rows: 4, required: true, placeholder: 'Rahul Menon\nPriya S\nArjun K\n…', 'aria-label': 'Names, one per line' }),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add players')));
+    return h('details', { class: 'card' }, h('summary', {}, 'Add players by name'),
+      h('p', { class: 'muted small' }, 'Paste the names from your WhatsApp group, one per line. They can be checked in, play and climb the leaderboard straight away — and each gets a link to claim their spot (their games and rating come with them).'),
+      form);
+  }
+  function shareText(text) {
+    if (navigator.share) navigator.share({ text }).catch(() => {});
+    else window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+  }
+  // One person's link: their name and standing, to send them directly.
+  const shareClaim = (g, r) => shareText([
+    `${r.name.split(' ')[0]}, you're on ${g.name}${r.rank ? ` — #${r.rank} on the leaderboard with ${r.wins} win${r.wins === 1 ? '' : 's'}` : ''} ${sportEmoji(g.sport.id)}`,
+    `Claim your spot (your games and rating come with you): ${groupClaimUrl(g, r)}`,
+  ].join('\n'));
+  // For the whole WhatsApp group: everyone finds their own name.
+  const shareFindName = (g, guests) => {
+    const ranked = guests.filter((r) => r.rank).sort((a, b) => a.rank - b.rank);
+    return shareText([
+      `${g.name} is on Tonament ${sportEmoji(g.sport.id)} ${guests.length} of you are already on the list${ranked.length ? ` — ${ranked.slice(0, 3).map((r) => `#${r.rank} ${r.name.split(' ')[0]}`).join(', ')}${ranked.length > 3 ? '…' : ''}` : ''}.`,
+      `Find your name and claim your spot: ${groupUrl(g, true)}`,
+    ].join('\n'));
+  };
+  const sportEmoji = (id) => ({ badminton: '🏸', tennis: '🎾', 'table-tennis': '🏓', pickleball: '🏓', padel: '🎾', squash: '🎾', volleyball: '🏐', 'beach-volleyball': '🏐', throwball: '🏐', football: '⚽', futsal: '⚽', hockey: '🏑', basketball: '🏀', snooker: '🎱', pool: '🎱' }[id] || '🏆');
+
   function groupLeaderboard(g) {
     const rows = g.leaderboard.filter((r) => r.games);
     const fresh = g.leaderboard.filter((r) => !r.games);
@@ -4803,7 +4918,7 @@
         rows.length ? h('ol', { class: 'rank-list' }, rows.map((r) => h('li', { class: `rank-row${r.id === (S.me && S.me.id) ? ' me' : ''}` },
           h('span', { class: 'rank-no' }, r.rank),
           h('span', { class: 'rank-name' }, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : h('strong', {}, r.name),
-            h('small', { class: 'muted' }, `${r.wins}–${r.games - r.wins} · ${r.winPct}% wins${r.week.games ? ` · this week ${r.week.wins}–${r.week.games - r.week.wins}` : ''}`)),
+            h('small', { class: 'muted' }, `${r.wins}–${r.games - r.wins} · ${r.winPct}% wins${r.week.games ? ` · this week ${r.week.wins}–${r.week.games - r.week.wins}` : ''}${r.guest ? ' · not claimed yet' : ''}`)),
           h('span', { class: 'rank-pts' }, h('strong', {}, r.rating), h('small', {}, r.provisional ? 'new' : 'rating')))))
           : empty('No confirmed games yet. Ratings start at 1000 and move after every confirmed game.'),
         h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Ratings move after every confirmed game: beat stronger players to climb faster. "new" = fewer than 5 games.')),
@@ -4813,31 +4928,43 @@
 
   function groupMembers(g) {
     const link = groupUrl(g, true);
-    const shareInvite = () => {
-      const text = `Join ${g.name} on Tonament — RSVP, fair games and live scores:\n${link}`;
-      if (navigator.share) navigator.share({ text }).catch(() => {});
-      else window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
-    };
+    const guests = g.leaderboard.filter((r) => r.guest);
+    const shareInvite = () => (guests.length ? shareFindName(g, guests)
+      : shareText(`Join ${g.name} on Tonament — RSVP, fair games and live scores:\n${link}`));
     const setMember = (id, action, msg) => groupAct(() => api('POST', `${gPath(g.slug)}/members/${id}`, { action }), msg);
     return [
       h('div', { class: 'card' },
         h('h2', {}, 'Invite players'),
-        h('p', { class: 'muted small' }, 'Anyone with this link joins straight away. Share it in your WhatsApp group.'),
+        h('p', { class: 'muted small' }, guests.length
+          ? `Anyone with this link joins straight away — and the ${guests.length} not claimed yet can find their name and claim their spot.`
+          : 'Anyone with this link joins straight away. Share it in your WhatsApp group.'),
         h('div', { class: 'actions' },
           h('button', { class: 'btn btn-primary', onclick: shareInvite }, 'Share invite link'),
           h('button', { class: 'btn', onclick: () => copy(link, 'Invite link copied') }, 'Copy link'))),
+      g.admin ? groupGuestsCard(g) : null,
       g.requests.length ? h('div', { class: 'card' }, h('h2', {}, `Asking to join (${g.requests.length})`),
         h('ul', { class: 'org-t-list' }, g.requests.map((r) => h('li', {},
           h('span', {}, h('strong', {}, r.name), h('small', { class: 'muted' }, ` ${r.email}`)),
           h('span', { class: 'actions', style: 'margin:0' },
             h('button', { class: 'btn btn-small btn-primary', onclick: () => setMember(r.id, 'approve', `${r.name} joined`) }, 'Let in'),
             h('button', { class: 'btn btn-small btn-ghost', onclick: () => setMember(r.id, 'decline', 'Declined') }, 'Decline')))))) : null,
-      h('div', { class: 'card' }, h('h2', {}, `Members (${g.members})`),
-        h('ul', { class: 'org-t-list' }, g.leaderboard.map((r) => h('li', {},
+      h('div', { class: 'card' }, h('h2', {}, `Members (${g.members - guests.length})`),
+        h('ul', { class: 'org-t-list' }, g.leaderboard.filter((r) => !r.guest).map((r) => h('li', {},
           h('span', {}, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : r.name, r.role === 'admin' ? [' ', pill('org', 'Admin')] : null),
           g.admin && r.id !== (S.me && S.me.id) ? h('span', { class: 'actions', style: 'margin:0' },
             h('button', { class: 'btn btn-small btn-ghost', onclick: () => setMember(r.id, r.role === 'admin' ? 'member' : 'admin', r.role === 'admin' ? 'No longer an admin' : `${r.name} is now an admin`) }, r.role === 'admin' ? 'Remove admin' : 'Make admin'),
             h('button', { class: 'btn btn-small btn-ghost danger', onclick: () => confirm(`Remove ${r.name} from the group?`) && setMember(r.id, 'remove', 'Removed') }, 'Remove')) : null)))),
+      guests.length ? h('div', { class: 'card' }, h('h2', {}, `Waiting to claim their spot (${guests.length})`),
+        h('p', { class: 'muted small' }, g.admin
+          ? 'They play and rank like everyone else. Send each their link — it shows their name and where they stand — or share the invite link and they\'ll find their name.'
+          : 'On the leaderboard, not on Tonament yet. Know them? Nudge them to claim their spot.'),
+        g.admin ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => shareFindName(g, guests) }, 'Share "find your name"')) : null,
+        h('ul', { class: 'org-t-list' }, [...guests].sort((a, b) => (a.rank || 1e9) - (b.rank || 1e9) || a.name.localeCompare(b.name)).map((r) => h('li', {},
+          h('span', {}, r.name, r.rank ? h('small', { class: 'muted' }, ` #${r.rank}`) : null),
+          g.admin ? h('span', { class: 'actions', style: 'margin:0' },
+            h('button', { class: 'btn btn-small', onclick: () => shareClaim(g, r) }, 'Send link'),
+            h('button', { class: 'btn btn-small btn-ghost', onclick: () => copy(groupClaimUrl(g, r), `${r.name}'s claim link copied`) }, 'Copy'),
+            h('button', { class: 'btn btn-small btn-ghost danger', onclick: () => confirm(`Remove ${r.name} from the group?`) && setMember(r.id, 'remove', 'Removed') }, 'Remove')) : null)))) : null,
       h('p', { class: 'center' }, h('button', {
         class: 'link-btn small',
         onclick: () => confirm(`Leave ${g.name}?`) && act(async () => { await api('POST', `${gPath(g.slug)}/leave`, {}); navigate('/groups'); }, 'You left the group'),

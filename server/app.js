@@ -301,12 +301,14 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     // Groups: daily play
     ['POST', '/api/groups', (c) => svc.groups.createGroup(c.actor, c.body)],
     ['GET', '/api/me/groups', (c) => svc.groups.myGroups(c.actor)],
-    ['GET', G, (c, slug) => svc.groups.view(slug, c.actor, { skip: Number(c.query.get('skip')) || 0 })],
+    ['GET', G, (c, slug) => svc.groups.view(slug, c.actor, { skip: Number(c.query.get('skip')) || 0, join: c.query.get('join') })],
     ['PATCH', G, (c, slug) => svc.groups.updateGroup(slug, c.actor, c.body)],
     ['GET', `${G}/hosts`, (c, slug) => svc.groups.hostOptions(slug, c.actor)],
     ['GET', `${G}/attendance`, (c, slug) => svc.groups.attendance(slug, c.actor)],
     ['POST', `${G}/join`, (c, slug) => svc.groups.join(slug, c.actor, c.body)],
     ['POST', `${G}/leave`, (c, slug) => svc.groups.leave(slug, c.actor)],
+    ['POST', `${G}/guests`, (c, slug) => svc.groups.addGuests(slug, c.actor, c.body)],
+    ['POST', `${G}/claim/${N}`, (c, slug, uid) => svc.groups.claim(slug, c.actor, uid, c.body)],
     ['POST', `${G}/members/${N}`, (c, slug, uid) => svc.groups.setMember(slug, c.actor, uid, c.body.action)],
     ['POST', `${G}/sessions/${N}/rsvp`, (c, slug, sid) => svc.groups.rsvp(slug, c.actor, sid, c.body.status, { eta: c.body.eta })],
     ['POST', `${G}/sessions/${N}/checkin`, (c, slug, sid) => svc.groups.checkIn(slug, c.actor, sid, c.body.here !== false, c.body.user || null)],
@@ -409,9 +411,9 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
 
   // /g/<slug> (on Vercel, rewritten to /api/group/<slug>): the app page with a
   // link preview for joining the group, or with ?s=<session> for coming to play.
-  async function groupPage(req, res, slug, sessionId) {
+  async function groupPage(req, res, slug, params) {
     const base = baseUrl(req) || SITE;
-    const g = await svc.groups.shareInfo(slug, sessionId);
+    const g = await svc.groups.shareInfo(slug, params.get('s'), { claim: params.get('claim'), join: params.get('join') });
     const html = pages.groupHtml(await readShell(), { base, g });
     res.writeHead(g ? 200 : 404, {
       'Content-Type': 'text/html; charset=utf-8',
@@ -641,7 +643,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       }
       // Group pages: /g/<slug> (on Vercel, /api/group/<slug>); its games stay plain app pages.
       const groupPath = pathname.match(/^\/(?:g|api\/group)\/([a-z0-9-]{3,40})\/?$/);
-      if (groupPath && read) return await groupPage(req, res, groupPath[1], url.searchParams.get('s'));
+      if (groupPath && read) return await groupPage(req, res, groupPath[1], url.searchParams);
       // Academy / venue pages: /@slug (on Vercel, /api/org/<slug>).
       const orgPath = pathname.match(/^\/(?:@|api\/org\/)([a-z0-9-]{3,30})\/?$/);
       if (orgPath && read) return await orgPage(req, res, orgPath[1], url.searchParams.has('preview'));

@@ -457,6 +457,9 @@ CREATE INDEX IF NOT EXISTS group_games_group ON group_games(group_id, ended_at);
 ALTER TABLE session_players ADD COLUMN IF NOT EXISTS eta TEXT;
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES orgs(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS groups_org ON groups(org_id);
+-- v27: guest players a group admin adds by name; they can't sign in until
+-- someone claims the spot (their games and rating move to that account).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS guest BOOLEAN NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS dupr_submissions (
   match_id    INTEGER PRIMARY KEY,
   status      TEXT NOT NULL DEFAULT 'queued',  -- queued | sent | failed
@@ -469,7 +472,7 @@ CREATE TABLE IF NOT EXISTS dupr_submissions (
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 26;
+const SCHEMA_VERSION = 27;
 
 async function migrate(db) {
   try {

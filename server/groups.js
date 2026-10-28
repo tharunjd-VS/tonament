@@ -243,6 +243,7 @@ function createGroups({ db, fail, text, orgs }) {
       if (!m) fail(404, 'Member not found');
       if (action === 'approve') await q(`UPDATE group_members SET status = 'active', joined_at = now() WHERE group_id = $1 AND user_id = $2`, [g.id, uid]);
       else if (action === 'admin' || action === 'member') {
+        if (action === 'admin' && (await q('SELECT 1 FROM users WHERE id = $1 AND guest', [uid])).length) fail(409, 'They need to claim their spot before they can be an admin');
         if (action === 'member' && m.role === 'admin') {
           const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM group_members WHERE group_id = $1 AND role = 'admin' AND status = 'active'`, [g.id]);
           if (n <= 1) fail(409, 'A group needs at least one admin');
@@ -254,6 +255,8 @@ function createGroups({ db, fail, text, orgs }) {
           if (n <= 1) fail(409, 'A group needs at least one admin');
         }
         await q('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [g.id, uid]);
+        // A guest nobody claimed: gone for good unless they're in a game.
+        await q(`DELETE FROM users u WHERE u.id = $1 AND u.guest AND NOT EXISTS (SELECT 1 FROM group_games x WHERE $1 IN (x.a1, x.a2, x.b1, x.b2))`, [uid]);
       } else fail(400, 'Unknown action');
     });
     return view(slug, actor);
@@ -272,6 +275,82 @@ function createGroups({ db, fail, text, orgs }) {
       await q('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [g.id, user.id]);
       return { left: true };
     });
+  }
+
+  // ---------- guests ("claim your spot")
+
+  // Admins paste the names from their WhatsApp group; each becomes a guest
+  // player who can be checked in, put on courts and ranked straight away.
+  // A guest is a users row that can't sign in (no email of its own) until
+  // someone claims the spot (see claim).
+  const MAX_GUESTS = 200;
+  // "1. Rahul", "- Priya", "~ Arjun K", "+91 98400 12345" (numbers are dropped).
+  function namesFrom(input) {
+    const lines = Array.isArray(input) ? input : String(input || '').split(/[\n,;]+/);
+    const out = [];
+    for (const raw of lines) {
+      const name = String(raw).replace(/^\s*(?:\d+[.)]|[-*•~])\s*/, '').replace(/\+?\d[\d\s-]{6,}\d/g, '').replace(/\s+/g, ' ').trim();
+      if (!name || !/\p{L}/u.test(name)) continue;
+      if (name.length > 60) fail(400, `"${name.slice(0, 20)}…" is too long for a name (up to 60 characters)`);
+      if (!out.some((n) => n.toLowerCase() === name.toLowerCase())) out.push(name);
+    }
+    return out;
+  }
+  async function addGuests(slug, actor, input = {}) {
+    const names = namesFrom(input.names);
+    if (!names.length) fail(400, 'Add at least one name');
+    const added = await db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true, actor });
+      await needAdmin(q, g, actor);
+      const existing = await q(`SELECT lower(u.name) AS name FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = $1`, [g.id]);
+      const taken = new Set(existing.map((r) => r.name));
+      const fresh = names.filter((n) => !taken.has(n.toLowerCase()));
+      const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = $1 AND u.guest`, [g.id]);
+      if (n + fresh.length > MAX_GUESTS) fail(400, `Up to ${MAX_GUESTS} unclaimed players in a group`);
+      for (const name of fresh) {
+        const [u] = await q(
+          `INSERT INTO users (email, name, password_hash, guest, disabled_at) VALUES ($1, $2, 'guest', true, now()) RETURNING id`,
+          [`guest-${crypto.randomBytes(9).toString('hex')}@guest.invalid`, name],
+        );
+        await q('INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)', [g.id, u.id]);
+      }
+      return fresh.length;
+    });
+    return { added, skipped: names.length - added, group: await view(slug, actor) };
+  }
+
+  // "That's me": a signed-in player takes over a guest's spot — their games,
+  // rating and RSVPs. Anyone who could join (the invite link, an open group,
+  // or already a member) can claim; the admins see who did.
+  async function claim(slug, actor, guestId, { token } = {}) {
+    const user = needUser(actor);
+    await db.tx(async (q) => {
+      const g = await load(q, slug, { lock: true, actor });
+      const m = await memberOf(q, g, actor);
+      const allowed = (m && m.status === 'active') || g.settings.open || (typeof token === 'string' && token.length > 0 && token === g.invite_token);
+      if (!allowed) fail(403, 'Use the invite link from the group to claim your spot');
+      const gid = Number(guestId) || 0;
+      const [guest] = await q(
+        `SELECT m.* FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = $1 AND m.user_id = $2 AND u.guest`, [g.id, gid]);
+      if (!guest) fail(404, 'That spot has already been claimed');
+      if (m && m.games > 0) fail(409, 'You already have games in this group — ask an admin to sort it out');
+      // My own (empty) membership gives way to the guest's, keeping admin if I was one.
+      if (m) await q('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [g.id, user.id]);
+      await q(`UPDATE group_members SET user_id = $3, status = 'active', role = $4 WHERE group_id = $1 AND user_id = $2`,
+        [g.id, gid, user.id, m && m.role === 'admin' ? 'admin' : guest.role]);
+      // RSVPs: where I'd already said something for a session, mine stands.
+      await q(`DELETE FROM session_players p WHERE p.user_id = $1 AND EXISTS (SELECT 1 FROM session_players x WHERE x.session_id = p.session_id AND x.user_id = $2)`, [gid, user.id]);
+      await q('UPDATE session_players SET user_id = $2 WHERE user_id = $1', [gid, user.id]);
+      for (const col of ['a1', 'a2', 'b1', 'b2', 'confirmed_by']) await q(`UPDATE group_games SET ${col} = $2 WHERE group_id = $3 AND ${col} = $1`, [gid, user.id, g.id]);
+      // Rating changes are kept by user id.
+      const rated = await q(`SELECT id, deltas FROM group_games WHERE group_id = $1 AND deltas ? $2`, [g.id, String(gid)]);
+      for (const x of rated) {
+        const { [gid]: d, ...rest } = x.deltas;
+        await q('UPDATE group_games SET deltas = $1::jsonb WHERE id = $2', [JSON.stringify({ ...rest, [user.id]: d }), x.id]);
+      }
+      await q('DELETE FROM users WHERE id = $1 AND guest', [gid]);
+    });
+    return view(slug, actor);
   }
 
   // ---------- sessions
@@ -701,7 +780,7 @@ function createGroups({ db, fail, text, orgs }) {
       .sort((a, b) => Number(b.games > 0) - Number(a.games > 0) || b.rating - a.rating || a.name.localeCompare(b.name));
     let rank = 0;
     return rows.map((r) => ({
-      id: r.id, name: r.name, handle: r.handle, rating: r.rating, games: r.games, wins: r.wins, role: r.role,
+      id: r.id, name: r.name, handle: r.handle, rating: r.rating, games: r.games, wins: r.wins, role: r.role, guest: Boolean(r.guest),
       rank: r.games ? ++rank : null,
       provisional: r.games < L.PROVISIONAL,
       winPct: r.games ? Math.round((r.wins / r.games) * 100) : null,
@@ -773,9 +852,18 @@ function createGroups({ db, fail, text, orgs }) {
 
   // For link previews (WhatsApp): what anyone with the link can see, plus,
   // for a shared session, how many are going. Read-only; null if no group.
-  async function shareInfo(slug, sessionId) {
+  // claim + join: a personal "claim your spot" link (the guest's name and
+  // standing, only with the right invite token).
+  async function shareInfo(slug, sessionId, { claim: guestId = null, join = null } = {}) {
     const g = await db.tx((q) => load(q, slug).catch(() => null));
     if (!g) return null;
+    let guest = null;
+    if (guestId && typeof join === 'string' && join === g.invite_token) {
+      const rows = await db.query(`SELECT m.user_id AS id, m.role, m.status, m.rating, m.games, m.wins, u.name, u.guest
+         FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = $1 AND m.status = 'active'`, [g.id]);
+      const r = leaderboardOf(rows, []).find((x) => x.guest && x.id === Number(guestId));
+      if (r) guest = { name: r.name, rank: r.rank, games: r.games, wins: r.wins };
+    }
     let session = null;
     if (sessionId) {
       const [s] = await db.query(
@@ -792,12 +880,15 @@ function createGroups({ db, fail, text, orgs }) {
       host: g.host ? { name: g.host.name } : null,
       settings: { ...g.settings, endTime: endTimeOf(g.settings) },
       session,
+      guest,
     };
   }
 
   // The whole group page: details for anyone with the link; sessions, games,
   // members and the leaderboard for members. About 7 round trips.
-  async function view(slug, actor, { skip = 0 } = {}) {
+  // join: the invite token from the link, which also shows the spots waiting
+  // to be claimed to someone who isn't in yet.
+  async function view(slug, actor, { skip = 0, join = null } = {}) {
     return db.tx(async (q) => {
       const g = await load(q, slug, { actor });
       const m = g.member;
@@ -815,8 +906,15 @@ function createGroups({ db, fail, text, orgs }) {
         member,
       };
       if (!member) {
-        const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM group_members WHERE group_id = $1 AND status = 'active'`, [g.id]);
-        return { ...base, members: n };
+        const rows = await q(`SELECT m.user_id AS id, m.role, m.status, m.rating, m.games, m.wins, u.name, u.guest
+           FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = $1 AND m.status = 'active'`, [g.id]);
+        const invited = Boolean(g.settings.open) || (typeof join === 'string' && join.length > 0 && join === g.invite_token);
+        return {
+          ...base,
+          members: rows.length,
+          // Unclaimed spots, with how they're doing ("#4 · 6 wins") — only with the invite.
+          guests: invited ? leaderboardOf(rows, []).filter((r) => r.guest).map((r) => ({ id: r.id, name: r.name, rank: r.rank, games: r.games, wins: r.wins })) : [],
+        };
       }
       await autoConfirm(q, g);
       const sessions = await sessionsOf(q, g);
@@ -824,7 +922,7 @@ function createGroups({ db, fail, text, orgs }) {
       const [players, games, members, week] = await Promise.all([
         q('SELECT sp.*, u.name, u.handle FROM session_players sp JOIN users u ON u.id = sp.user_id WHERE sp.session_id = ANY($1::int[])', [ids]),
         q(`SELECT * FROM group_games WHERE session_id = ANY($1::int[]) AND status <> 'void' ORDER BY started_at DESC`, [ids]),
-        q(`SELECT m.user_id AS id, m.role, m.status, m.rating, m.games, m.wins, m.joined_at, u.name, u.handle, u.email
+        q(`SELECT m.user_id AS id, m.role, m.status, m.rating, m.games, m.wins, m.joined_at, u.name, u.handle, u.email, u.guest
            FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = $1`, [g.id]),
         q(`SELECT a1, a2, b1, b2, winner FROM group_games WHERE group_id = $1 AND status = 'confirmed' AND ended_at > now() - interval '7 days'`, [g.id]),
       ]);
@@ -859,7 +957,7 @@ function createGroups({ db, fail, text, orgs }) {
   }
 
   return {
-    slugOf, createGroup, updateGroup, myGroups, join, setMember, leave, view, rsvp, checkIn, hostOptions, attendance, forOrgPage, shareInfo,
+    slugOf, createGroup, updateGroup, myGroups, join, setMember, leave, addGuests, claim, namesFrom, view, rsvp, checkIn, hostOptions, attendance, forOrgPage, shareInfo,
     startGame, getGame, rally, undo, setResult, addResult, confirm, dispute, voidGame,
   };
 }

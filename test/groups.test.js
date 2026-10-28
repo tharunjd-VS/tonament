@@ -573,3 +573,72 @@ test('a group keeps its own time zone (sessions start at local time there)', asy
   const { slug: s2 } = await svc.groups.createGroup(a, { name: 'Default Zone', sport: 'badminton' });
   assert.equal((await svc.groups.view(s2, a)).settings.timeZone, 'Asia/Kolkata');
 });
+
+test('claim your spot: guests added by name play and rank, then claim it with their games and rating', async () => {
+  const admin = await user('Claim Admin');
+  const { slug } = await svc.groups.createGroup(admin, { name: 'Night Owls', sport: 'badminton', courts: 2, singles: true, ...nowSchedule() });
+  let g = await svc.groups.view(slug, admin);
+  // Pasted from WhatsApp: numbering, bullets and phone numbers go; repeats and existing members are skipped.
+  assert.deepEqual(svc.groups.namesFrom('1. Rahul Menon\n- Priya S\n~ Arjun K +91 98400 12345\n\n+91 99999 88888\nrahul menon'), ['Rahul Menon', 'Priya S', 'Arjun K']);
+  const member = await user('Joined Already');
+  await svc.groups.join(slug, member, { token: g.invite });
+  await assert.rejects(svc.groups.addGuests(slug, member, { names: 'X' }), /admins/);
+  await assert.rejects(svc.groups.addGuests(slug, admin, { names: '\n 123 \n' }), /at least one name/);
+  const r = await svc.groups.addGuests(slug, admin, { names: '1. Rahul Menon\n2. Priya S\n3. Arjun K\nJoined Already' });
+  assert.deepEqual([r.added, r.skipped], [3, 1]);
+  g = r.group;
+  const guest = (name) => g.leaderboard.find((x) => x.name === name);
+  assert.ok(guest('Rahul Menon').guest && !guest('Joined Already').guest);
+  assert.equal(g.members, 5);
+  // Guests can't sign in, and don't show in the site admin's user list.
+  const [row] = await db.query('SELECT email FROM users WHERE id = $1', [guest('Rahul Menon').id]);
+  const auth = require('../server/auth').createAuth(db, {});
+  await assert.rejects(auth.login({ headers: {} }, { email: row.email, password: 'guest' }), /disabled|incorrect/);
+  assert.ok(!(await auth.listUsers({ user: { ...admin.user, isAdmin: true } }, { q: 'Rahul' })).users.length);
+  await assert.rejects(svc.groups.setMember(slug, admin, guest('Priya S').id, 'admin'), /claim their spot/);
+  // The admin checks guests in; they play, and the result moves their rating.
+  const rahul = guest('Rahul Menon').id;
+  const priya = guest('Priya S').id;
+  for (const id of [rahul, priya]) await svc.groups.checkIn(slug, admin, g.session.id, true, id);
+  const { id: gid } = await svc.groups.startGame(slug, admin, g.session.id, { court: 1, a: [rahul], b: [priya] });
+  await svc.groups.setResult(slug, admin, gid, { a: 21, b: 15 });
+  await svc.groups.confirm(slug, admin, gid);
+  g = await svc.groups.view(slug, admin);
+  assert.equal(guest('Rahul Menon').rank, 1);
+  // Someone with the invite link sees the spots waiting (and how they're doing); without it, nothing.
+  const newbie = await user('Rahul M');
+  let outside = await svc.groups.view(slug, newbie, { join: g.invite });
+  assert.deepEqual(outside.guests.map((x) => [x.name, x.rank, x.wins]), [['Rahul Menon', 1, 1], ['Priya S', 2, 0], ['Arjun K', null, 0]]);
+  assert.deepEqual((await svc.groups.view(slug, newbie)).guests, []);
+  // The claim link's preview names them and their standing (only with the right token).
+  const head = async (url) => { const html = await (await fetch(url)).text(); return html.slice(0, html.indexOf('</head>')); };
+  assert.match(await head(`${base}/g/${slug}?join=${g.invite}&claim=${rahul}`), /og:title" content="Rahul Menon, your spot in Night Owls is waiting".*#1 on the leaderboard · 1 win in 1 game/s);
+  assert.doesNotMatch(await head(`${base}/g/${slug}?join=wrong&claim=${rahul}`), /Rahul/);
+  // Claiming: needs the invite (or membership), and takes over the games, rating and RSVPs.
+  const stranger = await user('Stranger');
+  await assert.rejects(svc.groups.claim(slug, stranger, rahul, { token: 'wrong' }), /invite link/);
+  const before = guest('Rahul Menon');
+  g = await svc.groups.claim(slug, newbie, rahul, { token: g.invite });
+  const me = g.leaderboard.find((x) => x.id === newbie.user.id);
+  assert.deepEqual([me.name, me.rating, me.games, me.wins, me.guest, me.rank], ['Rahul M', before.rating, 1, 1, false, 1]);
+  assert.ok(!g.leaderboard.some((x) => x.id === rahul));
+  const x = await svc.groups.getGame(slug, newbie, gid);
+  assert.equal(x.a[0].id, newbie.user.id);
+  assert.ok(x.deltas[newbie.user.id] > 0 && !(rahul in x.deltas));
+  assert.equal(g.session.players.find((p) => p.id === newbie.user.id).checkedIn, true);
+  assert.equal((await db.query('SELECT 1 FROM users WHERE id = $1', [rahul])).length, 0);
+  // A member with games of their own can't take a second spot.
+  await assert.rejects(svc.groups.claim(slug, newbie, priya, {}), /already have games/);
+  // Voiding the game afterwards undoes it for the account that claimed it.
+  await svc.groups.voidGame(slug, admin, gid);
+  g = await svc.groups.view(slug, admin);
+  assert.deepEqual([g.leaderboard.find((y) => y.id === newbie.user.id).rating, guest('Priya S').rating], [1000, 1000]);
+  await assert.rejects(svc.groups.claim(slug, stranger, rahul, { token: g.invite }), /already been claimed/);
+  // A member who hasn't played yet can.
+  g = await svc.groups.claim(slug, member, priya, {});
+  assert.equal(g.leaderboard.filter((y) => y.guest).length, 1);
+  // Removing an unclaimed guest who never played deletes them.
+  const arjun = guest('Arjun K').id;
+  await svc.groups.setMember(slug, admin, arjun, 'remove');
+  assert.equal((await db.query('SELECT 1 FROM users WHERE id = $1', [arjun])).length, 0);
+});

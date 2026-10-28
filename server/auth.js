@@ -322,7 +322,7 @@ function createAuth(db, { mailer } = {}) {
              (SELECT COUNT(*)::int FROM entries e WHERE e.user_id = u.id) AS entries,
              COUNT(*) OVER ()::int AS total
       FROM users u
-      WHERE ($1 = '' OR u.email ILIKE $2 OR u.name ILIKE $2)
+      WHERE NOT u.guest AND ($1 = '' OR u.email ILIKE $2 OR u.name ILIKE $2)
       ORDER BY u.created_at DESC, u.id DESC LIMIT 50 OFFSET $3`,
     [term, `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`, Math.max(0, Number(offset) || 0)]);
     return { users: rows.map(({ total, ...r }) => adminRow(r)), total: rows[0]?.total ?? 0 };

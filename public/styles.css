@@ -1168,6 +1168,14 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .rsvp-names { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
 .name-chip { padding: 3px 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); font-size: 0.88rem; }
 .name-chip.here { border-color: var(--accent); }
+.claim-card { border-color: var(--accent); }
+.claim-card h2 { margin: 4px 0 2px; font-size: 1.6rem; }
+.claim-standing { display: inline-block; margin: 4px 0 10px; padding: 4px 12px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 0.92rem; }
+.find-name h2 { margin: 0 0 4px; }
+.name-picks { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
+.name-pick { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 6px 14px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); font: inherit; font-size: 0.95rem; cursor: pointer; }
+.name-pick:hover, .name-pick:focus-visible { border-color: var(--accent); }
+.name-pick-rank { color: var(--accent-text); font-weight: 700; font-size: 0.85rem; }
 .name-chip small { color: var(--muted); }
 .eta-field { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; font-weight: 600; }
 .eta-field select { width: auto; flex: 0 1 auto; }
