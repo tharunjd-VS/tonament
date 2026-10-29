@@ -468,7 +468,7 @@
         ? { name: 'match', id, mid: Number(parts[3]) }
         : parts[2] === 'display'
           ? { name: 'display', id }
-          : { name: 'tournament', id, tab: parts[2] || null, eventId: Number(params.get('e')) || null };
+          : { name: 'tournament', id, tab: parts[2] || null, eventId: Number(params.get('e')) || null, section: params.get('s') || null };
       if (S.route.tab === 'team') S.members = null; // reload: invitees may have signed up since
       if (!S.t || S.t.id !== id || key) {
         S.t = null;
@@ -1804,7 +1804,8 @@
     const tabs = tabsFor(t);
     if (t.courts) tabs.push({ id: 'courts', label: CAT.courtWords(t.sport.id) });
     if (hasPage(t)) tabs.push({ id: 'about', label: 'About' });
-    if (t.can.manage) tabs.push({ id: 'events', label: 'Events' }, { id: 'team', label: 'Team' });
+    // Every setting lives on one Setup tab (events, format, details & fees, prizes, page, team).
+    if (t.can.manage) tabs.push({ id: 'setup', label: 'Setup' });
     return tabs;
   }
 
@@ -1814,7 +1815,7 @@
     return h('nav', { class: 'event-picker', 'aria-label': 'Events' },
       t.events.map((ev) => h('a', {
         class: `event-chip${ev.id === current.id ? ' active' : ''}`,
-        href: `/t/${t.id}/${S.route.tab && !['events', 'team', 'courts', 'about'].includes(S.route.tab) ? S.route.tab : 'entries'}?e=${ev.id}`,
+        href: `/t/${t.id}/${S.route.tab && !['events', 'team', 'courts', 'about'].includes(S.route.tab) ? S.route.tab : 'entries'}?e=${ev.id}${S.route.tab === 'setup' && S.route.section ? `&s=${S.route.section}` : ''}`,
         'aria-current': ev.id === current.id ? 'true' : null,
       },
       h('span', { class: `dot ${ev.status}`, 'aria-hidden': 'true' }),
@@ -1828,9 +1829,11 @@
     const t = withEvent(tt, ev);
     document.title = `${tt.name} · Tonament`;
     const tabs = tabsWithTeam(t);
+    // Old addresses (/team, /events) open the matching part of Setup.
+    if ((S.route.tab === 'team' || S.route.tab === 'events') && t.can.manage) { S.route.section = S.route.tab; S.route.tab = 'setup'; }
     const active = tabs.some((x) => x.id === S.route.tab) ? S.route.tab : tabs[0].id;
-    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, team: panelTeam, events: panelEvents, about: panelAbout, courts: () => panelCourts(tt) };
-    const perEvent = !['team', 'events', 'about', 'courts'].includes(active);
+    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, setup: panelSetup, about: panelAbout, courts: () => panelCourts(tt) };
+    const perEvent = active === 'setup' ? SETUP_PER_EVENT.includes(setupSection(t)) : !['about', 'courts'].includes(active);
     const statusLine = multiEvent(tt) ? (tt.entriesOpen ? 'Entries open' : null) : entryStatusLine(t);
     const b = tt.branding;
     return [
@@ -1876,9 +1879,16 @@
     try { return localStorage.getItem(checklistKey(t)) !== '1'; } catch { return true; }
   }
 
-  // Opens a settings panel on this tab and scrolls to it (or to one of its sections).
+  // Opens a settings panel (on the Setup tab) and scrolls to it (or to one of its sections).
+  const PANEL_SECTION = { settings: 'details', 'add-events': 'events', page: 'page' };
   function openPanel(t, name, section) {
     S.openPanels.add(`${t.id}:${name}`);
+    const where = PANEL_SECTION[name];
+    if (where && (S.route.tab !== 'setup' || setupSection(t) !== where)) {
+      navigate(`/t/${t.id}/setup?s=${where}${multiEvent(t) && t.eventId ? `&e=${t.eventId}` : ''}`);
+      setTimeout(() => openPanel(t, name, section), 50);
+      return;
+    }
     render();
     const box = document.querySelector(`[data-panel="${name}"]`);
     if (!box) return;
@@ -1918,11 +1928,12 @@
     };
     return h('div', { class: 'card checklist' },
       h('div', { class: 'card-head' },
-        h('h2', {}, done === required.length ? 'Ready to go ✓' : 'Get your tournament ready'),
+        h('h2', {}, done === required.length ? 'Ready to go ✓' : S.checklistAll ? 'Get your tournament ready' : 'Next step'),
         h('button', { class: 'btn btn-small btn-ghost', onclick: hide }, 'Hide')),
       h('p', { class: 'muted small checklist-count' }, `${done} of ${required.length} done`,
         h('span', { class: 'progress' }, h('span', { style: `width:${(done / required.length) * 100}%` }))),
-      h('ul', {}, items.map((x) => h('li', { class: `check-row${x.done ? ' done' : ''}${x.optional ? ' optional' : ''}` },
+      // Just the next thing to do (the rest on request), so the players stay in view.
+      h('ul', {}, (S.checklistAll ? items : [items.find((x) => !x.done && !x.optional) || items.find((x) => !x.done)].filter(Boolean)).map((x) => h('li', { class: `check-row${x.done ? ' done' : ''}${x.optional ? ' optional' : ''}` },
         h('span', { class: 'tick', 'aria-label': x.done ? 'Done' : 'To do' }, x.done ? '✓' : ''),
         h('div', { class: 'check-text' },
           h('strong', {}, x.label, x.optional ? h('small', {}, ' (optional)') : null),
@@ -1931,7 +1942,9 @@
           ? h('span', { class: 'actions' },
             h('button', { class: 'btn btn-small btn-primary', onclick: () => setVisibility(t, 'public') }, 'Publish'),
             h('button', { class: 'btn btn-small btn-ghost', onclick: () => setVisibility(t, 'link') }, 'Link only'))
-          : x.action ? h('button', { class: `btn btn-small${x.done ? ' btn-ghost' : ''}`, onclick: x.action[1] }, x.action[0]) : null))));
+          : x.action ? h('button', { class: `btn btn-small${x.done ? ' btn-ghost' : ''}`, onclick: x.action[1] }, x.action[0]) : null))),
+      h('button', { class: 'link-btn small checklist-more', type: 'button', onclick: () => { S.checklistAll = !S.checklistAll; render(); } },
+        S.checklistAll ? 'Show just the next step' : `See all ${items.length} steps`));
   }
 
   // ---------- level pools (an Open event split by level)
@@ -2132,8 +2145,9 @@
         list,
       ];
     }
-    if (!setup) return [paymentsToCheck(t), upgradeCard(t), teamEditCard(t), levelPoolsCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), eventDetailsCard(t), list, rankedCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
-    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), levelPoolsCard(t), addEntriesForm(t, usingCheckIn), soloCard(t), teamEditCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
+    // Organisers: just the players and what to do with them. Settings are on the Setup tab.
+    if (!setup) return [paymentsToCheck(t), upgradeCard(t), teamEditCard(t), running ? lateEntryCard(t) : null, list, setupLink(t)];
+    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), addEntriesForm(t, usingCheckIn), soloCard(t), teamEditCard(t), list, startCard(t), setupLink(t)];
   }
 
   function addEntriesForm(t, walkIn) {
@@ -2893,7 +2907,7 @@
         ? 'Players pay online when they enter (Organised by Tonament).'
         : t.payment && t.payment.upi
           ? `Players pay you directly (UPI ${t.payment.upi}) and you confirm each payment.`
-          : 'Players pay you directly and you confirm each payment. Add your UPI ID under Tournament settings → Entry fees.'),
+          : 'Players pay you directly and you confirm each payment. Add your UPI ID under Setup › Dates, venue & fees.'),
       t.event.discipline === 'team' && !t.official
         ? groupField('Charge', choiceGroup({ name: 'feePer', label: 'Charge', value: t.config.feePer || 'entry', options: [{ value: 'entry', label: 'Per team' }, { value: 'player', label: 'Per player' }] }), null,
           'Per player: each team pays the fee for every player on its list. Either way, you can mark who has paid, player by player.')
@@ -2975,6 +2989,52 @@
   }
 
   // ----- events tab (organisers): add, reorder, delete
+  // ----- Setup tab: every setting in one place, one section at a time.
+  const SETUP_SECTIONS = [
+    ['format', 'Format & scoring'],
+    ['details', 'Dates, venue & fees'],
+    ['prizes', 'Prizes'],
+    ['events', 'Events'],
+    ['page', 'Public page'],
+    ['team', 'Team & links'],
+  ];
+  const SETUP_PER_EVENT = ['format', 'prizes'];
+  const setupSection = (t) => (SETUP_SECTIONS.some(([k]) => k === S.route.section) ? S.route.section : 'format');
+  function panelSetup(t) {
+    const section = setupSection(t);
+    const href = (k) => `/t/${t.id}/setup?s=${k}${multiEvent(t) && t.eventId && SETUP_PER_EVENT.includes(k) ? `&e=${t.eventId}` : ''}`;
+    // The section's panels open straight away (no extra tap on a collapsed card).
+    const open = (...names) => names.forEach((n) => S.openPanels.add(`${t.id}:${n}`));
+    let body;
+    if (section === 'format') {
+      open(`event-${t.eventId}`);
+      body = [t.status === 'setup' ? eventSettingsCard(t) : eventDetailsCard(t), levelPoolsCard(t), rankedCard(t)];
+    } else if (section === 'details') {
+      open('settings');
+      body = [tournamentSettingsCard(t)];
+    } else if (section === 'prizes') {
+      open(`prizes-${t.eventId}`);
+      body = [prizeSettingsCard(t)];
+    } else if (section === 'events') {
+      body = panelEvents(t);
+    } else if (section === 'page') {
+      open('page');
+      body = [pageCard(t)];
+    } else {
+      body = panelTeam(t);
+    }
+    return [
+      h('nav', { class: 'setup-nav', 'aria-label': 'Setup' }, SETUP_SECTIONS.map(([k, label]) => h('a', {
+        href: href(k), class: k === section ? 'active' : '', 'aria-current': k === section ? 'page' : null,
+      }, label))),
+      body,
+    ];
+  }
+  // At the foot of the Players tab: where the settings went.
+  function setupLink(t) {
+    return h('p', { class: 'muted small center setup-link' }, 'Format, fees, prizes, venue and team are on the ', h('a', { href: `/t/${t.id}/setup${multiEvent(t) && t.eventId ? `?e=${t.eventId}` : ''}` }, 'Setup tab'), '.');
+  }
+
   function panelEvents(t) {
     const move = (i, dir) => {
       const ids = t.events.map((e) => e.id);
@@ -4486,7 +4546,6 @@
     return [
       visibilityCard(t),
       orgLinkCard(t),
-      pageCard(t),
       h('div', { class: 'card' },
         h('h2', {}, 'Team'),
         h('p', { class: 'muted small' }, 'Add people by email. If they don\'t have an account yet, they get access as soon as they sign up with that email.',

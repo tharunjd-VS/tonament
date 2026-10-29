@@ -1430,3 +1430,11 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .details-list dt { color: var(--muted); font-size: 0.9rem; }
 .details-list dd { margin: 0; font-weight: 600; }
 @media (max-width: 420px) { .details-list { grid-template-columns: 1fr; gap: 0; } .details-list dd { margin-bottom: 8px; } }
+
+/* Setup tab: one section at a time */
+.setup-nav { display: flex; gap: 6px; overflow-x: auto; margin: 0 0 14px; padding-bottom: 4px; scrollbar-width: none; }
+.setup-nav::-webkit-scrollbar { display: none; }
+.setup-nav a { flex: none; border: 1px solid var(--border); border-radius: 999px; padding: 6px 14px; font-size: 0.88rem; font-weight: 600; color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+.setup-nav a.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.setup-link { margin: 18px 0 4px; }
+.checklist-more { margin-top: 6px; }
