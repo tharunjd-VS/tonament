@@ -839,7 +839,30 @@
     const join = (path) => (S.me ? path : `/signup?next=${encodeURIComponent(path)}`);
     const shot = (src, alt, cls = 'phone') => h('div', { class: `hero-visual ${cls}` }, h('img', { src, alt, loading: 'lazy', width: cls === 'tv' ? 640 : 390 }));
     const sportCount = liveSports().length || 13;
+    // A paper fixture sheet, the way organisers run it today, with the app on top.
+    const paperApp = () => h('div', { class: 'hero-visual paper-app' },
+      h('div', { class: 'paper-sheet', role: 'img', 'aria-label': 'A handwritten fixture sheet: pairs by level, a late pair, a walkover and the semi-final pairings' },
+        h('p', { class: 'ink' }, 'OPEN — Men\'s Doubles ₹600'),
+        h('p', { class: 'ink' }, 'BEG: Arun/Bala ✓ Charan ✓'),
+        h('p', { class: 'ink' }, 'INT: Mohan ✓ ', h('s', {}, 'Om/Prakash'), h('span', { class: 'ink-red' }, ' → Ravi')),
+        h('p', { class: 'ink-red' }, 'Arun/Bala not here?? 10:40'),
+        h('p', { class: 'ink-red' }, 'Om v Sanjay — W/O ?'),
+        h('p', { class: 'ink' }, '₹ paid: 9 of 13'),
+        h('p', { class: 'ink circled' }, 'SF: BEG v INT')),
+      h('div', { class: 'paper-phone' }, h('img', { src: '/guide/pools-dark.jpg', alt: 'The same draw in Tonament: groups by level with live standings', loading: 'lazy', width: 390 })));
     const slides = [
+      {
+        label: 'Your way',
+        eyebrow: ['Run it your way', h('b', {}, 'Without the paperwork')],
+        title: [['Flexible as paper.', h('br')], 'Easy as an app.'],
+        lead: 'Split by level, squeeze in a late pair, give a walkover, swap who meets who — just like on paper. Tonament keeps the groups, bracket and order of play up to date, and everyone follows the scores live.',
+        chips: ['Your format', 'Change anything on the day', 'Live for everyone'],
+        actions: [
+          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'),
+        ],
+        visual: paperApp(),
+      },
       {
         label: 'Tournaments',
         eyebrow: ['One platform.', 'Every sport.', h('b', {}, 'Every tournament.')],

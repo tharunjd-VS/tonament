@@ -14,6 +14,12 @@
 :root {
   /* brand constants (same in both themes) */
   --navy: #0B1220;
+  /* The paper fixture sheet in the home hero (the same in both themes). */
+  --paper: #F3EEE1;
+  --paper-rule: #C9D6E8;
+  --paper-margin: #E7A3A3;
+  --ink: #1E3A8A;
+  --ink-red: #B91C1C;
   --lime: #A3E635;
   --slate: #475569;
   --mist: #E5E7EB;
@@ -232,7 +238,7 @@ legend { font-weight: 700; padding: 0 6px; }
 }
 .hero-slide.active { opacity: 1; visibility: visible; transform: none; transition: opacity 0.5s ease, transform 0.5s ease; }
 .hero-text { max-width: 34rem; min-width: 0; }
-.hero .hero-title { font-size: clamp(2rem, 6.5vw, 3.2rem); line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 14px; color: #fff; }
+.hero .hero-title { text-wrap: balance; font-size: clamp(2rem, 6.5vw, 3.2rem); line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 14px; color: #fff; }
 .hero .hero-title .accent { color: var(--lime); }
 .hero-text .actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
 .hero-visual { flex: none; justify-self: end; }
@@ -240,16 +246,31 @@ legend { font-weight: 700; padding: 0 6px; }
 .hero-visual.phone { width: 230px; max-height: 420px; overflow: hidden; border: 7px solid #000; border-radius: 34px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); outline: 1px solid #2A3550; }
 .hero-visual.card { width: 300px; overflow: hidden; border-radius: 18px; border: 1px solid #2A3550; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
 .hero-visual.tv { width: min(440px, 40vw); overflow: hidden; border: 7px solid #000; border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); outline: 1px solid #2A3550; }
+.hero-visual.paper-app { position: relative; width: 390px; height: 380px; }
+.paper-sheet {
+  position: absolute; left: 0; top: 14px; width: 270px; padding: 20px 14px 18px 34px; border-radius: 8px; transform: rotate(-4deg);
+  background: repeating-linear-gradient(transparent 0 27px, var(--paper-rule) 27px 28px) 0 14px / 100% auto, var(--paper);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.paper-sheet::after { content: ''; position: absolute; top: 0; bottom: 0; left: 24px; width: 2px; background: var(--paper-margin); opacity: 0.7; }
+.paper-sheet p { margin: 0; font-size: 0.8rem; line-height: 28px; font-style: italic; font-weight: 500; white-space: nowrap; }
+.paper-sheet .ink { color: var(--ink); }
+.paper-sheet .ink-red { color: var(--ink-red); }
+.paper-sheet s { text-decoration-color: var(--ink-red); text-decoration-thickness: 2px; }
+.paper-sheet p:first-child { font-size: 0.95rem; font-weight: 600; margin-bottom: 4px; }
+.paper-sheet .circled { display: inline-block; margin-top: 6px; padding: 0 12px; border: 2px solid var(--ink); border-radius: 50%; transform: rotate(-1.5deg); }
+.paper-phone { position: absolute; right: 0; bottom: 0; width: 150px; height: 260px; transform: rotate(3deg); overflow: hidden; border: 6px solid #000; border-radius: 28px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55); outline: 1px solid #2A3550; }
+.paper-phone img { display: block; width: 100%; height: auto; }
 .hero-visual.sports { display: grid; grid-template-columns: repeat(6, 64px); gap: 6px; }
 .hero-visual.sports a { display: grid; justify-items: center; gap: 5px; padding: 8px 2px; border-radius: 12px; background: var(--navy); border: 1px solid rgba(255, 255, 255, 0.12); color: #E5E7EB; text-decoration: none; font-size: 0.68rem; font-weight: 600; text-align: center; line-height: 1.2; }
 .hero-visual.sports a:hover { border-color: var(--lime); }
 .hero-visual.sports .icon { width: 24px; height: 24px; color: var(--lime); }
 .hero-nav { display: flex; align-items: center; gap: 10px; margin-top: 26px; }
 .hero-dots { display: flex; flex-wrap: wrap; gap: 6px; }
-.hero-dots button { font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer; border-radius: 999px; padding: 5px 12px; border: 1px solid rgba(255, 255, 255, 0.22); background: rgba(255, 255, 255, 0.04); color: #CBD5E1; transition: background 0.2s, color 0.2s; }
+.hero-dots button { font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer; border-radius: 999px; padding: 5px 12px; border: 1px solid rgba(255, 255, 255, 0.22); background: var(--navy); color: #CBD5E1; transition: background 0.2s, color 0.2s; }
 .hero-dots button:hover { border-color: #fff; color: #fff; }
 .hero-dots button[aria-current="true"] { background: var(--lime); border-color: var(--lime); color: var(--navy); }
-.hero-arrow { font: inherit; font-size: 1.4rem; line-height: 1; width: 36px; height: 36px; flex: none; border-radius: 50%; cursor: pointer; border: 1px solid rgba(255, 255, 255, 0.3); background: transparent; color: #fff; }
+.hero-arrow { font: inherit; font-size: 1.4rem; line-height: 1; width: 36px; height: 36px; flex: none; border-radius: 50%; cursor: pointer; border: 1px solid rgba(255, 255, 255, 0.3); background: var(--navy); color: #fff; }
 .hero-arrow:hover { border-color: #fff; }
 .hero-slider :focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 .hero-slider { touch-action: pan-y; }
