@@ -506,11 +506,98 @@ ALTER TABLE matches ADD COLUMN IF NOT EXISTS scorer_seen_at TIMESTAMPTZ;
 -- v33: the rules a match was played under ({ scoring, leagueDraws }), kept when
 -- the organiser changes the event's match length mid-event (null: the event's).
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS rules JSONB;
+-- v34: clubs and the social layer. Any page (orgs) is a club anyone can make
+-- for free: kinds club | team | academy | venue | company | school | coaching.
+-- club_members are its players (by account); org_members stay the page team.
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS invite_token TEXT;
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS open BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS created_by INTEGER;
+CREATE TABLE IF NOT EXISTS club_members (
+  org_id     INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role       TEXT NOT NULL DEFAULT 'player',     -- admin | captain | coach | player
+  status     TEXT NOT NULL DEFAULT 'active',     -- active | requested
+  joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (org_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS club_members_user ON club_members(user_id, status);
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS org_id INTEGER;
+-- Following people, clubs, tournaments and groups (target_id as text).
+CREATE TABLE IF NOT EXISTS follows (
+  follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,                     -- user | club | tournament | group
+  target_id   TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (follower_id, kind, target_id)
+);
+CREATE INDEX IF NOT EXISTS follows_target ON follows(kind, target_id);
+-- What happened: one row per feed item. people: everyone it's about (for
+-- "people I follow" and their profiles); dedupe: one row per fact.
+CREATE TABLE IF NOT EXISTS activity (
+  id          SERIAL PRIMARY KEY,
+  dedupe      TEXT UNIQUE,
+  actor_id    INTEGER,
+  people      INTEGER[] NOT NULL DEFAULT '{}',
+  org_id      INTEGER,
+  sport       TEXT,
+  verb        TEXT NOT NULL,                     -- finish | game | joined | club | …
+  object_kind TEXT,
+  object_id   TEXT,
+  data        JSONB NOT NULL DEFAULT '{}',
+  visibility  TEXT NOT NULL DEFAULT 'public',    -- public | followers | club
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS activity_created ON activity(created_at DESC);
+CREATE INDEX IF NOT EXISTS activity_org ON activity(org_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS activity_object ON activity(object_kind, object_id);
+CREATE TABLE IF NOT EXISTS reactions (
+  activity_id INTEGER NOT NULL REFERENCES activity(id) ON DELETE CASCADE,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (activity_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS comments (
+  id          SERIAL PRIMARY KEY,
+  activity_id INTEGER NOT NULL REFERENCES activity(id) ON DELETE CASCADE,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body        TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS comments_activity ON comments(activity_id, created_at);
+CREATE TABLE IF NOT EXISTS blocks (
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, blocked_id)
+);
+CREATE TABLE IF NOT EXISTS reports (
+  id          SERIAL PRIMARY KEY,
+  reporter_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  kind        TEXT NOT NULL,                     -- comment | activity | user | club
+  target_id   TEXT NOT NULL,
+  reason      TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_at TIMESTAMPTZ
+);
+-- Under 18: kept out of public feeds (birth year, optional, on the profile).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_year INTEGER;
+-- Every existing page's team are its first club admins.
+INSERT INTO club_members (org_id, user_id, role)
+  SELECT m.org_id, u.id, 'admin' FROM org_members m JOIN users u ON u.email = m.email
+  ON CONFLICT DO NOTHING;
+-- The feed starts with past podiums (winners and finalists).
+INSERT INTO activity (dedupe, actor_id, people, sport, verb, object_kind, object_id, data, visibility, created_at)
+  SELECT 'finish:' || r.event_id || ':' || u.id, u.id, ARRAY[u.id], r.sport, 'finish', 'event', r.event_id::text,
+    jsonb_build_object('finish', r.finish, 'tournamentId', t.id, 'tournament', t.name, 'event', e.name, 'entries', r.entries),
+    'public', r.finished_at
+  FROM event_results r JOIN users u ON u.email = r.email JOIN tournaments t ON t.id = r.tournament_id JOIN events e ON e.id = r.event_id
+  WHERE r.finish IN ('W', 'F') AND t.visibility = 'public' AND u.profile_public
+  ON CONFLICT (dedupe) DO NOTHING;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 33;
+const SCHEMA_VERSION = 34;
 
 async function migrate(db) {
   try {

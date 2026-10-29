@@ -348,9 +348,21 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
     const results = await resultsOf(u.email);
     const groups = await groupPlayOf(u.id);
     return {
-      ...profileFields(u), public: u.profile_public, own, results, records: summarise(results, groups), rankings: await positions(u),
+      ...profileFields(u), id: u.id, public: u.profile_public, own, results, records: summarise(results, groups), rankings: await positions(u),
       groupPlay: own ? groups : groupPlayPublic(groups),
+      clubs: await clubsOf(u.id),
     };
+  }
+
+  // "Plays for": the clubs a player belongs to.
+  async function clubsOf(userId) {
+    const { KIND_NAMES } = require('./orgs');
+    const rows = await db.query(
+      `SELECT o.slug, o.name, o.kind, m.role FROM club_members m JOIN orgs o ON o.id = m.org_id
+       WHERE m.user_id = $1 AND m.status = 'active' ORDER BY m.joined_at`,
+      [userId],
+    );
+    return rows.map((r) => ({ slug: r.slug, name: r.name, kindName: KIND_NAMES[r.kind] || 'Club', role: r.role }));
   }
 
   // The signed-in player's own profile, for the editor.

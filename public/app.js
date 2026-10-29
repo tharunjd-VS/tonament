@@ -602,12 +602,26 @@
         S.profile = null;
         render();
         await loadProfile();
-      } else if (parts[0] === 'academy' && parts[1] === 'new') {
+      } else if ((parts[0] === 'academy' || parts[0] === 'clubs') && parts[1] === 'new') {
         if (!S.me) {
-          navigate('/signin?next=/academy/new', { replace: true });
+          navigate('/signin?next=/clubs/new', { replace: true });
           return;
         }
         S.route = { name: 'orgNew' };
+      } else if (parts[0] === 'clubs') {
+        S.route = { name: 'clubs' };
+        render();
+        [S.clubsMine, S.clubsFound] = await Promise.all([
+          S.me ? api('GET', '/clubs/mine').catch(() => []) : [],
+          api('GET', '/clubs').catch(() => []),
+        ]);
+      } else if (parts[0] === 'club' && parts[1]) {
+        const slug = parts[1].toLowerCase();
+        S.route = { name: 'club', slug, tab: params.get('tab') || 'feed', join: params.get('join') };
+        if (!S.club || S.club.slug !== slug) { S.club = null; S.clubFeed = null; }
+        render();
+        await loadClub();
+        return;
       } else if (/^@[a-z0-9-]{3,30}$/.test(parts[0] || '') && parts[1] === 'edit') {
         const slug = parts[0].slice(1);
         if (!S.me) {
@@ -637,6 +651,7 @@
         const qs = filterQuery(S.filters);
         if (qs && !params.toString()) history.replaceState(null, '', `/?${qs}`); // remembered search
         render();
+        if (S.me) api('GET', '/feed').then((f) => { S.feed = f; if (S.route.name === 'home') render(); }, () => { S.feed = { items: [] }; });
         [S.list, S.mine, S.myEntries, S.interest, S.places] = await Promise.all([
           api('GET', `/tournaments?${filterQuery(S.filters, true)}`).catch((e) => { S.error = e.message; return []; }),
           S.me ? api('GET', '/me/tournaments').catch(() => []) : null,
@@ -792,6 +807,8 @@
     else if (S.route.name === 'link') view = viewLink();
     else if (S.route.name === 'admin') view = viewAdmin();
     else if (S.route.name === 'orgNew') view = viewOrgNew();
+    else if (S.route.name === 'clubs') view = viewClubs();
+    else if (S.route.name === 'club') view = viewClub();
     else if (S.route.name === 'profile') view = viewProfile();
     else if (S.route.name === 'groups') view = viewGroups();
     else if (S.route.name === 'groupNew') view = viewGroupNew();
@@ -1007,7 +1024,7 @@
         lead: 'Post your slots — Beginners at 6, Intermediates at 7. Players find them on your page and join in one tap, and you see who actually turned up. For academies, it\'s your batch register.',
         chips: ['Your own page', 'Beginner · Intermediate · Advanced', 'Attendance'],
         actions: [
-          h('a', { class: 'btn btn-primary btn-lg', href: join('/academy/new') }, 'Create your venue page'),
+          h('a', { class: 'btn btn-primary btn-lg', href: join('/clubs/new') }, 'Start your club'),
           h('a', { class: 'btn btn-lg btn-ghost', href: '/pricing' }, 'Pricing'),
         ],
         visual: shot('/guide/venue-slots-dark.jpg', 'A venue page listing daily slots by level with how many are going'),
@@ -1065,6 +1082,7 @@
     return [
       installBanner(),
       heroSlider(explore),
+      S.me ? homeFeed() : null,
       S.me && S.myEntries && S.myEntries.length ? h('section', { class: 'section' },
         h('h2', {}, 'My entries'),
         h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
@@ -4826,9 +4844,9 @@
             h('div', { class: 'menu-head' }, h('strong', {}, S.me.name), h('div', { class: 'muted small' }, S.me.email)),
             h('a', { href: '/me/profile', onclick: closeMenu }, 'Your profile'),
             h('a', { href: '/groups', onclick: closeMenu }, 'Your groups'),
+            h('a', { href: '/clubs', onclick: closeMenu }, 'Clubs'),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
-            S.myOrgs && !S.myOrgs.length ? h('a', { href: '/academy/new', onclick: closeMenu }, 'Create an academy page') : null,
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
             S.billing && S.billing.enabled ? h('a', { href: '/invite', onclick: closeMenu }, 'Invite organisers 🎁') : null,
             canInstall() ? h('button', { onclick: (e) => { closeMenu(e); installApp(); } }, 'Install the app') : null,
@@ -6534,11 +6552,247 @@
     ];
   }
 
+  // ---------- clubs: free to make and join; members, a feed, a leaderboard
+  const clubPath = (slug) => `/clubs/${encodeURIComponent(slug)}`;
+  const clubUrl = (c) => `${location.origin}/club/${c.slug}${c.invite ? `?join=${encodeURIComponent(c.invite)}` : ''}`;
+  const KIND_ICON = { club: 'club', team: 'team', academy: 'academy', venue: 'venue', company: 'company', school: 'school', coaching: 'coaching' };
+
+  async function loadClub() {
+    const { slug, join } = S.route;
+    try {
+      S.club = await api('GET', `${clubPath(slug)}${join ? `?join=${encodeURIComponent(join)}` : ''}`);
+      S.error = null;
+    } catch (e) {
+      S.error = e.message;
+      S.errorCode = e.code;
+    }
+    render();
+    if (S.club) {
+      S.clubFeed = await api('GET', `${clubPath(slug)}/feed`).catch(() => ({ items: [] }));
+      if (S.route.name === 'club') render();
+    }
+  }
+  // Joining, roles and the like change the club and its feed.
+  const clubAct = (fn, msg) => act(async () => {
+    S.club = await fn();
+    S.clubFeed = await api('GET', `${clubPath(S.club.slug)}/feed`).catch(() => S.clubFeed);
+  }, msg);
+
+  // Clubs: yours, and ones to join.
+  function viewClubs() {
+    document.title = 'Clubs · Tonament';
+    const card = (c) => h('a', { class: 'card club-card', href: `/club/${c.slug}` },
+      h('span', { class: 'club-icon' }, icon(KIND_ICON[c.kind] || 'club')),
+      h('span', { class: 'club-card-text' }, h('strong', {}, c.name),
+        h('small', { class: 'muted' }, [c.kindName, c.city, `${c.members} member${c.members === 1 ? '' : 's'}`, c.status === 'requested' ? 'request sent' : null].filter(Boolean).join(' · '))));
+    const mine = S.clubsMine || [];
+    const others = (S.clubsFound || []).filter((c) => !mine.some((m) => m.slug === c.slug));
+    return [
+      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Clubs'), h('a', { class: 'btn btn-primary', href: S.me ? '/clubs/new' : '/signin?next=/clubs/new' }, 'Start a club')),
+      h('p', { class: 'muted' }, 'Your club, team, academy, company or school on Tonament — free. Members share results, climb the club leaderboard and take on other clubs.'),
+      S.me ? h('section', { class: 'section' }, h('h2', {}, 'Your clubs'),
+        S.clubsMine == null ? loading() : mine.length ? h('div', { class: 'card-list' }, mine.map(card)) : empty('You\'re not in a club yet — join one below, or start your own.')) : null,
+      h('section', { class: 'section' }, h('h2', {}, 'Clubs on Tonament'),
+        S.clubsFound == null ? loading() : others.length ? h('div', { class: 'card-list' }, others.map(card)) : empty('No clubs yet — start the first one.')),
+    ];
+  }
+
+  function viewClub() {
+    const c = S.club;
+    if (!c || c.slug !== S.route.slug) return loading();
+    document.title = `${c.name} · Tonament`;
+    const me = c.me;
+    const member = me && me.status === 'active';
+    const join = () => clubAct(async () => {
+      const r = await api('POST', `${clubPath(c.slug)}/join`, { invite: S.route.join });
+      if (S.route.join) { history.replaceState(null, '', `/club/${c.slug}`); S.route.join = null; }
+      return r;
+    }, c.open || c.inviteOk ? `Welcome to ${c.name}!` : 'Request sent to the club\'s admins');
+    const follow = () => act(async () => { c.follow = await api('POST', '/follow', { kind: 'club', id: c.id, on: !c.follow.following }); });
+    const invite = () => shareText(`Join ${c.name} on Tonament — results, the club leaderboard and challenges:\n${clubUrl(c)}`);
+    const tabs = [['feed', 'Feed', 'tab-live'], ['members', 'Members', 'tab-players'], ['leaderboard', 'Leaderboard', 'tab-board'], ['challenges', 'Challenges', 'tab-draw'],
+      ...(c.can.admin ? [['page', 'Page', 'tab-setup']] : [])];
+    const tab = tabs.some(([id]) => id === S.route.tab) ? S.route.tab : 'feed';
+    const head = h('header', { class: 'club-head' },
+      c.logo ? h('img', { class: 'club-logo', src: c.logo, alt: '' }) : h('span', { class: 'club-icon big' }, icon(KIND_ICON[c.kind] || 'club')),
+      h('div', { class: 'club-head-text' },
+        h('h1', {}, c.name),
+        h('p', { class: 'muted small' }, [c.kindName, c.city, `${c.members} member${c.members === 1 ? '' : 's'}`, c.follow.followers ? `${c.follow.followers} follower${c.follow.followers === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ')),
+        c.sports.length ? h('p', { class: 'club-sports' }, c.sports.map((x) => h('span', { class: 'event-tag' }, x.name))) : null,
+        h('div', { class: 'actions' },
+          !S.me ? h('a', { class: 'btn btn-primary', href: `/signin?next=${encodeURIComponent(`/club/${c.slug}${S.route.join ? `?join=${S.route.join}` : ''}`)}` }, 'Sign in to join')
+            : member ? [pill('done', me.role === 'player' ? 'Member ✓' : `${me.role[0].toUpperCase()}${me.role.slice(1)} ✓`), h('button', { class: 'btn btn-primary btn-small', onclick: invite }, 'Invite players')]
+              : me && me.status === 'requested' ? pill('waiting', 'Request sent')
+                : h('button', { class: 'btn btn-primary', onclick: join }, c.open || c.inviteOk ? 'Join the club' : 'Ask to join'),
+          S.me && !member ? h('button', { class: `btn btn-small${c.follow.following ? '' : ' btn-ghost'}`, 'aria-pressed': String(c.follow.following), onclick: follow }, c.follow.following ? 'Following ✓' : 'Follow') : null,
+          moreButton(c.name, [
+            { label: 'Share the club', hint: member ? 'With your invite link' : 'A link to this page', onClick: () => shareText(`${c.name} on Tonament: ${member ? clubUrl(c) : `${location.origin}/club/${c.slug}`}`) },
+            c.pagePublic ? { label: 'Public page', hint: `tonament.com/@${c.slug}`, onClick: () => { location.href = `/@${c.slug}`; } } : null,
+            member ? { label: 'Leave the club', danger: true, onClick: () => confirm(`Leave ${c.name}?`) && act(async () => { await api('POST', `${clubPath(c.slug)}/leave`, {}); await loadClub(); }, `You left ${c.name}`) } : null,
+            S.me && !member ? { label: 'Report this club', onClick: () => report('club', c.id) } : null,
+          ]))));
+    const body = {
+      feed: () => feedList(S.clubFeed, member ? 'Nothing here yet. Results, titles and new members show up here.' : 'Nothing public here yet.'),
+      members: () => clubMembers(c),
+      leaderboard: () => clubLeaderboard(c),
+      challenges: () => h('div', { class: 'card' }, h('h2', {}, 'Challenges are coming'),
+        h('p', { class: 'muted' }, `Soon ${c.name} can take on other clubs — a team tie, a friendly match or a distance battle — and members can challenge each other. Results go on the club's record and everyone's feed.`)),
+      page: () => clubPageCard(c),
+    }[tab]();
+    return [head,
+      h('nav', { class: 'tabs t-tabs bar', 'aria-label': 'Club' }, tabs.map(([id, label, ic]) => h('a', {
+        href: `/club/${c.slug}${id === 'feed' ? '' : `?tab=${id}`}`, class: id === tab ? 'active' : '', 'aria-current': id === tab ? 'page' : null,
+      }, icon(ic), h('span', {}, label, id === 'members' && c.requests.length ? h('span', { class: 'tab-count' }, c.requests.length) : null)))),
+      h('section', {}, body)];
+  }
+
+  function clubMembers(c) {
+    const set = (id, body, msg) => clubAct(() => api('POST', `${clubPath(c.slug)}/members/${id}`, body), msg);
+    const roles = [['player', 'Player'], ['captain', 'Captain'], ['coach', 'Coach'], ['admin', 'Admin']];
+    return [
+      c.requests.length ? h('div', { class: 'card' }, h('h2', {}, `Asking to join (${c.requests.length})`),
+        h('ul', { class: 'org-t-list' }, c.requests.map((p) => h('li', {}, h('strong', {}, p.name),
+          h('span', { class: 'actions', style: 'margin:0' },
+            h('button', { class: 'btn btn-small btn-primary', onclick: () => set(p.id, { action: 'approve' }, `${p.name} joined`) }, 'Let in'),
+            h('button', { class: 'btn btn-small btn-ghost', onclick: () => set(p.id, { action: 'decline' }, 'Declined') }, 'Decline')))))) : null,
+      h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, `Members (${c.members})`),
+        c.invite ? h('button', { class: 'btn btn-small', onclick: () => shareText(`Join ${c.name} on Tonament:\n${clubUrl(c)}`) }, 'Invite') : null),
+      h('ul', { class: 'org-t-list' }, c.roster.map((p) => h('li', {},
+        h('span', {}, p.handle ? h('a', { href: `/p/${p.handle}` }, p.name) : p.name, p.role !== 'player' ? [' ', pill('org', p.roleName)] : null),
+        c.can.admin && p.id !== (S.me && S.me.id) ? moreButton(p.name, [
+          ...roles.filter(([r]) => r !== p.role).map(([r, label]) => ({ label: `Make ${label.toLowerCase()}`, onClick: () => set(p.id, { action: 'role', role: r }, `${p.name} is now ${label.toLowerCase()}`) })),
+          { label: 'Remove from the club', danger: true, onClick: () => confirm(`Remove ${p.name} from ${c.name}?`) && set(p.id, { action: 'remove' }, 'Removed') },
+        ]) : null)))),
+      c.can.admin ? h('div', { class: 'card' }, h('h2', {}, 'Joining'),
+        h('label', { class: 'check-field' },
+          h('input', { type: 'checkbox', checked: c.open, onchange: (e) => clubAct(() => api('PATCH', clubPath(c.slug), { open: e.target.checked }), e.target.checked ? 'Anyone can join' : 'New members need your OK') }),
+          h('span', {}, h('strong', {}, 'Anyone can join'), h('small', {}, 'Off: people ask, and an admin lets them in. The invite link always works.'))),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn btn-small', onclick: () => copy(clubUrl(c), 'Invite link copied') }, 'Copy invite link'),
+          h('button', { class: 'btn btn-small btn-ghost', onclick: () => confirm('Make a new invite link? The old one stops working.') && clubAct(() => api('PATCH', clubPath(c.slug), { newInvite: true }), 'New invite link made') }, 'New link'))) : null,
+    ];
+  }
+
+  function clubLeaderboard(c) {
+    if (!c.leaderboard.length) return empty('No members yet.');
+    return h('div', { class: 'card' },
+      h('p', { class: 'muted small', style: 'margin-top:0' }, 'Members by titles, then finals, then ranking points this year.'),
+      h('div', { class: 'table-wrap' }, h('table', {},
+        h('thead', {}, h('tr', {}, ['#', 'Player', '🏆', 'Finals', 'Pts', 'W–L'].map((x, i) => h('th', { class: i === 1 ? '' : 'num' }, x)))),
+        h('tbody', {}, c.leaderboard.map((r) => h('tr', {},
+          h('td', { class: 'num' }, r.rank),
+          h('td', { class: 'name' }, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : r.name),
+          h('td', { class: 'num' }, r.titles), h('td', { class: 'num' }, r.finals), h('td', { class: 'num' }, r.points), h('td', { class: 'num' }, `${r.won}–${r.lost}`)))))));
+  }
+
+  // Admins: the paid public page (search, photos, coaching, contact).
+  function clubPageCard(c) {
+    return h('div', { class: 'card' },
+      h('h2', {}, c.pagePublic ? 'Your public page' : 'Get a public page'),
+      h('p', { class: 'muted' }, c.pagePublic
+        ? `tonament.com/@${c.slug} is live: found on Google, with your photos, coaching, contact buttons and tournaments.`
+        : `The club is free. A public page at tonament.com/@${c.slug} adds what new players look for: found on Google, photos, coaching and timings, WhatsApp and call buttons, and your tournaments — ${orgPrice()} a year.`),
+      h('div', { class: 'actions' },
+        h('a', { class: 'btn btn-primary', href: `/@${c.slug}/edit` }, c.pagePublic ? 'Edit the page' : 'Set up the page'),
+        c.pagePublic ? h('a', { class: 'btn', href: `/@${c.slug}` }, 'View it') : null));
+  }
+
+  // ---------- the feed
+  const ago = (iso) => {
+    const m = Math.floor((Date.now() - Date.parse(iso)) / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m} min ago`;
+    if (m < 1440) return `${Math.floor(m / 60)} h ago`;
+    const d = Math.floor(m / 1440);
+    return d < 7 ? `${d} d ago` : new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short' });
+  };
+  const personLink = (p) => (p ? (p.handle ? h('a', { href: `/p/${p.handle}` }, p.name) : h('strong', {}, p.name)) : 'Someone');
+  const report = (kind, id) => {
+    const reason = prompt('What\'s wrong? (optional)');
+    if (reason === null) return;
+    act(async () => { await api('POST', '/report', { kind, id, reason }); }, 'Thanks — we\'ll take a look');
+  };
+
+  function feedSentence(x) {
+    const d = x.data || {};
+    const who = personLink(x.people[0]);
+    const amIn = S.me && x.people.some((p) => p.id === S.me.id);
+    if (x.verb === 'finish') {
+      return [d.finish === 'W' ? '🏆 ' : '🥈 ', who, d.finish === 'W' ? ' won ' : ' reached the final of ', h('strong', {}, d.event), ' at ', h('a', { href: `/t/${d.tournamentId}` }, d.tournament)];
+    }
+    if (x.verb === 'game') {
+      const won = d.winner === 'a' ? d.a : d.b;
+      const lost = d.winner === 'a' ? d.b : d.a;
+      // The group's name only for people in the game (groups aren't public).
+      return [h('strong', {}, won.join(' & ')), ' beat ', lost.join(' & '), ' ', h('span', { class: 'feed-score' }, d.score),
+        amIn && d.slug ? [' · ', h('a', { href: `/g/${d.slug}` }, d.group)] : null];
+    }
+    if (x.verb === 'joined') return [who, ' joined ', h('a', { href: `/club/${d.slug}` }, d.club)];
+    if (x.verb === 'club') return [who, ' started ', h('a', { href: `/club/${d.slug}` }, d.club), d.city ? ` in ${d.city}` : ''];
+    return [who, ` ${x.verb}`];
+  }
+
+  function feedItem(x) {
+    const open = S.openComments === x.id;
+    const kudo = () => act(async () => { Object.assign(x, await api('POST', `/activity/${x.id}/kudos`, { on: !x.kudoed })); });
+    const toggle = async () => {
+      S.openComments = open ? null : x.id;
+      render();
+      if (!open) { S.comments = { ...(S.comments || {}), [x.id]: await api('GET', `/activity/${x.id}/comments`).catch(() => []) }; render(); }
+    };
+    const list = (S.comments || {})[x.id];
+    const p = x.people[0];
+    return h('li', { class: 'feed-item' },
+      p && p.photo ? h('img', { class: 'feed-avatar', src: p.photo, alt: '' }) : h('span', { class: 'feed-avatar', 'aria-hidden': 'true' }, (p ? p.name : '?').slice(0, 1)),
+      h('div', { class: 'feed-body' },
+        h('p', { class: 'feed-text' }, feedSentence(x)),
+        h('p', { class: 'feed-meta muted small' }, ago(x.at),
+          S.me ? [
+            h('button', { class: `link-btn small${x.kudoed ? ' on' : ''}`, 'aria-pressed': String(x.kudoed), onclick: kudo }, `👏 ${x.kudos || ''}`.trim()),
+            h('button', { class: 'link-btn small', 'aria-expanded': String(open), onclick: toggle }, `💬 ${x.comments || ''}`.trim()),
+            moreButton('This post', [{ label: 'Report', onClick: () => report('activity', x.id) }]),
+          ] : (x.kudos ? ` · 👏 ${x.kudos}` : '')),
+        open ? h('div', { class: 'feed-comments' },
+          list == null ? loading() : h('ul', {}, list.map((c) => h('li', {}, h('strong', {}, c.by.name), ' ', c.body,
+            c.mine ? h('button', { class: 'link-btn small', onclick: () => act(async () => { await api('DELETE', `/comments/${c.id}`); S.comments[x.id] = list.filter((y) => y.id !== c.id); x.comments -= 1; }) }, 'Delete') : null))),
+          h('form', {
+            class: 'feed-comment-form',
+            onsubmit: (e) => {
+              e.preventDefault();
+              const box = e.target.body;
+              act(async () => { S.comments[x.id] = await api('POST', `/activity/${x.id}/comments`, { body: box.value }); x.comments = S.comments[x.id].length; box.value = ''; });
+            },
+          }, h('input', { name: 'body', maxlength: 500, required: true, placeholder: 'Say well played…', 'aria-label': 'Comment' }), h('button', { class: 'btn btn-small', type: 'submit' }, 'Send'))) : null));
+  }
+
+  function feedList(feed, emptyText) {
+    if (!feed) return loading();
+    if (!feed.items.length) return empty(emptyText);
+    return h('ul', { class: 'card feed' }, feed.items.map(feedItem));
+  }
+
+  // Home, signed in: the latest from people and clubs you follow.
+  function homeFeed() {
+    const f = S.feed;
+    if (!f) return null;
+    const shown = S.feedAll ? f.items : f.items.slice(0, 4);
+    return h('section', { class: 'section' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Your feed'), h('a', { class: 'btn btn-small btn-ghost', href: '/clubs' }, 'Clubs')),
+      f.items.length ? [h('ul', { class: 'card feed' }, shown.map(feedItem)),
+        f.items.length > shown.length ? h('button', { class: 'link-btn small', onclick: () => { S.feedAll = true; render(); } }, 'See more') : null]
+        : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Join a club and follow players to see their titles, games and news here.'),
+          h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary btn-small', href: '/clubs' }, 'Find a club'), h('a', { class: 'btn btn-small', href: '/rankings' }, 'Find players'))));
+  }
+
   // ---------- academy, venue and club pages (tonament.com/@slug)
   const ORG_KINDS = [
+    { value: 'club', label: 'Club', icon: 'club', hint: 'Members who play together' },
+    { value: 'team', label: 'Team', icon: 'team', hint: 'A squad that competes' },
     { value: 'academy', label: 'Academy', icon: 'academy', hint: 'Coaching and training' },
     { value: 'venue', label: 'Venue', icon: 'venue', hint: 'Courts to book and play' },
-    { value: 'club', label: 'Club', icon: 'club', hint: 'Members who play together' },
+    { value: 'company', label: 'Company', icon: 'company', hint: 'Colleagues who play' },
+    { value: 'school', label: 'School / college', icon: 'school', hint: 'Students and staff' },
+    { value: 'coaching', label: 'Coaching squad', icon: 'coaching', hint: 'A coach and their players' },
   ];
   const orgPrice = () => money((S.billing && S.billing.orgPrice) || 299900);
   const fmtDate = (iso) => new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
@@ -6559,7 +6813,7 @@
 
   // Create: kind -> name and address -> sports, then the editor opens.
   function viewOrgNew() {
-    document.title = 'Create your academy page · Tonament';
+    document.title = 'Start a club · Tonament';
     const d = (S.orgDraft ||= { step: 1, kind: null, name: '', slug: '', slugEdited: false, city: '', address: '', sports: [], check: null });
     const go = (step) => { d.step = step; render(); window.scrollTo(0, 0); };
     const head = h('div', { class: 'new-head' },
@@ -6569,9 +6823,9 @@
 
     if (d.step === 1) {
       return h('div', { class: 'card new-flow' }, head,
-        h('h1', {}, 'Your page on Tonament'),
-        h('p', { class: 'muted' }, `A page of your own at tonament.com/@yourname: your profile, contact buttons, courts and coaching, photos and every tournament you run. ${orgPrice()} a year — build it free, pay when you publish.`),
-        h('h2', {}, 'What are you?'),
+        h('h1', {}, 'Start a club'),
+        h('p', { class: 'muted' }, `Free. Members join with your invite link, share their results and titles, climb the club leaderboard — and take on other clubs. Want a public page on Google with photos, coaching and contact buttons? Add it any time (${orgPrice()} a year).`),
+        h('h2', {}, 'What kind?'),
         choiceGroup({
           name: 'kind', label: 'Kind', value: d.kind, tiles: true, options: ORG_KINDS,
           onchange: (e) => { d.kind = e.target.value; go(2); },
@@ -6613,7 +6867,7 @@
         name: 'name', required: true, maxlength: 80, value: d.name, autocomplete: 'off', placeholder: d.kind === 'venue' ? 'e.g. Smashpoint Sports Arena' : 'e.g. Smashpoint Badminton Academy',
         oninput: (e) => { d.name = e.target.value; if (!d.slugEdited) { slugInput.value = slugify(e.target.value); d.slug = slugInput.value; check(); } },
       })),
-      field('Page address', h('div', { class: 'slug-input' }, h('span', { class: 'muted' }, 'tonament.com/@'), slugInput), null, null),
+      field('Club address', h('div', { class: 'slug-input' }, h('span', { class: 'muted' }, 'tonament.com/@'), slugInput), null, null),
       status,
       h('div', { class: 'grid-2' },
         field('City', h('input', { name: 'city', required: true, maxlength: 60, value: d.city, list: 'org-cities', autocomplete: 'address-level2' })),
@@ -6626,7 +6880,7 @@
     }
 
     const live = liveSports();
-    const create = h('button', { type: 'button', class: 'btn btn-primary btn-lg', disabled: !d.sports.length }, 'Create my page');
+    const create = h('button', { type: 'button', class: 'btn btn-primary btn-lg', disabled: !d.sports.length }, 'Start the club');
     const picks = choiceGroup({
       name: 'sports', label: 'Sports', value: d.sports, multiple: true, tiles: true,
       options: S.sports.map((x) => ({ value: x.id, label: x.name, icon: x.id })),
@@ -6638,12 +6892,13 @@
     create.onclick = async () => {
       create.disabled = true;
       try {
-        const o = await api('POST', '/orgs', { kind: d.kind, name: d.name, slug: d.slug, city: d.city, address: d.address, country: REGIONS.defaultCountry, sports: d.sports });
+        const c = await api('POST', '/clubs', { kind: d.kind, name: d.name, slug: d.slug, city: d.city, address: d.address, country: REGIONS.defaultCountry, sports: d.sports });
         S.orgDraft = null;
-        S.org = o;
+        S.club = c;
+        S.clubFeed = null;
         S.myOrgsFor = null;
-        toast('Page created — add your details, then publish');
-        navigate(`/@${o.slug}/edit`);
+        toast(`${c.name} is on Tonament — invite your players`);
+        navigate(`/club/${c.slug}?tab=members`);
       } catch (err) {
         toast(err.message, true);
         create.disabled = false;
@@ -6652,7 +6907,7 @@
     };
     return h('div', { class: 'card new-flow' }, head,
       h('h2', {}, 'Which sports?'),
-      h('p', { class: 'muted small' }, `Tap all that ${d.name || 'you'} ${d.kind === 'venue' ? 'has courts for' : 'offers'}.`),
+      h('p', { class: 'muted small' }, `Tap all that ${d.name || 'you'} ${d.kind === 'venue' ? 'has courts for' : 'plays'}.`),
       picks,
       live.length < S.sports.length ? h('p', { class: 'muted small' }, 'Tournaments run for the sports marked live; the rest can still be on your page.') : null,
       h('div', { class: 'actions' }, create));
@@ -6913,21 +7168,21 @@
     const mine = S.myOrgs || [];
     if (!mine.length && !t.org) {
       return h('div', { class: 'card' },
-        h('h2', {}, 'Academy page'),
-        h('p', { class: 'muted small' }, `Run an academy, venue or club? Get a page of your own at tonament.com/@yourname with all your tournaments, contact buttons, coaching and photos — ${orgPrice()} a year.`),
-        h('div', { class: 'actions' }, h('a', { class: 'btn btn-small', href: '/academy/new' }, 'Create your page')));
+        h('h2', {}, 'Club page'),
+        h('p', { class: 'muted small' }, `Run a club, team, academy or venue? Start a club on Tonament (free), and add a public page at tonament.com/@yourname with all your tournaments, contact buttons, coaching and photos — ${orgPrice()} a year.`),
+        h('div', { class: 'actions' }, h('a', { class: 'btn btn-small', href: '/clubs/new' }, 'Start a club')));
     }
     const link = (slug) => act(async () => {
       const r = await api('POST', `${tPath(t)}/org`, { org: slug || null }, t.id);
       await load(t.id);
-      toast(r.org ? `Shown on ${r.org.name}'s page` : 'Removed from the academy page');
+      toast(r.org ? `Shown on ${r.org.name}'s page` : 'Removed from the club page');
     });
     const options = [{ value: '', label: 'None' }, ...mine.map((x) => ({ value: x.slug, label: x.name }))];
     if (t.org && !mine.some((x) => x.slug === t.org.slug)) options.push({ value: t.org.slug, label: t.org.name, disabled: true });
     return h('div', { class: 'card' },
-      h('h2', {}, 'Academy page'),
-      h('p', { class: 'muted small' }, 'Show this tournament on your academy, venue or club page (when it\'s public).'),
-      choiceGroup({ name: 'org', label: 'Academy page', value: t.org ? t.org.slug : '', options, onchange: (e) => link(e.target.value) }),
+      h('h2', {}, 'Club page'),
+      h('p', { class: 'muted small' }, 'Show this tournament on your club\'s page (when it\'s public).'),
+      choiceGroup({ name: 'org', label: 'Club page', value: t.org ? t.org.slug : '', options, onchange: (e) => link(e.target.value) }),
       t.org ? h('p', { class: 'hint' }, h('a', { href: `/@${t.org.slug}`, target: '_blank', rel: 'noopener' }, `tonament.com/@${t.org.slug}`)) : null);
   }
 
@@ -7362,7 +7617,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

@@ -64,6 +64,18 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/clubs",
+      "destination": "/api/index?__path=app"
+    },
+    {
+      "source": "/clubs/:path*",
+      "destination": "/api/index?__path=app"
+    },
+    {
+      "source": "/club/:slug",
+      "destination": "/api/index?__path=app"
+    },
+    {
       "source": "/me/profile",
       "destination": "/api/index?__path=app"
     },

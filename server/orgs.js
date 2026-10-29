@@ -9,8 +9,9 @@ const crypto = require('node:crypto');
 const sports = require('./sports');
 const { normalizeEmail, validEmail } = require('./auth');
 
-const KINDS = ['academy', 'venue', 'club'];
-const KIND_NAMES = { academy: 'Academy', venue: 'Venue', club: 'Club' };
+// Every page is also a club people can join (clubs.js).
+const KINDS = ['club', 'team', 'academy', 'venue', 'company', 'school', 'coaching'];
+const KIND_NAMES = { club: 'Club', team: 'Team', academy: 'Academy', venue: 'Venue', company: 'Company', school: 'School / college', coaching: 'Coaching squad' };
 const GRACE_DAYS = 14;
 const PHOTO_LIMIT = 24;
 const COACHING_LIMIT = 10;
@@ -168,6 +169,9 @@ function createOrgs({ db, fail, text, imageType, maxImageBytes, mediaUrl, billin
         [slug, name, kind, city, address, country, wanted],
       );
       await q(`INSERT INTO org_members (org_id, email, role) VALUES ($1, $2, 'owner')`, [o.id, actor.user.email]);
+      // The maker is the club's first admin; members join with the invite link.
+      await q('UPDATE orgs SET created_by = $1, invite_token = $2 WHERE id = $3', [actor.user.id, crypto.randomBytes(9).toString('base64url'), o.id]);
+      await q(`INSERT INTO club_members (org_id, user_id, role) VALUES ($1, $2, 'admin') ON CONFLICT DO NOTHING`, [o.id, actor.user.id]);
       return view(q, o, actor);
     });
   }
@@ -468,7 +472,7 @@ function createOrgs({ db, fail, text, imageType, maxImageBytes, mediaUrl, billin
   }
 
   return {
-    GRACE_DAYS, KIND_NAMES, slugOf, createOrg, slugStatus, getOrg, mine, updateOrg, uploadMedia, deleteMedia, getMedia, addMember, removeMember,
+    GRACE_DAYS, KINDS, KIND_NAMES, slugOf, mediaFor: (o) => mediaOf(db.query, o), isPublic, createOrg, slugStatus, getOrg, mine, updateOrg, uploadMedia, deleteMedia, getMedia, addMember, removeMember,
     checkout, applyPayment, takeBackYear, linkTournament, forTournament, page, sitemapOrgs, inCity, cityCounts, adminOrgs, adminUpdate, adminDelete,
   };
 }
@@ -501,4 +505,4 @@ function createSettings(db) {
   };
 }
 
-module.exports = { createOrgs, createSettings, GRACE_DAYS };
+module.exports = { createOrgs, createSettings, GRACE_DAYS, KIND_NAMES };

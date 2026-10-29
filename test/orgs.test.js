@@ -78,7 +78,9 @@ async function browser(name, email) {
   assert.equal(r.status, 200, JSON.stringify(r.data));
   return { call, user: r.data.user };
 }
-const anon = async (path) => { const res = await fetch(base + path); return { status: res.status, html: await res.text(), headers: res.headers }; };
+const anon = async (path) => { const res = await fetch(base + path, { redirect: 'manual' }); return { status: res.status, html: await res.text(), headers: res.headers }; };
+// No public page (a draft, lapsed or unpublished): the club lives in the app.
+const inApp = (r, slug) => r.status === 302 && r.headers.get('location') === `/club/${slug}`;
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
 const pngN = (n) => Buffer.concat([png, Buffer.from(`x${n}`)]).toString('base64'); // distinct images
 
@@ -113,8 +115,8 @@ test('drafts are private; team can edit, owner pays; a paid page is public with 
   const { data: o } = await owner.call('POST', '/api/orgs', { name: 'Anna Nagar Shuttlers', slug: 'shuttlers', city: 'Chennai', sports: ['badminton'] });
   assert.equal(o.slug, 'shuttlers');
 
-  // Draft: hidden from the public, visible to the team (also as a preview).
-  assert.equal((await anon('/@shuttlers')).status, 404);
+  // Draft: no public page (the club is in the app), the page is visible to the team (also as a preview).
+  assert.ok(inApp(await anon('/@shuttlers'), 'shuttlers'));
   assert.equal((await stranger.call('GET', '/api/orgs/shuttlers')).status, 404);
   assert.equal((await owner.call('GET', '/api/orgs/shuttlers')).status, 200);
 
@@ -187,13 +189,13 @@ test('drafts are private; team can edit, owner pays; a paid page is public with 
   await db.query(`UPDATE orgs SET paid_until = now() - interval '3 days' WHERE slug = 'shuttlers'`);
   assert.equal((await anon('/@shuttlers')).status, 200);
   await db.query(`UPDATE orgs SET paid_until = now() - interval '20 days' WHERE slug = 'shuttlers'`);
-  assert.equal((await anon('/@shuttlers')).status, 404);
+  assert.ok(inApp(await anon('/@shuttlers'), 'shuttlers'));
   assert.ok(!(await anon('/sitemap.xml')).html.includes('/@shuttlers'));
   assert.equal((await owner.call('GET', '/api/orgs/shuttlers')).data.live, false);
   const preview = await owner.call('GET', '/@shuttlers?preview=1');
   assert.equal(preview.status, 200);
   assert.match(preview.data, /noindex/);
-  assert.equal((await stranger.call('GET', '/@shuttlers?preview=1')).status, 404);
+  assert.ok(inApp(await anon('/@shuttlers?preview=1'), 'shuttlers')); // not the team: the club in the app
   assert.equal((await anon(`/t/${pub}`)).status, 200);
 });
 
@@ -240,7 +242,7 @@ test('branding switch: off by default, site-wide on, per-academy overrides, laps
   await root.call('PATCH', `/api/admin/orgs/${org.id}`, { extendDays: 30 });
   assert.equal((await anon('/@brand-club')).status, 200);
   await root.call('PATCH', `/api/admin/orgs/${org.id}`, { unpublish: true });
-  assert.equal((await anon('/@brand-club')).status, 404);
+  assert.ok(inApp(await anon('/@brand-club'), 'brand-club'));
   const pay = (await root.call('GET', '/api/admin/payments?kind=org&q=Brand Club')).data.payments[0];
   assert.equal(pay.kind, 'org');
   r = await root.call('POST', `/api/admin/payments/${pay.id}/refund`, { downgrade: true });

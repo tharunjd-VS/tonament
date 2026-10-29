@@ -15,6 +15,8 @@ const { createOrgs, createSettings } = require('./orgs');
 const { createPlayers } = require('./players');
 const { createGroups } = require('./groups');
 const { createReferrals } = require('./referrals');
+const { createSocial } = require('./social');
+const { createClubs } = require('./clubs');
 const dupr = require('./dupr');
 const { inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
 const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
@@ -213,6 +215,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const settings = createSettings(db);
   let orgs;
   let profiles;
+  let social;
   let referrals;
 
   // ---------- queries (q is db.query or a transaction's query)
@@ -375,7 +378,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
     await syncTournament(q, t.id);
     // Results and ranking points exist while an event is finished.
     if (status === 'completed') await recordResults(q, t);
-    else await profiles.clearEvent(q, t.eventId);
+    else {
+      await profiles.clearEvent(q, t.eventId);
+      await social.forget(q, 'event', t.eventId);
+    }
   }
 
   // Writes each linked player's finish, points and matches for a finished event.
@@ -387,6 +393,26 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const standings = groupStandings(t, entries, scored, names).map((g) => g.standings.map((r) => r.id));
     const summaries = new Map(scored.map(({ row, score }) => [row.id, row.walkover ? 'Walkover' : t.sportDef.summary(score)]));
     await profiles.recordEvent(q, { t, entries, matches: rows, standings, summaries, names });
+    await podiumActivity(q, t);
+  }
+  // Winners and finalists in their followers' feeds (public tournaments; link-only
+  // ones to followers; private ones not at all).
+  async function podiumActivity(q, t) {
+    await social.forget(q, 'event', t.eventId);
+    const [row] = await q('SELECT visibility, name FROM tournaments WHERE id = $1', [t.id]);
+    if (!row || row.visibility === 'private') return;
+    const podium = await q(
+      `SELECT u.id, u.profile_public, r.finish, r.entries, e.org_id FROM event_results r JOIN users u ON u.email = r.email
+       JOIN entries e ON e.id = r.entry_id WHERE r.event_id = $1 AND r.finish IN ('W', 'F')`,
+      [t.eventId],
+    );
+    for (const p of podium) {
+      await social.record(q, {
+        dedupe: `finish:${t.eventId}:${p.id}`, actor: p.id, org: p.org_id || null, sport: t.sportDef.id, verb: 'finish', object: ['event', t.eventId],
+        data: { finish: p.finish, tournamentId: t.id, tournament: row.name, event: t.event.name, entries: p.entries },
+        visibility: row.visibility === 'public' && p.profile_public ? 'public' : 'followers',
+      });
+    }
   }
 
   // ---------- access
@@ -3613,7 +3639,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
     tournamentAccess: (q, id, actor) => lockWith(q, id, actor, 'manage'),
   });
 
-  const groups = createGroups({ db, fail, text, orgs });
+  social = createSocial({ db, fail, text, mediaUrl });
+  const groups = createGroups({ db, fail, text, orgs, social });
+  const clubs = createClubs({ db, fail, orgs, social, mediaUrl });
 
   referrals = createReferrals({ db, fail, mailer: mailer?.enabled ? mailer : null, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, ''), confirmWaiting });
 
@@ -3630,6 +3658,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
   return {
     orgs,
     groups,
+    clubs,
+    social,
     referrals,
     useCredit,
     takeOverScoring,

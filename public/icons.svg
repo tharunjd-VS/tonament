@@ -102,4 +102,11 @@
     <rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M9 15l2 2 4-4"/></g></symbol>
   <symbol id="search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5l5 5"/></g></symbol>
+  <!-- Club kinds -->
+  <symbol id="company" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 21V5.5L13 3v18M13 8.5l7 2V21M2.5 21h19"/><path d="M7.5 8h2M7.5 11.5h2M7.5 15h2M16.5 13.5h1M16.5 17h1"/></g></symbol>
+  <symbol id="school" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2.5 9.5L12 5l9.5 4.5L12 14z"/><path d="M6.5 11.5v4.5c1.5 1.6 3.4 2.4 5.5 2.4s4-.8 5.5-2.4v-4.5M21.5 9.5v5"/></g></symbol>
+  <symbol id="coaching" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 8.5a5.5 5.5 0 1 1-4 9.3L3 17.5l1.5-3.5"/><circle cx="14" cy="14" r="1.6"/><path d="M14 8.5V5h6"/></g></symbol>
 </svg>

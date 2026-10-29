@@ -12,6 +12,31 @@
   if (ref && /^[a-z0-9]{4,24}$/.test(ref)) {
     try { localStorage.setItem('tonament:ref', JSON.stringify({ code: ref, at: Date.now() })); } catch (e) { /* this visit only */ }
   }
+  // Follow buttons on server-made pages (a player's profile, a club's page):
+  // the count and your state come from the API, so the page itself can be cached.
+  document.querySelectorAll('[data-follow]').forEach(function (btn) {
+    var kind = btn.getAttribute('data-follow');
+    var id = btn.getAttribute('data-id');
+    var show = function (s) {
+      btn.textContent = s.following ? 'Following ✓' : 'Follow';
+      btn.classList.toggle('btn-primary', !s.following);
+      btn.setAttribute('aria-pressed', String(s.following));
+      var count = document.querySelector('[data-followers="' + kind + ':' + id + '"]');
+      if (count) count.textContent = s.followers ? s.followers + (s.followers === 1 ? ' follower' : ' followers') : '';
+      btn.hidden = false;
+    };
+    var state = { following: false, followers: 0 };
+    fetch('/api/follow?kind=' + kind + '&id=' + encodeURIComponent(id))
+      .then(function (r) { return r.ok ? r.json() : state; }).then(function (s) { state = s; show(s); }).catch(function () { show(state); });
+    btn.addEventListener('click', function () {
+      fetch('/api/follow', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: kind, id: id, on: !state.following }) })
+        .then(function (r) {
+          if (r.status === 401) { location.href = '/signin?next=' + encodeURIComponent(location.pathname); return null; }
+          return r.ok ? r.json() : null;
+        })
+        .then(function (s) { if (s) { state = s; show(s); } });
+    });
+  });
   var year = document.querySelector('[data-year]');
   if (year) year.textContent = String(new Date().getFullYear());
   fetch('/api/billing/config')

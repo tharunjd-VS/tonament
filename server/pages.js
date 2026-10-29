@@ -515,7 +515,10 @@ function orgHtml({ base, o }) {
   const C = o.contact;
   const maps = placeText || o.name ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([o.name, placeText].filter(Boolean).join(', '))}` : null;
   const buttons = [
-    C.whatsapp ? `<a class="btn btn-primary" href="https://wa.me/${digits(C.whatsapp)}" rel="noopener">WhatsApp</a>` : '',
+    // The club side: join it in the app, or follow it.
+    `<a class="btn btn-primary" href="/club/${esc(o.slug)}">Join the club</a>`,
+    `<button class="btn" type="button" data-follow="club" data-id="${o.id}" hidden>Follow</button>`,
+    C.whatsapp ? `<a class="btn" href="https://wa.me/${digits(C.whatsapp)}" rel="noopener">WhatsApp</a>` : '',
     C.phone ? `<a class="btn btn-ghost" href="tel:${esc(C.phone)}">Call</a>` : '',
     maps && placeText ? `<a class="btn btn-ghost" href="${esc(maps)}" rel="noopener">Directions</a>` : '',
     C.website ? `<a class="btn btn-ghost" href="${esc(C.website)}" rel="noopener nofollow">Website</a>` : '',
@@ -649,7 +652,9 @@ function playerHtml({ base, p }) {
         <p class="muted">${[where, p.sports.map((x) => x.name).join(', ')].filter(Boolean).map(esc).join(' · ')}</p>
         ${titles.length ? `<p class="player-titles">🏆 ${titles.length} title${titles.length === 1 ? '' : 's'}</p>` : ''}
         ${dupr}
-        ${p.own ? '<p class="actions"><a class="btn btn-small" href="/me/profile">Edit profile</a></p>' : ''}
+        ${(p.clubs || []).length ? `<p class="plays-for">Plays for ${p.clubs.map((c) => `<a href="/club/${esc(c.slug)}">${esc(c.name)}</a>`).join(', ')}</p>` : ''}
+        ${p.own ? '<p class="actions"><a class="btn btn-small" href="/me/profile">Edit profile</a></p>'
+          : `<p class="actions"><button class="btn btn-small btn-primary" type="button" data-follow="user" data-id="${p.id}" hidden>Follow</button> <span class="muted small" data-followers="user:${p.id}"></span></p>`}
       </div>
     </section>
     ${setup}

@@ -32,7 +32,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|invite|signin|signup|forgot|reset|link|admin|academy\/new|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -217,6 +217,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
   const ev = (c) => c.body.event ?? (c.query.get('event') || undefined);
   const N = '(\\d+)';
   const O = '/api/orgs/([a-z0-9-]{3,30})';
+  const C = '/api/clubs/([a-z0-9-]{3,30})';
   const G = '/api/groups/([a-z0-9-]{3,40})';
   // [method, path, handler, cdnSeconds]. Handlers get ctx = { body, query,
   // actor: { user, key }, req, setCookie }. A route with cdnSeconds > 0 is
@@ -382,6 +383,27 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
 
     // Payments (Razorpay). The webhook is handled separately (raw body).
     ['GET', '/api/billing/config', async () => ({ ...publicBillingConfig(billingConfig()), orgIncludesBranding: Boolean(await svc.settings.get('orgIncludesBranding')) })],
+    // Social: follows, the feed, kudos, comments, blocks and reports
+    ['POST', '/api/follow', (c) => svc.social.follow(c.actor, c.body)],
+    ['GET', '/api/follow', (c) => svc.social.followStatus(c.actor, c.query.get('kind'), c.query.get('id'))],
+    ['GET', '/api/feed', (c) => svc.social.feed(c.actor, { before: c.query.get('before') })],
+    ['GET', '/api/feed/user/(\\d+)', (c, id) => svc.social.userFeed(id, c.actor, { before: c.query.get('before') })],
+    ['POST', `/api/activity/${N}/kudos`, (c, id) => svc.social.kudos(c.actor, id, c.body.on !== false)],
+    ['GET', `/api/activity/${N}/comments`, (c, id) => svc.social.commentsOf(id, c.actor)],
+    ['POST', `/api/activity/${N}/comments`, (c, id) => svc.social.comment(c.actor, id, c.body)],
+    ['DELETE', `/api/comments/${N}`, (c, id) => svc.social.deleteComment(c.actor, id)],
+    ['POST', '/api/block', (c) => svc.social.block(c.actor, c.body.user, c.body.on !== false)],
+    ['POST', '/api/report', (c) => svc.social.report(c.actor, c.body)],
+    // Clubs (free; every page is one)
+    ['POST', '/api/clubs', (c) => svc.clubs.create(c.actor, c.body)],
+    ['GET', '/api/clubs', (c) => svc.clubs.discover(Object.fromEntries(c.query))],
+    ['GET', '/api/clubs/mine', (c) => svc.clubs.mine(c.actor)],
+    ['GET', `${C}`, (c, slug) => svc.clubs.clubView(slug, c.actor, { invite: c.query.get('join') })],
+    ['GET', `${C}/feed`, (c, slug) => svc.clubs.feed(slug, c.actor, { before: c.query.get('before') })],
+    ['POST', `${C}/join`, (c, slug) => svc.clubs.join(slug, c.actor, c.body)],
+    ['POST', `${C}/leave`, (c, slug) => svc.clubs.leave(slug, c.actor)],
+    ['POST', `${C}/members/${N}`, (c, slug, id) => svc.clubs.setMember(slug, c.actor, id, c.body)],
+    ['PATCH', `${C}`, (c, slug) => svc.clubs.settings(slug, c.actor, c.body)],
     // Academy / venue pages
     ['POST', '/api/orgs', (c) => svc.orgs.createOrg(c.actor, c.body)],
     ['GET', '/api/orgs/mine', (c) => svc.orgs.mine(c.actor)],
@@ -576,6 +598,11 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         o = view;
         cacheable = false;
       }
+    }
+    // A club without a paid page lives in the app.
+    if (!o && await svc.clubs.exists(slug)) {
+      res.writeHead(302, { Location: `/club/${slug}`, 'Cache-Control': 'no-store' });
+      return res.end();
     }
     if (!o) {
       res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });

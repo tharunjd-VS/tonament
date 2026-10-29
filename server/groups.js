@@ -15,7 +15,7 @@ const AUTO_CONFIRM_MINUTES = 10;
 const MAX_COURTS = 12;
 
 // orgs: the venue / academy pages module (a group can be hosted by one).
-function createGroups({ db, fail, text, orgs }) {
+function createGroups({ db, fail, text, orgs, social = null }) {
   // ---------- helpers
 
   const slugOf = (value) => String(value || '').trim().toLowerCase()
@@ -628,6 +628,21 @@ function createGroups({ db, fail, text, orgs }) {
       await q('UPDATE group_members SET rating = rating + $3, games = games + 1, wins = wins + $4 WHERE group_id = $1 AND user_id = $2', [g.id, Number(id), d, won ? 1 : 0]);
     }
     await q('UPDATE group_games SET deltas = $1::jsonb WHERE id = $2', [JSON.stringify(deltas), x.id]);
+    if (social) await gameActivity(q, g, x);
+  }
+  // A confirmed game in the feeds of people who follow the players (the group's
+  // name is shown only to its members; see app.js).
+  async function gameActivity(q, g, x) {
+    const people = await q('SELECT id, name FROM users WHERE id = ANY($1::int[])', [[x.a1, x.a2, x.b1, x.b2].filter(Boolean)]);
+    const name = new Map(people.map((p) => [p.id, p.name]));
+    const side = (list) => list.filter(Boolean).map((id) => name.get(id) || 'Player');
+    const winners = x.winner === 'a' ? [x.a1, x.a2] : [x.b1, x.b2];
+    await social.record(q, {
+      dedupe: `game:${x.id}`, people: [x.a1, x.a2, x.b1, x.b2].filter(Boolean), sport: g.sport, verb: 'game', object: ['game', x.id],
+      data: { groupId: g.id, group: g.name, slug: g.slug, a: side([x.a1, x.a2]), b: side([x.b1, x.b2]), winner: x.winner, winners: winners.filter(Boolean),
+        score: x.final ? `${x.final.a}–${x.final.b}` : sportOf(g).summary(scoreOf(g, x)) },
+      visibility: 'followers', at: x.ended_at || null,
+    });
   }
   async function reverseRating(q, g, x) {
     for (const [id, d] of Object.entries(x.deltas || {})) {
@@ -671,6 +686,7 @@ function createGroups({ db, fail, text, orgs }) {
       const x = await gameOf(q, g, gameId, { lock: true });
       if (x.status === 'void') return gameView(q, g, x, m, actor);
       if (x.status === 'confirmed') await reverseRating(q, g, x);
+      if (social) await social.forget(q, 'game', x.id);
       await q(`UPDATE group_games SET status = 'void', deltas = NULL WHERE id = $1`, [x.id]);
       return gameView(q, g, await gameOf(q, g, x.id), m, actor);
     });
