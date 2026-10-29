@@ -466,6 +466,10 @@ ALTER TABLE entries ADD COLUMN IF NOT EXISTS level TEXT;
 -- yet"; their matches wait). retired: the side that retired mid-match.
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS away_since TIMESTAMPTZ;
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS retired TEXT;
+-- v30: team rosters (a captain, players linked by email) and payments per
+-- player: paid | waived (null: not yet).
+ALTER TABLE entry_players ADD COLUMN IF NOT EXISTS captain BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE entry_players ADD COLUMN IF NOT EXISTS fee_status TEXT;
 CREATE TABLE IF NOT EXISTS dupr_submissions (
   match_id    INTEGER PRIMARY KEY,
   status      TEXT NOT NULL DEFAULT 'queued',  -- queued | sent | failed
@@ -478,7 +482,7 @@ CREATE TABLE IF NOT EXISTS dupr_submissions (
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 29;
+const SCHEMA_VERSION = 30;
 
 async function migrate(db) {
   try {

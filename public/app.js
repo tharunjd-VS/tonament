@@ -1879,7 +1879,7 @@
           t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null,
           duprTools(t)) : !setup ? duprTools(t) : null),
       t.can.manage && t.event.fee
-        ? h('p', { class: 'muted small', style: 'margin:0 0 8px' }, `Entry fee ${money(t.event.fee)} · ${money(t.event.feeTotal || 0)} collected`)
+        ? h('p', { class: 'muted small', style: 'margin:0 0 8px' }, `Entry fee ${money(t.event.fee)}${t.config.feePer === 'player' ? ' per player' : ''} · ${money(t.event.feeTotal || 0)} collected`)
         : null,
       t.can.manage && t.limits && t.limits.entries
         ? h('p', { class: 'muted small entry-meter' },
@@ -1909,7 +1909,7 @@
           h('span', { class: 'name' },
             entryName(e),
             e.contact || e.phone ? h('small', { class: 'contact' }, [e.contact, e.phone].filter(Boolean).join(' · ')) : null,
-            e.players ? h('small', { class: 'contact' }, `Players: ${e.players.join(', ')}`) : null,
+            e.players && !(e.people && e.people.length) ? h('small', { class: 'contact' }, `Players: ${e.players.join(', ')}`) : null,
             e.members && t.can.manage && e.members.some((m) => m.contact)
               ? h('small', { class: 'contact' }, e.members.map((m) => `${m.name}: ${m.contact}`).join(' · '))
               : null,
@@ -1931,6 +1931,7 @@
               ? h('button', { class: 'btn btn-small btn-primary confirm-btn', onclick: () => confirmEntry(t, e) }, 'Confirm place')
               : null,
             t.event.fee && t.can.manage && !e.members ? feeActions(t, e) : null,
+            memberFees(t, e),
             editable && e.source === 'drawn'
               ? h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => splitPair(t, e) }, 'Split pair'))
               : null),
@@ -1950,6 +1951,7 @@
         venueCard(t),
         prizesCard(t, [t.event]),
         setup && t.entriesOpen ? publicEntryCard(t) : null,
+        myTeamCard(t),
         setup && t.solos.length
           ? h('div', { class: 'card' }, h('h2', {}, `Looking for a partner (${t.solos.length})`),
             h('p', { class: 'muted small', style: 'margin:0' }, t.solos.map((e) => e.name + (e.side ? ` (${e.side})` : '')).join(' · ')))
@@ -1960,8 +1962,8 @@
         list,
       ];
     }
-    if (!setup) return [paymentsToCheck(t), upgradeCard(t), levelPoolsCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, rankedCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
-    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), levelPoolsCard(t), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
+    if (!setup) return [paymentsToCheck(t), upgradeCard(t), teamEditCard(t), levelPoolsCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, rankedCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
+    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), levelPoolsCard(t), addEntriesForm(t, usingCheckIn), soloCard(t), teamEditCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
   }
 
   function addEntriesForm(t, walkIn) {
@@ -1995,6 +1997,22 @@
   }
 
   // "Enter this tournament" for players (no account needed).
+  // A captain's own team: who's on it (results go on each linked player's profile).
+  function myTeamCard(t) {
+    if (t.event.discipline !== 'team' || !S.me || t.can.manage) return null;
+    const mine = (t.myEntries || []).find((e) => e.eventId === t.eventId && !e.withdrawn && e.feeStatus !== 'pending');
+    if (!mine) return null;
+    const e = t.entries.find((x) => x.id === mine.id);
+    if (!e) return null;
+    const editing = S.linking === e.id;
+    return h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, `Your team · ${e.name}`),
+        !editing && t.status !== 'completed' ? h('button', { class: 'btn btn-small', onclick: () => { S.linking = e.id; render(); } }, 'Edit team') : null),
+      editing ? rosterEditor(t, e)
+        : [h('p', { class: 'small', style: 'margin:0' }, (e.people || []).map((p) => `${p.name}${p.captain ? ' (C)' : ''}`).join(' · ') || 'No players listed yet.'),
+          h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'Add each player\'s email and the team\'s results go on their Tonament profile.')]);
+  }
+
   function publicEntryCard(t) {
     const closes = t.config.entriesCloseAt ? `Entries close ${fmtWhen(t.config.entriesCloseAt)}.` : 'Entries close when the draw is made.';
     if (!S.me) {
@@ -2048,7 +2066,7 @@
     const online = fee > 0 && t.event.feeOnline;
     const drawn = t.event.discipline === 'doubles' && t.config.partners === 'drawn';
     const team = t.event.discipline === 'team';
-    const per = t.event.discipline === 'doubles' ? ' per pair' : team ? ' per team' : '';
+    const per = t.event.discipline === 'doubles' ? ' per pair' : team ? (t.config.feePer === 'player' ? ' per player' : ' per team') : '';
     const payee = (t.payment && t.payment.payee) || 'the organiser';
     const feeLine = !fee ? ''
       : online ? `Entry fee ${money(fee)}${per}, paid online when you enter. `
@@ -2655,6 +2673,7 @@
             : {};
           const fd = new FormData(form);
           const extra = form.ranked ? { ranked: form.ranked.checked } : {};
+          if (fd.get('feePer')) extra.feePer = fd.get('feePer');
           if (t.sport.id === 'pickleball') Object.assign(extra, { dupr: fd.get('dupr') || 'off', duprMin: fd.get('duprMin') || null, duprMax: fd.get('duprMax') || null });
           S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ...readCategory(form), ...readFormat(form, sport), ...fee, ...partners, ...extra }, t.id);
         }, 'Event settings saved');
@@ -2674,13 +2693,17 @@
           h('span', {}, h('strong', {}, 'Balance drawn pairs'), h('small', {}, 'Pair the top seeds with the lowest, by the order of the entry list.'))))
       : null,
     h('fieldset', { class: 'details-set' }, h('legend', {}, 'Entry fee'),
-      field(`Entry fee (₹)${t.event.discipline === 'doubles' ? ' per pair' : t.event.discipline === 'team' ? ' per team' : ''}`, h('input', {
+      field(`Entry fee (₹)${t.event.discipline === 'doubles' ? ' per pair' : t.event.discipline === 'team' ? (t.config.feePer === 'player' ? ' per player' : ' per team') : ''}`, h('input', {
         type: 'number', name: 'fee', min: 0, max: 50000, step: 1, value: t.event.fee ? t.event.fee / 100 : '', placeholder: 'Free',
       }), null, t.official
         ? 'Players pay online when they enter (Organised by Tonament).'
         : t.payment && t.payment.upi
           ? `Players pay you directly (UPI ${t.payment.upi}) and you confirm each payment.`
-          : 'Players pay you directly and you confirm each payment. Add your UPI ID under Tournament settings → Entry fees.')),
+          : 'Players pay you directly and you confirm each payment. Add your UPI ID under Tournament settings → Entry fees.'),
+      t.event.discipline === 'team' && !t.official
+        ? groupField('Charge', choiceGroup({ name: 'feePer', label: 'Charge', value: t.config.feePer || 'entry', options: [{ value: 'entry', label: 'Per team' }, { value: 'player', label: 'Per player' }] }), null,
+          'Per player: each team pays the fee for every player on its list. Either way, you can mark who has paid, player by player.')
+        : null),
     formatFields(sport, { format: t.format, ...t.config }),
     t.sport.id === 'pickleball' ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'DUPR'),
       groupField('DUPR ID on entry', choiceGroup({ name: 'dupr', label: 'DUPR ID on entry', value: t.config.dupr || 'off', options: [{ value: 'off', label: 'Off' }, { value: 'ask', label: 'Ask' }, { value: 'required', label: 'Required' }] })),
@@ -5405,14 +5428,95 @@
   // An entry's name, with each player linked to their public profile.
   function entryName(e) {
     const people = e.people || [];
-    if (!people.some((p) => p.handle)) return h('span', { class: 'entry-name' }, e.name);
+    // Teams keep their own name; their players are listed separately.
+    if (e.players || people.length > 2 || !people.some((p) => p.handle)) return h('span', { class: 'entry-name' }, e.name);
     return h('span', { class: 'entry-name' }, people.map((p, i) => [i ? ' / ' : null,
       p.handle ? h('a', { class: 'player-link', href: `/p/${p.handle}` }, p.name) : p.name]));
   }
 
   // Organisers: which players are linked to accounts, and a form to link them.
+  // ---------- team rosters and payments per player
+
+  // A team's roster: names, emails (to link them to Tonament) and the
+  // captain. Organisers, and the team's captain, edit it here.
+  function rosterEditor(t, e, { onDone } = {}) {
+    S.rosters = S.rosters || {};
+    const r = S.rosters[e.id];
+    if (!r) {
+      S.rosters[e.id] = 'loading';
+      api('GET', `${tPath(t)}/entries/${e.id}/roster`, undefined, t.id)
+        .then((x) => { S.rosters[e.id] = x.players.length ? x.players : [{ name: '', email: '', captain: true }]; render(); })
+        .catch((err) => { S.rosters[e.id] = null; toast(err.message, true); });
+      return loading();
+    }
+    if (r === 'loading') return loading();
+    const list = h('div', { class: 'roster-rows' });
+    const row = (p = {}) => h('div', { class: 'roster-row' },
+      h('input', { 'data-k': 'name', maxlength: 40, value: p.name || '', placeholder: 'Name', 'aria-label': 'Player name' }),
+      h('input', { 'data-k': 'email', type: 'email', maxlength: 120, value: p.email || '', placeholder: 'Email (optional)', 'aria-label': 'Email' }),
+      h('label', { class: 'roster-cap', title: 'Captain' }, h('input', { type: 'radio', name: `cap-${e.id}`, checked: Boolean(p.captain) }), h('span', {}, 'Captain')),
+      h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Remove player', onclick: (ev) => ev.target.closest('.roster-row').remove() }, '✕'));
+    for (const p of r) list.append(row(p));
+    const close = () => { delete S.rosters[e.id]; S.linking = null; if (onDone) onDone(); render(); };
+    const form = h('form', {
+      class: 'link-form roster-form',
+      onsubmit: (ev) => {
+        ev.preventDefault();
+        const players = [...list.querySelectorAll('.roster-row')].map((x) => ({
+          name: x.querySelector('[data-k=name]').value.trim(), email: x.querySelector('[data-k=email]').value.trim(), captain: x.querySelector('input[type=radio]').checked,
+        })).filter((x) => x.name);
+        act(async () => { S.t = await api('PUT', `${tPath(t)}/entries/${e.id}/roster`, { players }, t.id); close(); }, 'Team saved');
+      },
+    },
+    list,
+    h('button', { type: 'button', class: 'btn btn-small btn-ghost', onclick: () => { list.append(row()); list.lastChild.querySelector('input').focus(); } }, '+ Add player'),
+    h('p', { class: 'hint', style: 'margin:0' }, 'With an email, the team\'s results go on that player\'s Tonament profile (they get them when they sign up with it).'),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn btn-small btn-primary', type: 'submit' }, 'Save team'),
+      h('button', { class: 'btn btn-small btn-ghost', type: 'button', onclick: close }, 'Cancel')));
+    return form;
+  }
+  // Organisers: the team being edited, full width above the list.
+  function teamEditCard(t) {
+    if (!t.can.manage || t.event.discipline !== 'team') return null;
+    const e = t.entries.find((x) => x.id === S.linking);
+    if (!e) return null;
+    return h('div', { class: 'card roster-card' }, h('h2', {}, `Team · ${e.name}`), rosterEditor(t, e));
+  }
+  function teamPeople(t, e) {
+    const people = e.people || [];
+    if (S.linking === e.id) return h('small', { class: 'contact' }, 'Editing above ↑');
+    return [
+      people.length ? h('small', { class: 'contact' }, people.map((p) => `${p.name}${p.captain ? ' (C)' : ''}${p.linked ? ' ✓' : p.email ? ' (invited)' : ''}`).join(' · ')) : null,
+      t.can.manage ? h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.linking = e.id; render(); setTimeout(() => { const c = document.querySelector('.roster-card'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50); } }, people.length ? 'Edit team' : 'Add players')) : null,
+    ];
+  }
+  // Organisers: who in a pair or team has paid ("3 of 4 paid").
+  function memberFees(t, e) {
+    if (!t.can.manage || !t.event.fee || t.event.feeOnline || e.members || e.solo || t.event.discipline === 'singles') return null;
+    const people = e.people && e.people.length > 1 ? e.people
+      : t.event.discipline === 'doubles' ? e.name.split('/').map((name) => ({ name: name.trim(), feeStatus: null })) : [];
+    if (people.length < 2) return null;
+    const open = S.memberFees === e.id;
+    const settled = people.filter((p) => p.feeStatus).length;
+    const each = t.config.feePer === 'player' ? t.event.fee : Math.ceil(t.event.fee / people.length);
+    const set = (slot, status, msg) => act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/members/${slot}/fee`, { status }, t.id); }, msg);
+    return h('div', { class: 'member-fees' },
+      h('button', { class: 'link-btn small', onclick: () => { S.memberFees = open ? null : e.id; render(); } },
+        `${settled ? `${settled} of ${people.length} paid` : 'Payments by player'} ${open ? '▴' : '▾'}`),
+      open ? h('ul', {}, people.map((p, slot) => h('li', {},
+        h('span', {}, p.name, h('small', { class: 'muted' }, ` ${money(each)}`)),
+        p.feeStatus
+          ? h('span', { class: 'fee-actions' }, pill(p.feeStatus === 'paid' ? 'done' : '', p.feeStatus === 'paid' ? 'Paid' : 'Waived'),
+            h('button', { class: 'btn btn-small btn-ghost', onclick: () => set(slot, null, `${p.name}: unmarked`) }, 'Undo'))
+          : h('span', { class: 'fee-actions' },
+            h('button', { class: 'btn btn-small', onclick: () => set(slot, 'paid', `${p.name} paid`) }, 'Paid'),
+            h('button', { class: 'btn btn-small btn-ghost', onclick: () => set(slot, 'waived', `${p.name}: waived`) }, 'Waive'))))) : null);
+  }
+
   function entryPeople(t, e) {
-    if (!t.can.manage || t.event.discipline === 'team' || e.source === 'drawn' || e.solo) return null;
+    if (t.event.discipline === 'team') return t.can.manage ? teamPeople(t, e) : null;
+    if (!t.can.manage || e.source === 'drawn' || e.solo) return null;
     const people = e.people || [];
     const open = S.linking === e.id;
     const status = people.length

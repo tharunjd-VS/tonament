@@ -46,11 +46,16 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
   // ---------- the people behind entries
 
   // [{ name, email }] for an entry's slots; empty emails clear the link.
+  // A player's payment mark (and captaincy) stays with them when the list is
+  // edited, matched by email or name.
   async function setPeople(q, entryId, people) {
+    const before = await q('SELECT name, email, fee_status FROM entry_players WHERE entry_id = $1', [entryId]);
+    const kept = (p) => before.find((b) => (p.email && b.email === p.email) || b.name.toLowerCase() === String(p.name).toLowerCase());
     await q('DELETE FROM entry_players WHERE entry_id = $1', [entryId]);
     for (const [slot, p] of people.entries()) {
       if (!p || !p.name) continue;
-      await q('INSERT INTO entry_players (entry_id, slot, name, email, dupr_id) VALUES ($1, $2, $3, $4, $5)', [entryId, slot, p.name, p.email || null, p.duprId || null]);
+      await q('INSERT INTO entry_players (entry_id, slot, name, email, dupr_id, captain, fee_status) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [entryId, slot, p.name, p.email || null, p.duprId || null, Boolean(p.captain), p.feeStatus !== undefined ? p.feeStatus : kept(p)?.fee_status || null]);
     }
   }
   // A drawn pair is made of its two solo players.
@@ -63,7 +68,7 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
   // Everyone behind a tournament's entries, with their public profile (if any).
   async function peopleOf(q, tournamentId) {
     const rows = await q(
-      `SELECT ep.entry_id, ep.slot, ep.name, ep.email, ep.dupr_id AS "entryDupr", u.id AS "userId", u.handle, u.profile_public AS "public",
+      `SELECT ep.entry_id, ep.slot, ep.name, ep.email, ep.dupr_id AS "entryDupr", ep.captain, ep.fee_status AS "feeStatus", u.id AS "userId", u.handle, u.profile_public AS "public",
               u.dupr_id AS "duprId", u.dupr_singles AS "duprSingles", u.dupr_doubles AS "duprDoubles", u.dupr_verified AS "duprVerified"
        FROM entry_players ep JOIN entries e ON e.id = ep.entry_id LEFT JOIN users u ON u.email = ep.email AND u.disabled_at IS NULL
        WHERE e.tournament_id = $1 ORDER BY ep.entry_id, ep.slot`,
@@ -77,15 +82,28 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
     return out;
   }
   // Organisers link an entry's players to accounts (by email).
-  function readPeople(input, { names, max }) {
+  // team: a roster (names required, one captain, no repeats).
+  function readPeople(input, { names, max, team = false }) {
     if (!Array.isArray(input)) fail(400, 'players must be a list');
     if (input.length > max) fail(400, `Up to ${max} players`);
-    return input.map((p = {}, i) => {
+    const people = input.map((p = {}, i) => {
       const email = p.email ? normalizeEmail(p.email) : null;
       if (email && !validEmail(email)) fail(400, `Player ${i + 1}: enter a valid email address`);
       const name = text(p.name || names[i], 'Player name', { max: 40 });
-      return { name, email, duprId: p.duprId ? dupr.checkId(p.duprId, fail) : null };
+      return { name, email, duprId: p.duprId ? dupr.checkId(p.duprId, fail) : null, ...(team && { captain: Boolean(p.captain) }) };
     });
+    if (team) {
+      if (!people.length) fail(400, 'Add at least one player');
+      if (people.filter((p) => p.captain).length > 1) fail(400, 'Pick one captain');
+      const seen = new Set();
+      for (const p of people) {
+        for (const k of [p.name.toLowerCase(), p.email].filter(Boolean)) {
+          if (seen.has(k)) fail(400, `${p.name} is on the list twice`);
+          seen.add(k);
+        }
+      }
+    }
+    return people;
   }
 
   // Tells a partner they were entered (best effort).

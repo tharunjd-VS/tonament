@@ -28,7 +28,7 @@ const VISIBILITY = ['private', 'link', 'public'];
 // Settings that belong to the tournament as a whole; everything else in a
 // config (format details, scoring, caps) belongs to each event.
 const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
-const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level', 'ranked', 'dupr', 'duprMin', 'duprMax', 'pools', 'poolOrder'];
+const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level', 'ranked', 'dupr', 'duprMin', 'duprMax', 'pools', 'poolOrder', 'feePer'];
 // Event settings that can still change once the event has started.
 const LIVE_EVENT_KEYS = ['lateEntry', 'prizes', 'ranked', 'poolOrder'];
 const MAX_PRIZE = 10000000; // ₹1 crore
@@ -672,7 +672,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
           ? { id: p.duprId || p.entryDupr || null, singles: p.duprSingles == null ? null : Number(p.duprSingles), doubles: p.duprDoubles == null ? null : Number(p.duprDoubles), verified: Boolean(p.duprVerified) }
           : null,
       }),
-      ...(access.can.manage && { email: p.email, linked: Boolean(p.userId) }),
+      ...(p.captain && { captain: true }),
+      ...(access.can.manage && { email: p.email, linked: Boolean(p.userId), feeStatus: p.feeStatus || null }),
     }));
   }
 
@@ -1254,6 +1255,13 @@ function createService(db, { mailer, fetchImpl } = {}) {
       config.partners = input.partners;
     }
     if (input.balancePairs !== undefined) config.balancePairs = Boolean(input.balancePairs);
+    // Team events can charge per player (₹200 a player) instead of per team.
+    if (input.feePer !== undefined) {
+      if (!['entry', 'player'].includes(input.feePer)) fail(400, 'feePer must be "entry" or "player"');
+      if (input.feePer === 'player' && (input.discipline ?? ev.event.discipline) !== 'team') fail(400, 'A fee per player is for team events');
+      if (input.feePer === 'player' && PAY_ONLINE(ev)) fail(400, 'Online fees are per team');
+      config.feePer = input.feePer;
+    }
     // Level pools: an Open event split by level, the pools meeting in the
     // final (two) or the semis (one per level, for 4 levels).
     if (input.pools !== undefined) {
@@ -1501,7 +1509,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const name = partner && !solo && t.event.discipline !== 'singles' ? `${player} / ${partner}` : player;
       if (t.status !== 'setup') fail(409, 'Entries are closed — the draw has been made');
       const duprIds = await duprCheck(q, t, actor, input, { partnerMail: partner && !solo ? partnerMail : null });
-      const people = team ? [] : [
+      // A team's roster starts with its captain (who enters it) and the players listed.
+      const captainName = actor.user.name;
+      const people = team ? [
+        { name: captainName, email: contact, captain: true },
+        ...(players || []).filter((n) => n.toLowerCase() !== String(captainName).toLowerCase()).map((name) => ({ name })),
+      ] : [
         { name: player, email: contact, duprId: duprIds.own },
         ...(partner && !solo && doubles ? [{ name: partner, email: partnerMail, duprId: duprIds.partner }] : []),
       ];
@@ -1533,8 +1546,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
         // Paid to the organiser: the place is held for a while (if there is
         // one) and confirmed when the organiser has the money.
         const holdUntil = room ? holdTime(t) : new Date(); // no room: straight to the waitlist
-        await linkPeople(await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'due', feeAmount: fee, solo, side, players, userId, phone, holdUntil, level: selfLevel }));
-        return { t, name, confirmed: false, owners: [], eventId: t.eventId, solo, due: fee, holding: room, partnerMail: people[1]?.email, player };
+        const due = team ? entryFeeFor(t, people.length) : fee; // per player for some team events
+        await linkPeople(await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'due', feeAmount: due, solo, side, players, userId, phone, holdUntil, level: selfLevel }));
+        return { t, name, confirmed: false, owners: [], eventId: t.eventId, solo, due, holding: room, partnerMail: people[1]?.email, player };
       }
       const confirmed = room;
       await linkPeople(await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side, players, userId, phone, level: selfLevel }));
@@ -1732,8 +1746,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
         if (!holding && !(await hasRoom(q, t))) fail(409, `${eventLabel(t)} is full — raise its maximum or remove someone first`);
         await checkEntryLimit(q, t, 1);
         await q('UPDATE entries SET fee_status = $1, fee_amount = $2, confirmed = true, hold_until = NULL WHERE id = $3', [
-          status, status === 'waived' ? null : e.fee_amount || feeOf(t), e.id,
+          status, status === 'waived' ? null : e.fee_amount || entryFeeFor(t, (await q('SELECT COUNT(*)::int AS n FROM entry_players WHERE entry_id = $1', [e.id]))[0].n), e.id,
         ]);
+        // Paid for the whole pair or team: every player is settled.
+        await q('UPDATE entry_players SET fee_status = $1 WHERE entry_id = $2 AND fee_status IS NULL', [status === 'waived' ? 'waived' : 'paid', e.id]);
         mail = { kind: 'received', to: e.user_id ? e.contact : null, t, player: e.name };
         return;
       }
@@ -1880,7 +1896,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const [e] = await q('SELECT * FROM entries WHERE id = $1 AND tournament_id = $2', [Number(entryId) || 0, row.id]);
       if (!e) fail(404, 'Entry not found');
       const t = await eventFor(q, row, e.event_id);
-      if (t.event.discipline === 'team') fail(400, 'Team entries aren\'t linked to players');
+      if (t.event.discipline === 'team') return saveRoster(q, t, e, input.players);
       if (e.source === 'drawn') fail(409, 'Link the two players of a drawn pair one at a time');
       const doubles = t.event.discipline === 'doubles' && !e.solo;
       const names = doubles ? e.name.split(' / ') : [e.name];
@@ -1891,6 +1907,115 @@ function createService(db, { mailer, fetchImpl } = {}) {
         await profiles.copyToPair(q, e.paired_into, solos);
       }
       if (t.status === 'completed') await recordResults(q, t);
+    });
+  }
+
+  // ---------- team rosters
+
+  const MAX_ROSTER = 30;
+  // A team's players: names, emails (linking them to their accounts, so
+  // results go on their profiles) and the captain. Payment marks stay with
+  // each player.
+  async function saveRoster(q, t, e, players) {
+    const people = profiles.readPeople(players, { names: [], max: MAX_ROSTER, team: true });
+    await profiles.setPeople(q, e.id, people);
+    await q('UPDATE entries SET players = $1::jsonb WHERE id = $2', [JSON.stringify(people.map((p) => p.name)), e.id]);
+    // Charged per player: what the team owes follows its list (until it's paid).
+    if (t.config.feePer === 'player' && feeOf(t) && !DIRECT_PAID.includes(e.fee_status) && e.fee_status !== 'paid') {
+      await q('UPDATE entries SET fee_amount = $1 WHERE id = $2', [entryFeeFor(t, people.length), e.id]);
+    }
+    await settleFromMembers(q, t, e.id);
+    if (t.status === 'completed') await recordResults(q, t);
+  }
+  // The organisers, or the team's captain (who entered it), can see and edit it.
+  async function rosterAccess(q, tournament, actor, entryId) {
+    const [e] = await q('SELECT * FROM entries WHERE id = $1 AND tournament_id = $2', [Number(entryId) || 0, tournament.id]);
+    if (!e) fail(404, 'Entry not found');
+    const access = await accessOf(q, tournament, actor || {});
+    const captain = Boolean(actor?.user && e.user_id === actor.user.id);
+    if (!access.manage && !captain) fail(actor?.user ? 403 : 401, 'Only the organisers or the team\'s captain can do this');
+    const t = await eventFor(q, tournament, e.event_id);
+    if (t.event.discipline !== 'team') fail(400, `${eventLabel(t)} isn't a team event`);
+    return { t, e, access, captain };
+  }
+  // The roster with emails, for its editor (organisers, or the captain).
+  async function getRoster(id, actor, entryId) {
+    return db.tx(async (q) => {
+      const tournament = await load(q, id);
+      const { e } = await rosterAccess(q, tournament, actor, entryId);
+      const rows = await q('SELECT slot, name, email, captain, fee_status FROM entry_players WHERE entry_id = $1 ORDER BY slot', [e.id]);
+      // Older team entries only have a list of names.
+      const players = rows.length ? rows.map((r) => ({ name: r.name, email: r.email, captain: r.captain, feeStatus: r.fee_status }))
+        : (e.players || []).map((name) => ({ name, email: null, captain: false, feeStatus: null }));
+      return { entry: { id: e.id, name: e.name }, players };
+    });
+  }
+  async function setRoster(id, actor, entryId, input = {}) {
+    let notify = [];
+    const out = await db.tx(async (q) => {
+      const tournament = await load(q, id, { lock: true });
+      const { t, e } = await rosterAccess(q, tournament, actor, entryId);
+      if (t.status === 'completed' && !(await accessOf(q, tournament, actor || {})).manage) fail(409, 'The event has finished — ask the organiser');
+      const before = new Set((await q('SELECT email FROM entry_players WHERE entry_id = $1 AND email IS NOT NULL', [e.id])).map((r) => r.email));
+      await saveRoster(q, t, e, input.players);
+      notify = (await q('SELECT name, email FROM entry_players WHERE entry_id = $1 AND email IS NOT NULL', [e.id])).filter((r) => !before.has(r.email) && r.email !== actor?.user?.email);
+      return { t, team: e.name, view: await view(q, await load(q, id), actor) };
+    });
+    // Newly added players hear about it (best effort), like a doubles partner.
+    if (mailer?.enabled && input.baseUrl) {
+      for (const p of notify) {
+        await profiles.notifyPartner({ email: p.email, player: out.team, tournament: out.t.name, event: multiEventLabel(out.t), tournamentId: out.t.id, baseUrl: input.baseUrl });
+      }
+    }
+    return out.view;
+  }
+
+  // ---------- payments per player (pairs and teams)
+
+  // What one player owes: the fee per player (team events can charge per
+  // player), else their share of the pair's or team's fee.
+  const perPlayer = (t, n) => (t.config.feePer === 'player' ? feeOf(t) : Math.ceil(feeOf(t) / Math.max(1, n)));
+  // A team's fee when it's charged per player.
+  const entryFeeFor = (t, players) => (t.config.feePer === 'player' ? feeOf(t) * Math.max(1, players) : feeOf(t));
+  // When everyone has paid (or been let off), the entry is paid; when someone
+  // is unmarked again, it's due.
+  async function settleFromMembers(q, t, entryId) {
+    if (!feeOf(t) || PAY_ONLINE(t)) return;
+    const rows = await q('SELECT fee_status FROM entry_players WHERE entry_id = $1', [entryId]);
+    if (!rows.length || !rows.some((r) => r.fee_status)) return;
+    const [e] = await q('SELECT * FROM entries WHERE id = $1', [entryId]);
+    const done = rows.every((r) => r.fee_status);
+    const paid = rows.filter((r) => r.fee_status === 'paid').length;
+    if (done && !DIRECT_PAID.includes(e.fee_status)) {
+      if (!e.confirmed && t.status === 'setup') {
+        const holding = ['due', 'sent'].includes(e.fee_status) && (e.hold_until === null || e.hold_until > new Date());
+        if (!holding && !(await hasRoom(q, t))) fail(409, `${eventLabel(t)} is full — raise its maximum or remove someone first`);
+        await checkEntryLimit(q, t, 1);
+      }
+      await q('UPDATE entries SET fee_status = $1, fee_amount = $2, confirmed = true, hold_until = NULL WHERE id = $3',
+        [paid ? 'received' : 'waived', paid ? paid * perPlayer(t, rows.length) : null, entryId]);
+    } else if (!done && DIRECT_PAID.includes(e.fee_status)) {
+      await q(`UPDATE entries SET fee_status = 'due', fee_amount = $1 WHERE id = $2`, [entryFeeFor(t, rows.length), entryId]);
+    }
+  }
+  // Organisers: one player of a pair or team has paid (or is let off).
+  async function setMemberFee(id, actor, entryId, slot, status) {
+    if (![null, 'paid', 'waived'].includes(status ?? null)) fail(400, 'status must be "paid", "waived" or null');
+    return mutateEntry(id, actor, entryId, async (q, t) => {
+      if (!feeOf(t)) fail(409, 'This event has no entry fee');
+      if (PAY_ONLINE(t)) fail(409, 'Fees for this event are paid online');
+      const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+      let rows = await q('SELECT slot FROM entry_players WHERE entry_id = $1 ORDER BY slot', [e.id]);
+      // A pair added by name: its two players, so each can be marked.
+      if (!rows.length && t.event.discipline !== 'singles') {
+        const names = t.event.discipline === 'team' ? e.players || [] : e.name.split('/').map((x) => x.trim()).filter(Boolean);
+        if (names.length > 1) await profiles.setPeople(q, e.id, names.map((name) => ({ name })));
+        rows = await q('SELECT slot FROM entry_players WHERE entry_id = $1 ORDER BY slot', [e.id]);
+      }
+      if (rows.length < 2) fail(409, 'Mark the payment for the whole entry');
+      if (!rows.some((r) => r.slot === Number(slot))) fail(404, 'Player not found');
+      await q('UPDATE entry_players SET fee_status = $1 WHERE entry_id = $2 AND slot = $3', [status ?? null, e.id, Number(slot)]);
+      await settleFromMembers(q, t, e.id);
     });
   }
 
@@ -3391,6 +3516,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
     checkInAll,
     redraw,
     lateEntry,
+    getRoster,
+    setRoster,
+    setMemberFee,
     arrive,
     setAway,
     giveWalkover,

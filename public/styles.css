@@ -1235,3 +1235,15 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .order-of-play li { flex-wrap: wrap; }
 .order-of-play .oop-actions { flex-basis: 100%; justify-content: flex-end; }
 .arrive-form select { width: auto; max-width: 100%; }
+
+/* Team rosters and payments per player */
+.roster-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: 'name cap del' 'email email email'; gap: 4px 6px; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.roster-row [data-k=name] { grid-area: name; }
+.roster-row [data-k=email] { grid-area: email; }
+.roster-row .roster-cap { grid-area: cap; }
+.roster-row .icon-btn { grid-area: del; }
+.roster-rows { display: grid; gap: 6px; margin-bottom: 8px; }
+.roster-row input[type=text], .roster-row input:not([type]), .roster-row input[type=email] { min-width: 0; width: 100%; }
+.roster-cap { display: flex; align-items: center; justify-content: center; gap: 4px; font-weight: 600; font-size: 0.8rem; color: var(--muted); }
+.member-fees ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }
+.member-fees li { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--border); }
