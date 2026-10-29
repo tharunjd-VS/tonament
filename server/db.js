@@ -715,11 +715,40 @@ CREATE TABLE IF NOT EXISTS goal_members (
   PRIMARY KEY (goal_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS goal_members_user ON goal_members(user_id);
+-- v39: team ties in racket sports (public/sports/tie.js). A tie is a match
+-- between two team entries, played as several rubbers. Each captain's
+-- line-up (roster slots per rubber) stays sealed until both are in; then the
+-- rubbers are made and scored like matches. The tie's rallies are the
+-- rubbers' winners in the order they finished.
+CREATE TABLE IF NOT EXISTS lineups (
+  match_id     INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  side         TEXT NOT NULL,                     -- a | b
+  slots        JSONB NOT NULL,                    -- [[slot], [slot, slot], …] per rubber
+  submitted_by INTEGER,
+  submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (match_id, side)
+);
+CREATE TABLE IF NOT EXISTS rubbers (
+  id           SERIAL PRIMARY KEY,
+  match_id     INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  position     INTEGER NOT NULL,
+  label        TEXT NOT NULL,                     -- S1, D, MS, XD, …
+  kind         TEXT NOT NULL,                     -- singles | doubles
+  a_slots      INTEGER[] NOT NULL,
+  b_slots      INTEGER[] NOT NULL,
+  rallies      TEXT NOT NULL DEFAULT '',
+  first_server TEXT NOT NULL DEFAULT 'a',
+  final        JSONB,
+  winner       TEXT,
+  status       TEXT NOT NULL DEFAULT 'live',      -- live | done
+  finished_at  TIMESTAMPTZ,
+  UNIQUE (match_id, position)
+);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 38;
+const SCHEMA_VERSION = 39;
 
 async function migrate(db) {
   try {

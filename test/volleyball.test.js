@@ -61,11 +61,14 @@ test('beach volleyball, throwball and sepak takraw', () => {
 test('event types per sport', () => {
   assert.deepEqual(catalog.presetsFor('volleyball').map((p) => p.key), ['MT', 'WT', 'XT', 'OT']);
   assert.deepEqual(catalog.presetsFor('beach-volleyball').map((p) => p.key), ['MD', 'WD', 'XD', 'OD']);
-  assert.ok(!catalog.presetsFor('badminton').some((p) => p.discipline === 'team'));
+  // Racket sports have team events too, played as ties of singles and doubles.
+  assert.ok(catalog.presetsFor('badminton').some((p) => p.discipline === 'team'));
+  assert.ok(catalog.hasTies('badminton') && !catalog.hasTies('volleyball') && !catalog.isTeamSport('badminton'));
   assert.equal(catalog.eventName({ discipline: 'team', gender: 'mixed', age: 'U19', level: 'Open' }), 'Mixed Team · U19');
   assert.equal(catalog.normalize({}, {}, 'volleyball').discipline, 'team'); // the default event
   assert.throws(() => catalog.normalize({ discipline: 'singles' }, {}, 'volleyball'), /team events only/);
-  assert.throws(() => catalog.normalize({ discipline: 'team' }, {}, 'badminton'), /no team events/);
+  assert.equal(catalog.normalize({ discipline: 'team' }, {}, 'badminton').discipline, 'team');
+  assert.throws(() => catalog.normalize({ discipline: 'team' }, {}, 'snooker'), /no team events/);
   assert.throws(() => catalog.normalize({ discipline: 'singles', gender: 'mixed' }, {}, 'volleyball'), /team events only/);
 });
 

@@ -3092,6 +3092,7 @@
           const extra = form.ranked ? { ranked: form.ranked.checked } : {};
           if (fd.get('feePer')) extra.feePer = fd.get('feePer');
           if (t.sport.id === 'pickleball') Object.assign(extra, { dupr: fd.get('dupr') || 'off', duprMin: fd.get('duprMin') || null, duprMax: fd.get('duprMax') || null });
+          if (fd.get('tieFormat')) extra.tie = { format: fd.get('tieFormat'), playAll: Boolean(form.tiePlayAll && form.tiePlayAll.checked) };
           S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, { ...readCategory(form), ...readFormat(form, sport), ...fee, ...partners, ...extra }, t.id);
         }, 'Event settings saved');
       },
@@ -3124,6 +3125,13 @@
         ? groupField('Charge', choiceGroup({ name: 'feePer', label: 'Charge', value: t.config.feePer || 'entry', options: [{ value: 'entry', label: 'Per team' }, { value: 'player', label: 'Per player' }] }), null,
           'Per player: each team pays the fee for every player on its list. Either way, you can mark who has paid, player by player.')
         : null),
+    t.event.discipline === 'team' && CAT.hasTies(t.sport.id) && window.TonamentTie ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'Team ties'),
+      groupField('Each tie is', choiceGroup({
+        name: 'tieFormat', label: 'Each tie is', value: (t.config.tie && t.config.tie.format) || '2s1d',
+        options: Object.entries(TonamentTie.FORMATS).map(([value, f]) => ({ value, label: f.name, hint: f.hint })),
+      })),
+      h('label', { class: 'check-field' }, h('input', { type: 'checkbox', name: 'tiePlayAll', checked: Boolean(t.config.tie && t.config.tie.playAll) }),
+        h('span', {}, h('strong', {}, 'Play every match'), h('small', {}, 'Off: a tie ends once a team has won most of its matches. On: all are played, and the table counts every one.')))) : null,
     formatFields(sport, { format: t.format, ...t.config }),
     t.sport.id === 'pickleball' ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'DUPR'),
       groupField('DUPR ID on entry', choiceGroup({ name: 'dupr', label: 'DUPR ID on entry', value: t.config.dupr || 'off', options: [{ value: 'off', label: 'Off' }, { value: 'ask', label: 'Ask' }, { value: 'required', label: 'Required' }] })),
@@ -3965,6 +3973,138 @@
   }
 
   // The tournament as seen from a match's own event (its scoring rules).
+  // ---------- team ties (racket sports): line-ups, then each match of the tie
+  const tiePath = (t, mid) => `${tPath(t)}/matches/${mid}/tie`;
+  async function loadTie(t, mid) {
+    try {
+      S.tie = { mid, ...(await api('GET', tiePath(t, mid), undefined, t.id)) };
+    } catch (e) {
+      S.tie = { mid, error: e.message };
+    }
+    render();
+  }
+  setInterval(() => {
+    if (S.route.name === 'match' && S.tie && S.tie.mid === S.route.mid && S.tie.status !== 'done' && !document.hidden && !isEditing() && !tieSending && S.t) {
+      loadTie(forMatch(S.route.mid) || S.t, S.route.mid);
+    }
+  }, 5000);
+  // Taps go one at a time, each on top of the last.
+  const tieQueue = [];
+  let tieSending = false;
+  function tieTap(t, mid, n, extra) {
+    tieQueue.push({ n, extra });
+    render();
+    if (tieSending) return;
+    tieSending = true;
+    (async () => {
+      while (tieQueue.length) {
+        const { n: k, extra: x } = tieQueue[0];
+        const r = S.tie.rubbers[k];
+        try {
+          S.tie = { mid, ...(await api('POST', `${tiePath(t, mid)}/rubbers/${k}/rally`, { ...x, at: r.rallies }, t.id)) };
+          tieQueue.shift();
+        } catch (e) {
+          tieQueue.length = 0;
+          if (e.code === 'stale') await loadTie(t, mid); else toast(e.message, true);
+        }
+        render();
+      }
+      tieSending = false;
+    })();
+  }
+
+  function viewTie(t, m) {
+    const x = S.tie;
+    if (!x || x.mid !== m.id) {
+      if (!x || x.mid !== m.id) { S.tie = { mid: m.id, loading: true }; loadTie(t, m.id); }
+      return loading();
+    }
+    if (x.loading) return loading();
+    if (x.error) return errorView(x.error);
+    const names = { a: nameOf(m.a), b: nameOf(m.b) };
+    const post = (path, body, msg) => act(async () => { S.tie = { mid: m.id, ...(await api('POST', `${tiePath(t, m.id)}/${path}`, body, t.id)) }; }, msg);
+    const lineupForm = (side) => {
+      const s = x.sides[side];
+      const selects = x.format.rubbers.map((f, i) => h('div', { class: 'lineup-row' },
+        h('strong', {}, f.label),
+        Array.from({ length: f.kind === 'doubles' ? 2 : 1 }, (_, k) => h('select', { 'data-r': i, 'data-k': k, required: true, 'aria-label': `${f.label} player ${k + 1}` },
+          h('option', { value: '' }, 'Pick a player'),
+          s.roster.map((p) => h('option', { value: p.slot, selected: s.slots && s.slots[i] && s.slots[i][k] === p.slot }, p.name))))));
+      const form = h('form', {
+        class: 'lineup-form',
+        onsubmit: (e) => {
+          e.preventDefault();
+          const slots = x.format.rubbers.map((f, i) => [...form.querySelectorAll(`select[data-r="${i}"]`)].map((el) => Number(el.value)));
+          act(async () => { S.tie = { mid: m.id, ...(await api('PUT', `${tiePath(t, m.id)}/lineup`, { side, slots }, t.id)) }; form.removeAttribute('data-dirty'); },
+            'Line-up in — it stays sealed until both teams are in');
+        },
+      }, selects, h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, s.lineup ? 'Change line-up' : 'Send line-up')));
+      return form;
+    };
+    const sideCard = (side) => {
+      const s = x.sides[side];
+      return h('div', { class: 'card lineup-card' },
+        h('div', { class: 'card-head' }, h('h3', {}, names[side]), s.lineup ? pill('done', 'Line-up in ✓') : pill('waiting', 'Waiting for the line-up')),
+        s.canSet && s.roster && s.roster.length ? lineupForm(side)
+          : s.canSet ? h('p', { class: 'muted small' }, 'Add the team\'s players first (Players tab › the team › Edit team).')
+            : s.lineup && !s.slots ? h('p', { class: 'muted small' }, 'Sealed until both teams are in.') : null);
+    };
+    const rubbersMade = x.rubbers.some((r) => r.status !== 'waiting');
+    const open = S.tieRubber;
+    const rubberRow = (r) => {
+      const scorable = x.can.score && r.status === 'live';
+      return h('li', { class: `rubber${r.winner ? ` won-${r.winner}` : ''}` },
+        h('span', { class: 'seed' }, r.label),
+        h('span', { class: 'name' },
+          r.a ? h('span', {}, h('span', { class: r.winner === 'a' ? 'won' : '' }, r.a.join(' & ')), h('span', { class: 'muted' }, ' v '), h('span', { class: r.winner === 'b' ? 'won' : '' }, r.b.join(' & '))) : h('span', { class: 'muted' }, r.kind === 'doubles' ? 'Doubles' : 'Singles'),
+          r.summary ? h('small', { class: 'contact' }, r.summary) : null),
+        r.status === 'done' ? pill('done', `${names[r.winner]} ✓`) : r.status === 'unplayed' ? pill('', 'Not needed') : r.status === 'live' && r.rallies ? pill('live', 'Playing') : null,
+        scorable ? h('button', { class: 'btn btn-small', onclick: () => { S.tieRubber = open === r.position ? null : r.position; render(); } }, open === r.position ? 'Close' : 'Score') : null);
+    };
+    const rubberScorer = (r) => {
+      const mm = { a: { id: 'a', name: r.a.join(' & ') }, b: { id: 'b', name: r.b.join(' & ') }, status: 'live', winner: r.winner, summary: r.summary, score: r.score };
+      const atEnd = Boolean((S.gameMode || {})[`r${m.id}-${r.position}`]);
+      const tap = (extra) => tieTap(t, m.id, r.position, extra);
+      const sport = (S.sports || []).find((s) => s.id === t.sport.id);
+      const n = (sport && sport.defaults && sport.defaults.bestOf) || 3;
+      const games = Array.from({ length: (t.config.scoring && t.config.scoring.bestOf) || n }, (_, i) => [h('input', { type: 'number', min: 0, max: 99, inputmode: 'numeric', 'aria-label': `Game ${i + 1} ${mm.a.name}`, 'data-g': i, 'data-s': 'a' }), h('input', { type: 'number', min: 0, max: 99, inputmode: 'numeric', 'aria-label': `Game ${i + 1} ${mm.b.name}`, 'data-g': i, 'data-s': 'b' })]);
+      const final = h('form', {
+        class: 'tie-final',
+        onsubmit: (e) => {
+          e.preventDefault();
+          const list = games.map(([a, b]) => ({ a: a.value, b: b.value })).filter((g) => g.a !== '' && g.b !== '').map((g) => ({ a: Number(g.a), b: Number(g.b) }));
+          post(`rubbers/${r.position}/result`, { games: list }, `${r.label} saved`);
+        },
+      }, h('div', { class: 'tie-games' }, h('span', {}, ''), h('strong', {}, mm.a.name), h('strong', {}, mm.b.name),
+        games.map(([a, b], i) => [h('span', { class: 'muted small' }, `Game ${i + 1}`), a, b])),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save score')));
+      return h('div', { class: 'card tie-scorer' },
+        h('h3', {}, `${r.label}: ${mm.a.name} v ${mm.b.name}`),
+        r.score && r.rallies ? scoreboard(mm) : null,
+        h('div', { class: 'seg score-mode', role: 'group', 'aria-label': 'How to score' },
+          [[false, 'Score live'], [true, 'Final score']].map(([v, l]) => h('button', { 'aria-pressed': String(atEnd === v), onclick: () => { S.gameMode = { ...(S.gameMode || {}), [`r${m.id}-${r.position}`]: v }; render(); } }, l))),
+        atEnd ? final : h('div', { class: 'scorer' },
+          r.score && r.score.taps && r.score.taps.max > 1 ? pointPad(`r${m.id}-${r.position}`, r.score, { a: mm.a.name, b: mm.b.name }, tap)
+            : h('div', { class: 'score-btns' }, ['a', 'b'].map((s) => h('button', { class: `score-btn side-${s}`, onclick: () => tap({ side: s }) }, h('span', { class: 'sbtn-plus' }, '+1'), h('span', { class: 'sbtn-name' }, mm[s].name)))),
+          h('div', { class: 'sync', role: 'status' }, tieQueue.length ? 'Saving…' : 'All points saved'),
+          h('div', { class: 'scorer-tools' }, h('button', { class: 'btn', disabled: (!r.rallies && !r.final) || tieQueue.length > 0, onclick: () => post(`rubbers/${r.position}/undo`, { at: r.rallies }) }, '↶ Undo'))));
+    };
+    const done = x.rubbers.filter((r) => r.status === 'done');
+    const wins = { a: done.filter((r) => r.winner === 'a').length, b: done.filter((r) => r.winner === 'b').length };
+    return [
+      h('div', { class: 'card tie-head' },
+        h('p', { class: 'eyebrow' }, `Team tie · ${x.format.name}${x.format.playAll ? ' · all matches played' : ''}`),
+        h('div', { class: 'tie-score' },
+          h('span', { class: x.winner === 'a' ? 'won' : '' }, names.a), h('strong', {}, `${wins.a} – ${wins.b}`), h('span', { class: x.winner === 'b' ? 'won' : '' }, names.b)),
+        x.status === 'done' ? h('p', { class: 'small', style: 'margin:6px 0 0' }, `🏆 ${names[x.winner]} win the tie`) : null),
+      rubbersMade ? null : h('div', { class: 'lineups' }, sideCard('a'), sideCard('b')),
+      h('div', { class: 'card' }, h('h2', {}, 'Matches'),
+        h('ol', { class: 'entries rubbers' }, x.rubbers.map(rubberRow)),
+        rubbersMade ? null : h('p', { class: 'hint' }, 'Each captain picks who plays which match. Line-ups stay sealed until both are in; then the matches can be scored.')),
+      open != null && x.rubbers[open] && x.rubbers[open].status === 'live' ? rubberScorer(x.rubbers[open]) : null,
+    ];
+  }
+
   function forMatch(mid) {
     const ev = S.t && eventOfMatch(S.t, mid);
     return ev ? withEvent(S.t, ev) : null;
@@ -3978,6 +4118,12 @@
     if (pendingOps(m.id).length && !sending.has(m.id)) sendQueue(t, m.id); // resume after navigating away
     document.title = `${nameOf(m.a)} v ${nameOf(m.b)} · ${t.name}`;
     const backTab = m.stage === 'knockout' ? 'draw' : 'live';
+    // A team tie: line-ups, then each of its matches.
+    if (t.config && t.config.tie && t.event.discipline === 'team') {
+      return [h('a', { class: 'back', href: tabHref(t, backTab) }, `← ${t.name}${multiEvent(t) ? ` · ${t.event.name}` : ''}`),
+        h('div', { class: 'match-head' }, h('span', {}, matchLabel(m)), h('span', { class: 'actions' }, connDot(), statusTag(m))),
+        m.a && m.b ? viewTie(t, m) : h('p', { class: 'muted' }, 'Both teams aren\'t known yet.')];
+    }
     return [
       h('a', { class: 'back', href: tabHref(t, backTab) }, `← ${t.name}${multiEvent(t) ? ` · ${t.event.name}` : ''}`),
       h('div', { class: 'match-head' },

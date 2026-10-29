@@ -45,7 +45,7 @@ test('catalogue: names, short names and validation', () => {
   assert.equal(catalog.shortName({ discipline: 'doubles', gender: 'mixed', age: 'U19', level: 'Advanced' }), 'XD U19 Adv');
   assert.equal(catalog.shortName({ discipline: 'doubles', gender: 'men', age: 'Open', level: 'Beginner+' }), 'MD Beg+');
   assert.equal(catalog.eventName({ discipline: 'doubles', gender: 'men', age: 'Open', level: 'Beginner+' }), 'Men\'s Doubles · Beginner+');
-  assert.throws(() => catalog.normalize({ discipline: 'singles', gender: 'mixed' }), /doubles only/);
+  assert.throws(() => catalog.normalize({ discipline: 'singles', gender: 'mixed' }), /doubles or teams only/);
   assert.throws(() => catalog.normalize({ discipline: 'triples' }), /singles, doubles or team/);
   assert.deepEqual(catalog.normalize({ discipline: 'doubles', gender: 'men', age: 'u15', level: 'over 40 social' }), {
     discipline: 'doubles', gender: 'men', age: 'U15', level: 'over 40 social', name: null,
@@ -58,7 +58,7 @@ test('a tournament with several events: names, defaults and independent entries'
   assert.deepEqual(t.events.map((e) => e.name), ['Men\'s Singles · U19 · Intermediate', 'Women\'s Singles', 'Mixed Doubles · U19']);
   assert.deepEqual(t.events.map((e) => e.shortName), ['MS U19 Int', 'WS', 'XD U19']);
   assert.ok(t.events.every((e) => e.format === 'knockout' && e.status === 'setup'));
-  await assert.rejects(svc.createTournament(ORG, { name: 'Bad', events: [{ discipline: 'singles', gender: 'mixed' }] }), /doubles only/);
+  await assert.rejects(svc.createTournament(ORG, { name: 'Bad', events: [{ discipline: 'singles', gender: 'mixed' }] }), /doubles or teams only/);
 
   // With several events the event must be named.
   await assert.rejects(svc.addEntries(id, ORG, ['A']), (e) => e.status === 400 && e.code === 'event');

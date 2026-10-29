@@ -415,6 +415,12 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `/api/challenges/${N}/result`, (c, id) => svc.challenges.result(id, c.actor, c.body)],
     ['POST', `/api/challenges/${N}/confirm`, (c, id) => svc.challenges.confirm(id, c.actor)],
     ['POST', `/api/challenges/${N}/dispute`, (c, id) => svc.challenges.dispute(id, c.actor)],
+    // Team ties: line-ups and each match (rubber) of a tie
+    ['GET', `${T}/matches/${N}/tie`, (c, id, mid) => svc.ties.view(id, c.actor, mid)],
+    ['PUT', `${T}/matches/${N}/tie/lineup`, (c, id, mid) => svc.ties.setLineup(id, c.actor, mid, c.body)],
+    ['POST', `${T}/matches/${N}/tie/rubbers/(\\d)/rally`, (c, id, mid, n) => svc.ties.rally(id, c.actor, mid, n, c.body)],
+    ['POST', `${T}/matches/${N}/tie/rubbers/(\\d)/undo`, (c, id, mid, n) => svc.ties.undo(id, c.actor, mid, n, c.body)],
+    ['POST', `${T}/matches/${N}/tie/rubbers/(\\d)/result`, (c, id, mid, n) => svc.ties.result(id, c.actor, mid, n, c.body)],
     // Goals: personal, a club's total, or club v club
     ['GET', '/api/goals', (c) => svc.goals.mine(c.actor)],
     ['POST', '/api/goals', (c) => svc.goals.create(c.actor, c.body)],

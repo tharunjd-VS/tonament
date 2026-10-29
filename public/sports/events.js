@@ -42,8 +42,13 @@
   // The suggestions for a sport; every sport's when none is given (search).
   const levelsFor = (sport) => (sport ? (SPORT_LISTS[sport] || {}).levels || LEVELS : uniq([...LEVELS, ...Object.values(SPORT_LISTS).flatMap((l) => l.levels || [])]));
   const agesFor = (sport) => (sport ? (SPORT_LISTS[sport] || {}).ages || AGES : uniq([...AGES, ...Object.values(SPORT_LISTS).flatMap((l) => l.ages || [])]));
-  const disciplinesFor = (sport) => (sport && (SPORT_LISTS[sport] || {}).disciplines) || ['singles', 'doubles', 'any'];
-  const isTeamSport = (sport) => disciplinesFor(sport).includes('team');
+  // Racket sports also have team events, played as ties (singles and doubles
+  // matches between two teams; tie.js).
+  const disciplinesFor = (sport) => (sport && (SPORT_LISTS[sport] || {}).disciplines) || ['singles', 'doubles', 'team', 'any'];
+  // A sport played only by teams (football, volleyball, …).
+  const isTeamSport = (sport) => { const d = disciplinesFor(sport); return d.length === 1 && d[0] === 'team'; };
+  // Team events here are ties of singles and doubles matches.
+  const hasTies = (sport) => Boolean(sport) && disciplinesFor(sport).includes('team') && !isTeamSport(sport);
   // The levels a player can be (lowest first) — an event's levels without 'Open'.
   const entryLevels = (sport) => levelsFor(sport).filter((l) => l !== 'Open');
   // The quick-add choices for a sport; all of them when none is given (search).
@@ -141,5 +146,5 @@
   // "Courts", "Tables", "Boards", "Pitches".
   const courtWords = (sport) => { const w = courtWord(sport); return /(ch|sh|s)$/.test(w) ? `${w}es` : `${w}s`; };
 
-  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, entryLevels, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName, courtWord, courtWords };
+  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, hasTies, entryLevels, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName, courtWord, courtWords };
 });

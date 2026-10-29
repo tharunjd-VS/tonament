@@ -22,6 +22,8 @@ const { createNotify } = require('./notify');
 const { createChallenges } = require('./challenges');
 const { createLadders } = require('./ladders');
 const { createGoals } = require('./goals');
+const { createTies } = require('./ties');
+const TIE = require('../public/sports/tie');
 const dupr = require('./dupr');
 const { inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
 const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
@@ -36,7 +38,7 @@ const VISIBILITY = ['private', 'link', 'public'];
 // Settings that belong to the tournament as a whole; everything else in a
 // config (format details, scoring, caps) belongs to each event.
 const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
-const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level', 'ranked', 'dupr', 'duprMin', 'duprMax', 'pools', 'poolOrder', 'feePer'];
+const EVENT_KEYS = ['tie', 'format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level', 'ranked', 'dupr', 'duprMin', 'duprMax', 'pools', 'poolOrder', 'feePer'];
 // Event settings that can still change once the event has started.
 const LIVE_EVENT_KEYS = ['lateEntry', 'prizes', 'ranked', 'poolOrder', 'fee', 'feePer'];
 const MAX_PRIZE = 10000000; // ₹1 crore
@@ -305,7 +307,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
   function eventContext(t, row) {
     const config = { ...row.config };
     for (const k of TOURNAMENT_KEYS) config[k] = t.config[k] ?? (k === 'selfEntry' ? true : null);
-    return { ...t, eventId: row.id, event: row, format: row.format, status: row.status, config };
+    // A team event in a racket sport is played as ties of singles and doubles.
+    const base = t.sportDef;
+    const tie = row.discipline === 'team' && catalog.hasTies(base.id);
+    if (tie) config.tie = TIE.normalize(config.tie || {});
+    return { ...t, eventId: row.id, event: row, format: row.format, status: row.status, config, sportDef: tie ? TIE.tieSport(base, config.tie) : base };
   }
 
   // The event to act on: the one asked for, or the only one.
@@ -1406,8 +1412,14 @@ function createService(db, { mailer, fetchImpl } = {}) {
       fail(409, PAY_ONLINE(ev) ? 'Online entry fees are fixed once the event starts' : 'The event has finished');
     }
     if (input.format !== undefined && !FORMATS[input.format]) fail(400, 'Unknown format');
+    // Ties: which matches make up a tie, and whether all are played.
+    if (input.tie !== undefined) {
+      if ((input.discipline ?? ev.event.discipline) !== 'team' || !catalog.hasTies(ev.sportDef.id)) fail(400, 'Tie formats are for team events in racket sports');
+      try { input.tie = TIE.normalize(input.tie); } catch (err) { fail(400, err.message); }
+    }
     const format = input.format ?? ev.format;
     const config = buildConfig(input, ev.sportDef, ev.config);
+    if (input.tie !== undefined) config.tie = input.tie;
     if (input.maxEntries !== undefined) checkMaxEntries(config, ev.plan);
     if (input.partners !== undefined) {
       if (!['own', 'drawn'].includes(input.partners)) fail(400, 'partners must be "own" or "drawn"');
@@ -2860,6 +2872,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const { t: tournament } = await lockWith(q, id, actor, 'score');
       const m = await matchOf(q, tournament, mid);
       const t = await eventFor(q, tournament, m.event_id);
+      if (t.sportDef.tie) fail(409, 'A tie is scored match by match — open the tie');
       if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished');
       if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
       requireStageOpen(t, m);
@@ -2901,6 +2914,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const { t: tournament } = await lockWith(q, id, actor, 'score');
       const m = await matchOf(q, tournament, mid);
       const t = await eventFor(q, tournament, m.event_id);
+      if (t.sportDef.tie) fail(409, 'A tie is scored match by match — open the tie');
       if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished — undo the last point to change it');
       if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
       requireStageOpen(t, m);
@@ -2925,6 +2939,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const { t: tournament } = await lockWith(q, id, actor, 'score');
       const m = await matchOf(q, tournament, mid);
       const t = await eventFor(q, tournament, m.event_id);
+      if (t.sportDef.tie) fail(409, 'A tie is undone match by match — open the tie');
       if (m.walkover) fail(409, 'Walkovers can\'t be undone');
       if (m.status === 'bye' || (!m.rallies && !m.retired)) fail(409, 'Nothing to undo');
       await claimMatch(q, m, actor);
@@ -3652,6 +3667,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const clubs = createClubs({ db, fail, orgs, social, mediaUrl, notify });
   const ladders = createLadders({ db, fail, text, social, notify, challenges });
   const goals = createGoals({ db, fail, text, social, notify });
+  const ties = createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, requireStageOpen });
   goalsRef = goals;
   // (the goal card asks the goals module for a goal when it's drawn)
   const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null) });
@@ -3678,6 +3694,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     challenges,
     ladders,
     goals,
+    ties,
     referrals,
     useCredit,
     takeOverScoring,

@@ -11,7 +11,7 @@ const SHELL = [
   '/offline', '/styles.css', '/app.js', '/site.js', '/formats.js', '/schedule.js', '/regions.js', '/icons.svg',
   '/fonts/Outfit-Variable.woff2', '/brand/logo-white.svg', '/brand/mark-white.svg', '/brand/mark.svg', '/brand/icon-192.png', '/manifest.webmanifest',
   ...['badminton', 'rally', 'pickleball', 'table-tennis', 'squash', 'volleyball', 'beach-volleyball', 'throwball', 'sepak-takraw', 'tennis-core',
-    'tennis', 'padel', 'frames', 'snooker', 'pool', 'carrom', 'timed', 'football', 'futsal', 'hockey', 'kabaddi', 'basketball', 'result', 'league', 'events']
+    'tennis', 'padel', 'frames', 'snooker', 'pool', 'carrom', 'timed', 'football', 'futsal', 'hockey', 'kabaddi', 'basketball', 'result', 'league', 'events', 'tie']
     .map((s) => `/sports/${s}.js`),
 ];
 
