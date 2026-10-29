@@ -1122,6 +1122,7 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .org-t-list { list-style: none; padding: 0; margin: 0 0 12px; }
 .org-t-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 10px 0; border-top: 1px solid var(--border); }
 .org-t-list li a { font-weight: 600; flex: 1 1 12em; }
+.org-t-list li > .actions, .org-t-list li > .more-btn { margin-left: auto !important; }
 .t-byline { font-size: 0.9rem; color: var(--link); }
 .settings-card .switch-field strong { font-size: 1.05rem; }
 .price-card.org-price { margin: 16px 0; border: 2px solid var(--accent); }
@@ -1148,6 +1149,7 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .result-list p { margin: 4px 0 0; }
 .result-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .result-head a { font-weight: 600; overflow-wrap: anywhere; }
+.result-head .more-btn { margin-left: auto; }
 .finish { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
 .finish-w { background: var(--accent); color: var(--on-accent); }
 .finish-f, .finish-sf { background: var(--accent-soft); color: var(--accent-text); }

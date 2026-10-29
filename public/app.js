@@ -5341,7 +5341,7 @@
   }
 
   // The group page.
-  const GROUP_TABS = [['today', 'Today'], ['leaderboard', 'Leaderboard'], ['members', 'Members']];
+  const GROUP_TABS = [['today', 'Today', 'tab-live'], ['leaderboard', 'Leaderboard', 'tab-board'], ['members', 'Members', 'tab-players']];
   function viewGroup() {
     const g = S.group;
     if (!g || g.slug !== S.route.slug) return loading();
@@ -5378,11 +5378,14 @@
           h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', onclick: () => act(async () => { const r = await api('POST', `${gPath(g.slug)}/join`, {}); await loadGroup(); return r; }, g.settings.open ? 'You\'re in the group ✓' : 'Request sent') }, g.settings.open ? 'Join' : 'Ask to join')),
         ]), g.role === 'requested' ? null : groupFindName(g, g.guests || [])];
     }
-    const tabs = [...GROUP_TABS, ...(g.admin ? [['attendance', 'Attendance'], ['settings', 'Settings']] : [])];
+    const tabs = [...GROUP_TABS, ...(g.admin ? [['attendance', 'Attendance', 'tab-calendar'], ['settings', 'Settings', 'tab-setup']] : [])];
     const tab = tabs.some(([id]) => id === S.route.tab) ? S.route.tab : 'today';
     const body = { today: groupToday, leaderboard: groupLeaderboard, members: groupMembers, attendance: groupAttendance, settings: groupSettings }[tab](g);
     return [head, claimCard,
-      h('nav', { class: 'tabs' }, tabs.map(([id, label]) => h('a', { href: `/g/${g.slug}${id === 'today' ? '' : `?tab=${id}`}`, class: id === tab ? 'active' : '' }, label, id === 'members' && g.requests.length ? h('span', { class: 'tab-count' }, g.requests.length) : null))),
+      // On phones, a bar at the bottom of the screen (like a tournament's tabs).
+      h('nav', { class: 'tabs t-tabs bar', 'aria-label': 'Group' }, tabs.map(([id, label, ic]) => h('a', {
+        href: `/g/${g.slug}${id === 'today' ? '' : `?tab=${id}`}`, class: id === tab ? 'active' : '', 'aria-current': id === tab ? 'page' : null,
+      }, icon(ic), h('span', {}, label, id === 'members' && g.requests.length ? h('span', { class: 'tab-count' }, g.requests.length) : null)))),
       h('section', {}, body),
       g.admin ? null : h('p', { class: 'run-your-own muted small' }, 'Play in a group or run a club? ', h('a', { href: refHref('/signup?next=%2Fgroups%2Fnew', g.refCode) }, 'Start your own on Tonament — free'))];
   }
@@ -5453,6 +5456,8 @@
     const me = s.me;
     const here = me && me.checkedIn;
     const checkIn = (on, user) => groupAct(() => api('POST', `${gPath(g.slug)}/sessions/${s.id}/checkin`, { here: on, ...(user && { user }) }), on ? (user ? 'Checked in' : 'You\'re checked in') : 'See you next time');
+    const step = g.admin ? groupNextStep(g, s) : null;
+    if (step) out.push(step.card);
     // Before it starts: RSVP as usual (people decide half an hour before).
     if (!s.started) out.push(rsvpCard(g, s));
     // 1. Me: check in.
@@ -5483,7 +5488,7 @@
         h('span', { class: 'court-team' }, teamName(x.b), h('strong', {}, cur ? cur.b : '–')));
     })));
     // 3. Up next.
-    if (sug) {
+    if (sug && !(step && step.startsGame)) {
       out.push(h('div', { class: 'card upnext-card' },
         h('div', { class: 'card-head' }, h('h2', {}, 'Up next'),
           sug.more ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.route.skip = (S.route.skip || 0) + 1; loadGroup(S.route.skip); } }, 'Someone else') : null),
@@ -5507,12 +5512,78 @@
     if (g.admin) out.push(whosHereCard(g, s, checkIn));
     // 5. Results.
     if (s.results.length) {
-      out.push(h('div', { class: 'card' }, h('h2', {}, 'Results today'),
+      out.push(h('div', { class: 'card results-card' }, h('h2', {}, 'Results today'),
         h('ul', { class: 'result-list' }, s.results.map((x) => gameResultRow(g, x)))));
     }
     if (s.started) out.push(addResultCard(g, s));
     if (g.nextSession) out.push(rsvpCard(g, g.nextSession, true));
     return out;
+  }
+
+  // Group admins: the one thing to do now on a session day — mark who's
+  // here, start the next game on a free court, sort out a disputed result —
+  // with the day so far. { card, startsGame } or null.
+  function groupNextStep(g, s) {
+    const word = CAT.courtWord(g.sport.id);
+    const here = s.players.filter((p) => p.checkedIn);
+    const saidIn = s.players.filter((p) => p.status === 'in' && !p.checkedIn);
+    const free = s.courts.filter((c) => !c.gameId);
+    const sug = s.suggestion;
+    const disputed = s.results.filter((x) => x.status === 'disputed');
+    const reveal = (sel, flag) => () => {
+      S[flag] = true;
+      render();
+      setTimeout(() => { const el = document.querySelector(sel); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+    };
+    let title;
+    let text = null;
+    let actions = [];
+    let startsGame = false;
+    if (!s.started) {
+      const going = s.players.filter((p) => p.status === 'in').length;
+      const max = g.settings.maxPlayers;
+      title = `${going} in${max ? ` of ${max}` : ''} so far`;
+      text = max && going >= max ? 'Full — anyone else goes on the waitlist.' : 'Share it in your WhatsApp group so people say they\'re in.';
+      actions = [h('button', { class: 'btn btn-primary', onclick: () => shareSession(g, s) }, 'Share on WhatsApp')];
+    } else if (disputed.length) {
+      title = `${disputed.length} result${disputed.length === 1 ? ' is' : 's are'} disputed`;
+      text = 'Keep it or void it — until then it doesn\'t count.';
+      actions = [h('button', { class: 'btn btn-primary', onclick: reveal('.results-card', 'resultsOpen') }, 'Review')];
+    } else if (sug && free.length) {
+      startsGame = true;
+      title = `${word} ${free[0].no} is free`;
+      text = `Up next: ${sug.a.map((p) => p.name).join(' & ')} v ${sug.b.map((p) => p.name).join(' & ')}`;
+      actions = [
+        h('button', {
+          class: 'btn btn-primary',
+          onclick: () => act(async () => {
+            const { id } = await api('POST', `${gPath(g.slug)}/sessions/${s.id}/games`, { court: free[0].no, a: sug.a.map((p) => p.id), b: sug.b.map((p) => p.id) });
+            S.route.skip = 0;
+            navigate(`/g/${g.slug}/game/${id}`);
+          }),
+        }, `Start on ${word} ${free[0].no}`),
+        sug.more ? h('button', { class: 'btn', onclick: () => { S.route.skip = (S.route.skip || 0) + 1; loadGroup(S.route.skip); } }, 'Someone else') : null,
+        h('button', { class: 'btn btn-ghost', onclick: reveal('.pick-card', 'pickOpen') }, 'Pick players'),
+      ];
+    } else if (saidIn.length) {
+      title = `${saidIn.length} said they're in but haven't checked in`;
+      text = here.length < 4 ? `${here.length} here — 4 for a game.` : null;
+      actions = [h('button', { class: 'btn btn-primary', onclick: reveal('.whos-here', 'whosHereOpen') }, 'Mark who\'s here')];
+    } else if (!free.length) {
+      title = `All ${s.courts.length} ${word.toLowerCase()}${s.courts.length === 1 ? '' : 's'} are playing`;
+      text = s.waiting.length ? `${s.waiting.length} waiting — they're next when one frees up.` : null;
+    } else {
+      title = here.length < 4 ? 'Waiting for players' : 'Everyone free is on court';
+      text = here.length < 4 ? `${here.length} here — 4 for a game. Mark anyone who's arrived.` : null;
+      if (here.length < 4) actions = [h('button', { class: 'btn btn-primary', onclick: reveal('.whos-here', 'whosHereOpen') }, 'Mark who\'s here')];
+    }
+    const card = h('div', { class: 'card next-step' },
+      h('p', { class: 'eyebrow' }, 'Next step'),
+      h('h2', {}, title),
+      text ? h('p', { class: 'muted small' }, text) : null,
+      actions.filter(Boolean).length ? h('div', { class: 'actions' }, actions) : null,
+      s.started ? h('p', { class: 'muted small next-progress' }, `${here.length} here · ${s.live.length} on ${word.toLowerCase()} · ${s.results.length} result${s.results.length === 1 ? '' : 's'} today`) : null);
+    return { card, startsGame };
   }
 
   // A game with the players you choose: 2 v 2, or 1 v 1 (leave the partners
@@ -5666,11 +5737,13 @@
           h('span', { class: won('a') ? 'won' : '' }, x.a.map((p) => [p.name, delta(p)]).reduce((acc, v, i) => (i ? [...acc, ' & ', v] : [v]), [])),
           h('span', { class: 'muted' }, ` ${x.summary} `),
           h('span', { class: won('b') ? 'won' : '' }, x.b.map((p) => [p.name, delta(p)]).reduce((acc, v, i) => (i ? [...acc, ' & ', v] : [v]), []))),
-        status),
-      x.can && (x.can.confirm || x.can.dispute) ? h('div', { class: 'actions', style: 'margin:6px 0 0' },
-        x.can.confirm ? h('button', { class: 'btn btn-small btn-primary', onclick: () => post('confirm', 'Result confirmed') }, x.status === 'disputed' ? 'Keep this result' : `Confirm ${x.summary}`) : null,
-        x.can.dispute && x.status === 'done' ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => confirm('Flag this result for a group admin?') && post('dispute', 'Flagged for an admin') }, 'Something\'s wrong') : null,
-        x.status === 'disputed' && x.can.void ? h('button', { class: 'btn btn-small btn-ghost danger', onclick: () => confirm('Void this game? It won\'t count for ratings.') && post('void', 'Game voided') }, 'Void game') : null) : null);
+        status,
+        x.can ? moreButton(`${teamName(x.a)} v ${teamName(x.b)}`, [
+          x.can.dispute && x.status === 'done' ? { label: 'Something\'s wrong', hint: 'Flag it for a group admin', onClick: () => confirm('Flag this result for a group admin?') && post('dispute', 'Flagged for an admin') } : null,
+          x.status === 'disputed' && x.can.void ? { label: 'Void game', hint: 'It won\'t count for ratings', danger: true, onClick: () => confirm('Void this game? It won\'t count for ratings.') && post('void', 'Game voided') } : null,
+        ]) : null),
+      x.can && x.can.confirm ? h('div', { class: 'actions', style: 'margin:6px 0 0' },
+        h('button', { class: 'btn btn-small btn-primary', onclick: () => post('confirm', 'Result confirmed') }, x.status === 'disputed' ? 'Keep this result' : `Confirm ${x.summary}`)) : null);
   }
 
   // ---------- claim your spot
@@ -5861,9 +5934,12 @@
       h('div', { class: 'card' }, h('h2', {}, `Members (${g.members - guests.length})`),
         h('ul', { class: 'org-t-list' }, g.leaderboard.filter((r) => !r.guest).map((r) => h('li', {},
           h('span', {}, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : r.name, r.role === 'admin' ? [' ', pill('org', 'Admin')] : null),
-          g.admin && r.id !== (S.me && S.me.id) ? h('span', { class: 'actions', style: 'margin:0' },
-            h('button', { class: 'btn btn-small btn-ghost', onclick: () => setMember(r.id, r.role === 'admin' ? 'member' : 'admin', r.role === 'admin' ? 'No longer an admin' : `${r.name} is now an admin`) }, r.role === 'admin' ? 'Remove admin' : 'Make admin'),
-            h('button', { class: 'btn btn-small btn-ghost danger', onclick: () => confirm(`Remove ${r.name} from the group?`) && setMember(r.id, 'remove', 'Removed') }, 'Remove')) : null)))),
+          g.admin && r.id !== (S.me && S.me.id) ? moreButton(r.name, [
+            r.role === 'admin'
+              ? { label: 'Remove admin', hint: 'Stays in the group', onClick: () => setMember(r.id, 'member', 'No longer an admin') }
+              : { label: 'Make admin', hint: 'Can check people in, start games and change settings', onClick: () => setMember(r.id, 'admin', `${r.name} is now an admin`) },
+            { label: 'Remove from the group', danger: true, onClick: () => confirm(`Remove ${r.name} from the group?`) && setMember(r.id, 'remove', 'Removed') },
+          ]) : null)))),
       guests.length ? h('div', { class: 'card' }, h('h2', {}, `Waiting to claim their spot (${guests.length})`),
         h('p', { class: 'muted small' }, g.admin
           ? 'They play and rank like everyone else. Send each their link — it shows their name and where they stand — or share the invite link and they\'ll find their name.'
@@ -5873,8 +5949,10 @@
           h('span', {}, r.name, r.rank ? h('small', { class: 'muted' }, ` #${r.rank}`) : null),
           g.admin ? h('span', { class: 'actions', style: 'margin:0' },
             h('button', { class: 'btn btn-small', onclick: () => shareClaim(g, r) }, 'Send link'),
-            h('button', { class: 'btn btn-small btn-ghost', onclick: () => copy(groupClaimUrl(g, r), `${r.name}'s claim link copied`) }, 'Copy'),
-            h('button', { class: 'btn btn-small btn-ghost danger', onclick: () => confirm(`Remove ${r.name} from the group?`) && setMember(r.id, 'remove', 'Removed') }, 'Remove')) : null)))) : null,
+            moreButton(r.name, [
+              { label: 'Copy their link', hint: 'Shows their name and where they stand', onClick: () => copy(groupClaimUrl(g, r), `${r.name}'s claim link copied`) },
+              { label: 'Remove from the group', danger: true, onClick: () => confirm(`Remove ${r.name} from the group?`) && setMember(r.id, 'remove', 'Removed') },
+            ])) : null)))) : null,
       h('p', { class: 'center' }, h('button', {
         class: 'link-btn small',
         onclick: () => confirm(`Leave ${g.name}?`) && act(async () => { await api('POST', `${gPath(g.slug)}/leave`, {}); navigate('/groups'); }, 'You left the group'),
