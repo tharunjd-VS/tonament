@@ -585,12 +585,17 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // ---------- views
 
   // Doubles events tell the rules module so (pickleball's side-out has two servers a side).
-  const scoringOf = (t) => (t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring);
+  // A match's rules: the event's, or (m.rules) the ones it was played under
+  // before the organiser changed the match length mid-event.
+  const scoringOf = (t, m) => {
+    const scoring = (m && m.rules && m.rules.scoring) || t.config.scoring;
+    return t.event && t.event.discipline === 'doubles' ? { ...scoring, doubles: true } : scoring;
+  };
   // League matches can be drawn: timed sports by their own rules (football yes, basketball no),
   // others when the organiser chose 2-game league matches.
-  const leagueDrawsOf = (t) => (t.sportDef.timed ? t.sportDef.draws : Boolean(t.config.leagueDraws));
-  const drawsIn = (t, m) => m.stage === 'league' && leagueDrawsOf(t);
-  const scoreOf = (t, m, rallies = m.rallies) => league.score(t.sportDef, rallies, scoringOf(t), m.first_server, { draws: drawsIn(t, m) });
+  const leagueDrawsOf = (t, m) => (t.sportDef.timed ? t.sportDef.draws : Boolean(m && m.rules ? m.rules.leagueDraws : t.config.leagueDraws));
+  const drawsIn = (t, m) => m.stage === 'league' && leagueDrawsOf(t, m);
+  const scoreOf = (t, m, rallies = m.rallies) => league.score(t.sportDef, rallies, scoringOf(t, m), m.first_server, { draws: drawsIn(t, m) });
 
   function matchView(t, m, score, names) {
     const side = (id) => (id == null ? null : { id, name: names.get(id) ?? 'Unknown' });
@@ -619,6 +624,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       score,
       summary: m.walkover ? 'Walkover' : m.retired ? `${t.sportDef.summary(score) || '0–0'} ret.` : t.sportDef.summary(score),
       updatedAt: m.updated_at,
+      // Played under earlier rules (the match length changed mid-event): the phone scores it with these.
+      rules: m.rules || null,
       // Who's scoring it right now (one phone at a time), while it's being scored.
       scorer: m.status !== 'done' && m.status !== 'bye' && m.scorer_device && m.scorer_seen_at && Date.now() - Date.parse(m.scorer_seen_at) < CLAIM_MS
         ? { name: m.scorer_name, device: m.scorer_device } : null,
@@ -1301,6 +1308,55 @@ function createService(db, { mailer, fetchImpl } = {}) {
         const { name: _tournamentName, ...eventInput } = input;
         await applyEventSettings(q, await eventFor(q, t, input.event), eventInput);
       }
+    });
+  }
+
+  // The wrong match length (or points) chosen, found out once it's being
+  // played: change it safely. Finished matches keep the rules they were played
+  // under (matches.rules), a match in progress follows the new rules from now
+  // (one they already decide ends now), and the rest are played to them.
+  async function planScoringChange(q, t, input) {
+    if (t.status === 'setup') fail(409, 'The event hasn\'t started — change it in Event settings');
+    if (t.status === 'completed') fail(409, 'The event has finished');
+    const next = buildConfig({ scoring: input.scoring, ...(input.leagueDraws !== undefined && { leagueDraws: input.leagueDraws }) }, t.sportDef, t.config);
+    const old = { scoring: t.config.scoring, leagueDraws: Boolean(t.config.leagueDraws) };
+    const same = (x, y) => { const k = (o) => JSON.stringify(Object.keys(o).sort().map((key) => [key, o[key]])); return k(x) === k(y); };
+    if (same(next.scoring, t.sportDef.normalizeConfig(old.scoring)) && Boolean(next.leagueDraws) === old.leagueDraws) fail(400, 'That\'s how it is already');
+    const after = { ...t, config: { ...t.config, scoring: next.scoring, leagueDraws: Boolean(next.leagueDraws) } };
+    const rows = await q('SELECT * FROM matches WHERE event_id = $1 ORDER BY stage, round, slot', [t.eventId]);
+    const names = new Map((await q('SELECT id, name FROM entries WHERE event_id = $1', [t.eventId])).map((e) => [e.id, e.name]));
+    const report = { finished: 0, endsNow: [], inProgress: 0, toCome: 0 };
+    const ends = [];
+    for (const m of rows) {
+      if (m.status === 'bye') continue;
+      if (m.status === 'done') { report.finished += 1; continue; }
+      if (!m.rallies) { report.toCome += 1; continue; }
+      // The first point at which the new rules decide it, if they do.
+      let at = 0;
+      for (let k = 1; k <= m.rallies.length; k++) {
+        if (league.finished(scoreOf(after, { ...m, rules: null }, m.rallies.slice(0, k)))) { at = k; break; }
+      }
+      if (at) {
+        ends.push({ m, at });
+        report.endsNow.push(`${names.get(m.a_id) || '?'} v ${names.get(m.b_id) || '?'}`);
+      } else report.inProgress += 1;
+    }
+    return { after, old, report, ends };
+  }
+  async function previewScoringChange(id, actor, input = {}) {
+    return db.tx(async (q) => {
+      const { t: tournament } = await lockWith(q, id, actor, 'manage');
+      return (await planScoringChange(q, await eventFor(q, tournament, input.event), input)).report;
+    });
+  }
+  async function changeScoring(id, actor, input = {}) {
+    return mutate(id, actor, async (q, tournament) => {
+      const t = await eventFor(q, tournament, input.event);
+      const { after, old, ends } = await planScoringChange(q, t, input);
+      await q(`UPDATE matches SET rules = $1::jsonb WHERE event_id = $2 AND status = 'done' AND rules IS NULL`, [JSON.stringify(old), t.eventId]);
+      after.config.scoringChanged = { at: new Date().toISOString(), from: old.scoring };
+      await saveEventConfig(q, after);
+      for (const { m, at } of ends) await saveRallies(q, tournament, after, m, m.rallies.slice(0, at));
     });
   }
 
@@ -3577,6 +3633,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     referrals,
     useCredit,
     takeOverScoring,
+    previewScoringChange,
+    changeScoring,
     players: profiles,
     connectDupr,
     disconnectDupr,

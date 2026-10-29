@@ -609,6 +609,45 @@ test('one phone scores a match at a time: the other is turned away until it take
   assert.equal((await svc.rally(id, OWNER, m.id, 'a', 4)).log, 'ababa');
 });
 
+test('changing the match length mid-event: finished matches keep their result; decided ones end now', async () => {
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'Wrong Length', format: 'knockout', scoring: { bestOf: 3, points: 21, cap: 30 } });
+  await svc.addEntries(id, OWNER, ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+  let t = await svc.start(id, OWNER);
+  const [m1, m2, m3, m4] = t.matches.filter((m) => m.round === 1).sort((x, y) => x.slot - y.slot);
+  // A game to 21 that `w` wins 21-10: alternate points to 10-10, then `w` runs away with it.
+  const game = (w) => `${(w === 'a' ? 'ab' : 'ba').repeat(10)}${w.repeat(11)}`;
+  const play = async (m, log) => { let at = 0; for (const ch of log) await svc.rally(id, OWNER, m.id, ch, at++); };
+  // m1 finished over 3 games (a lost game 1): best of 3 says A won.
+  await play(m1, game('b') + game('a') + game('a'));
+  // m2: game 1 won by b, game 2 under way. m3: half a game. m4 (and the later rounds): not started.
+  await play(m2, game('b') + 'aaab');
+  await play(m3, 'ababab');
+  t = await svc.getTournament(id, OWNER);
+  const before = t.matches.find((x) => x.id === m1.id);
+  assert.equal(before.winner, before.a.id);
+  // Preview first: nothing changes yet.
+  const r = await svc.previewScoringChange(id, OWNER, { scoring: { bestOf: 1, points: 21, cap: 30 } });
+  assert.deepEqual([r.finished, r.endsNow.length, r.inProgress, r.toCome], [1, 1, 1, 4]); // m4, 2 semis, the final
+  await assert.rejects(svc.previewScoringChange(id, OWNER, { scoring: { bestOf: 3, points: 21, cap: 30 } }), /how it is already/);
+  t = await svc.changeScoring(id, OWNER, { scoring: { bestOf: 1, points: 21, cap: 30 } });
+  const get = (m) => t.matches.find((x) => x.id === m.id);
+  // m1 keeps its 3-game result (under its own rules).
+  assert.equal(get(m1).winner, before.a.id);
+  assert.equal(get(m1).score.games.length, 3);
+  assert.deepEqual(get(m1).rules.scoring.bestOf, 3);
+  // m2 was decided by game 1: it ends now, B wins, and the extra points of game 2 are dropped.
+  assert.equal(get(m2).status, 'done');
+  assert.equal(get(m2).winner, get(m2).b.id);
+  assert.equal(get(m2).score.games.length, 1);
+  // m3 carries on to a single game; m4 will be one game.
+  assert.equal(get(m3).status, 'live');
+  assert.equal(get(m3).rules, null);
+  assert.ok(t.config.scoringChanged && t.config.scoring.bestOf === 1);
+  // Only the organiser can; umpires can't.
+  const umpire = { user: null, key: (await db.query('SELECT scorer_key FROM tournaments WHERE id = $1', [id]))[0].scorer_key };
+  await assert.rejects(svc.changeScoring(id, umpire, { scoring: { bestOf: 3, points: 21, cap: 30 } }), /organis|permission|Only/i);
+});
+
 // ---------- sport catalogue & requests
 
 test('sport catalogue lists playable and upcoming sports', async () => {

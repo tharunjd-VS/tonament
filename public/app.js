@@ -1407,10 +1407,50 @@
     add('Entries', `${count}${t.config.maxEntries ? ` of ${t.config.maxEntries} places` : ''}`);
     if (t.event.fee) add('Entry fee', `${money(t.event.fee)}${t.config.feePer === 'player' ? ' per player' : ''}`);
     const locked = t.status !== 'setup';
+    const changed = t.config.scoringChanged;
+    const canChange = locked && t.can.manage && t.status !== 'completed' && !t.official;
     return h('div', { class: 'card event-details' },
       h('h2', {}, 'Event details'),
       h('dl', { class: 'details-list' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
-      locked && t.can.manage ? h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Format and scoring are locked once the event starts, so every match is played to the same rules.') : null);
+      changed ? h('p', { class: 'muted small', style: 'margin:8px 0 0' }, `Scoring changed during the event (${fmtWhen(changed.at)}). Matches finished before then keep their result.`) : null,
+      canChange && S.changeScoringFor !== t.eventId
+        ? h('div', { class: 'actions', style: 'margin-top:10px' }, h('button', { class: 'btn btn-small', type: 'button', onclick: () => { S.changeScoringFor = t.eventId; render(); } }, 'Change match length or points'))
+        : null,
+      canChange && S.changeScoringFor === t.eventId ? changeScoringForm(t, sport) : null);
+  }
+
+  // Mid-event: the wrong match length was chosen. Shows what will happen, then applies it.
+  function changeScoringForm(t, sport) {
+    const form = h('form', {
+      class: 'form change-scoring',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const { scoring, leagueDraws } = readFormat(form, sport);
+        const body = withEv(t, { scoring, leagueDraws });
+        try {
+          const r = await api('POST', `${tPath(t)}/scoring/preview`, body, t.id);
+          const lines = [
+            r.finished ? `${r.finished} finished match${r.finished === 1 ? '' : 'es'} keep${r.finished === 1 ? 's' : ''} its result.` : null,
+            r.endsNow.length ? `${r.endsNow.length} in progress ${r.endsNow.length === 1 ? 'is' : 'are'} already decided by the new rules and end${r.endsNow.length === 1 ? 's' : ''} now: ${r.endsNow.join(', ')}.` : null,
+            r.inProgress ? `${r.inProgress} in progress carr${r.inProgress === 1 ? 'ies' : 'y'} on under the new rules.` : null,
+            r.toCome ? `${r.toCome} still to play will use the new rules.` : null,
+          ].filter(Boolean);
+          if (!confirm(`Change the scoring for ${t.event.name || 'this event'}?\n\n${lines.join('\n')}`)) return;
+          act(async () => {
+            S.t = await api('POST', `${tPath(t)}/scoring`, body, t.id);
+            S.changeScoringFor = null;
+          }, 'Scoring changed');
+        } catch (err) {
+          toast(err.message, true);
+        }
+      },
+    },
+    h('p', { class: 'muted small', style: 'margin:0 0 8px' }, 'Chose the wrong match length? Finished matches keep their result; everything else follows the new rules from now. You\'ll see what changes before anything is saved.'),
+    scoringFields(sport, { ...sport.defaults, ...(t.config.scoring || {}) }, t.config.leagueDraws),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn btn-primary', type: 'submit' }, 'Review the change'),
+      h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { S.changeScoringFor = null; render(); } }, 'Cancel')));
+    return form;
   }
 
   // A select of standard values with "Custom…" revealing a text box.
@@ -3711,7 +3751,7 @@
     // tie-break raids) when a knockout match ends level.
     const timedTie = sc0.timed && !sc0.drawsAllowed && sc0.tieName;
     const labels = sc0.timed ? ['Final score', ...(timedTie ? [`${sc0.tieName} (if level)`] : [])] : null;
-    const rows = labels ? labels.length : sc0.single ? 1 : Math.min(sport.normalizeConfig(t.config.scoring).bestOf || 3, 11);
+    const rows = labels ? labels.length : sc0.single ? 1 : Math.min(sport.normalizeConfig((m.rules && m.rules.scoring) || t.config.scoring).bestOf || 3, 11);
     const unit = sc0.timed ? 'Score' : sc0.single ? 'Result' : sc0.unit || 'Game';
     const need = sc0.single ? 1 : Math.ceil(rows / 2);
     const msg = h('p', { class: 'hint result-msg', role: 'status' }, sc0.timed
@@ -3865,8 +3905,10 @@
   // A match's score from its taps, under its event's rules (as the server works it out).
   function matchCompute(t, m) {
     const sport = window.TonamentSports[t.sport.id];
-    const scoring = t.event && t.event.discipline === 'doubles' ? { ...t.config.scoring, doubles: true } : t.config.scoring;
-    const draws = sport.timed ? sport.draws : Boolean(t.config.leagueDraws);
+    // A match played under earlier rules (the match length changed mid-event) keeps them.
+    const base = (m.rules && m.rules.scoring) || t.config.scoring;
+    const scoring = t.event && t.event.discipline === 'doubles' ? { ...base, doubles: true } : base;
+    const draws = sport.timed ? sport.draws : Boolean(m.rules ? m.rules.leagueDraws : t.config.leagueDraws);
     return (log) => TonamentLeague.score(sport, log, scoring, m.firstServer, { draws: m.stage === 'league' && draws });
   }
 

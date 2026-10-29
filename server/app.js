@@ -285,6 +285,8 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${T}/matches/${N}/result`, (c, id, mid) => svc.setResult(id, c.actor, mid, c.body.games, c.body.at)],
     ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid, c.body.at)],
     ['POST', `${T}/matches/${N}/takeover`, (c, id, mid) => svc.takeOverScoring(id, c.actor, mid)],
+    ['POST', `${T}/scoring/preview`, (c, id) => svc.previewScoringChange(id, c.actor, c.body)],
+    ['POST', `${T}/scoring`, (c, id) => svc.changeScoring(id, c.actor, c.body)],
 
     ['GET', '/api/auth/me', async (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled, gift: c.actor.user ? await svc.referrals.welcomeFor(c.actor.user) : null })],
     ['POST', '/api/auth/forgot', async (c) => {

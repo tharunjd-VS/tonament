@@ -503,11 +503,14 @@ CREATE INDEX IF NOT EXISTS plan_credits_user ON plan_credits(user_id, used_at);
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS scorer_device TEXT;
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS scorer_name TEXT;
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS scorer_seen_at TIMESTAMPTZ;
+-- v33: the rules a match was played under ({ scoring, leagueDraws }), kept when
+-- the organiser changes the event's match length mid-event (null: the event's).
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS rules JSONB;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 32;
+const SCHEMA_VERSION = 33;
 
 async function migrate(db) {
   try {
