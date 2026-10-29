@@ -251,6 +251,12 @@ function sitePage({ base, path, title, description, ld, body, trail, image: img,
   <link rel="stylesheet" href="/styles.css">
   <link rel="icon" href="/favicon.ico" sizes="32x32">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Tonament">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   ${(ld || []).map((x) => `<script type="application/ld+json">${jsonScript(x)}</script>`).join('\n  ')}
 </head>
 <body>

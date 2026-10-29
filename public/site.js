@@ -3,6 +3,10 @@
 // Fills business details, price and limits on the static pages (pricing,
 // contact, policies) from the server's billing settings.
 (function () {
+  // The service worker (public/sw.js): the site and the installed app open offline.
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
+  }
   var year = document.querySelector('[data-year]');
   if (year) year.textContent = String(new Date().getFullYear());
   fetch('/api/billing/config')

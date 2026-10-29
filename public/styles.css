@@ -1371,3 +1371,18 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
   .tool-group { break-inside: avoid; }
   .muted { color: var(--print-muted) !important; }
 }
+
+/* Installing the app (Add to Home screen) */
+.install-banner { display: flex; align-items: center; gap: 12px; padding: 10px 12px; margin: 0 0 14px; }
+.install-banner img { border-radius: 10px; flex: none; }
+.install-text { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.install-text small { line-height: 1.3; }
+.install-close { flex: none; padding-inline: 10px; }
+.sheet-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-end; justify-content: center; background: rgba(0, 0, 0, 0.55); padding: 16px; }
+.sheet { width: min(440px, 100%); background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 20px; padding: 22px 20px 18px; text-align: center; box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.4); }
+.sheet h2 { margin: 10px 0 12px; font-size: 1.2rem; }
+.sheet-icon { border-radius: 14px; }
+.sheet-steps { text-align: left; margin: 0 0 16px; padding-left: 1.3em; display: grid; gap: 10px; }
+.share-glyph { display: inline-flex; vertical-align: -4px; color: var(--link); }
+.sheet .btn { width: 100%; }
+.offline-card { max-width: 520px; margin: 40px auto; text-align: center; }

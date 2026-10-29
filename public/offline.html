@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>You're offline · Tonament</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Tonament">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="theme-color" content="#0B1220">
+  <script>
+    (function () {
+      var pref = 'auto';
+      try { pref = localStorage.getItem('tonament:theme') || 'auto'; } catch (e) {}
+      var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+      document.documentElement.setAttribute('data-theme', pref === 'auto' ? (light ? 'light' : 'dark') : pref);
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand" aria-label="Tonament home"><img src="/brand/logo-white.svg" alt="Tonament" width="190" height="26"></a>
+    </div>
+  </header>
+  <main class="container">
+    <section class="card empty-state offline-card">
+      <h1>You're offline</h1>
+      <p class="muted">No connection right now. Tonament will reload this page as soon as you're back online.</p>
+      <p class="muted small">Scoring a match? Points you've already entered are kept on this phone and sent when the connection returns.</p>
+      <p><button class="btn btn-primary" type="button" onclick="location.reload()">Try again</button></p>
+    </section>
+  </main>
+  <script>window.addEventListener('online', function () { location.reload(); });</script>
+</body>
+</html>

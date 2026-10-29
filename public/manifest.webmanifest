@@ -1,15 +1,29 @@
 {
+  "id": "/",
   "name": "Tonament",
   "short_name": "Tonament",
-  "description": "One platform. Every sport. Every tournament.",
+  "description": "Run tournaments and score them live. One platform. Every sport. Every tournament.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "orientation": "any",
   "background_color": "#0B1220",
   "theme_color": "#0B1220",
+  "categories": ["sports", "productivity"],
   "icons": [
     { "src": "/brand/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "/brand/icon-512.png", "sizes": "512x512", "type": "image/png" },
     { "src": "/brand/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "New tournament", "url": "/new", "icons": [{ "src": "/brand/shortcut-new.png", "sizes": "96x96", "type": "image/png" }] },
+    { "name": "Your groups", "url": "/groups", "icons": [{ "src": "/brand/shortcut-groups.png", "sizes": "96x96", "type": "image/png" }] },
+    { "name": "Rankings", "url": "/rankings", "icons": [{ "src": "/brand/shortcut-rankings.png", "sizes": "96x96", "type": "image/png" }] }
+  ],
+  "screenshots": [
+    { "src": "/guide/umpire-dark.jpg", "sizes": "780x1520", "type": "image/jpeg", "form_factor": "narrow", "label": "Score every point on the umpire's phone" },
+    { "src": "/guide/pools-dark.jpg", "sizes": "780x1520", "type": "image/jpeg", "form_factor": "narrow", "label": "Groups split by level, with live standings" },
+    { "src": "/guide/onday-dark.jpg", "sizes": "780x1520", "type": "image/jpeg", "form_factor": "narrow", "label": "Courts and the order of play on the day" },
+    { "src": "/guide/display.jpg", "sizes": "1440x810", "type": "image/jpeg", "form_factor": "wide", "label": "Every court on the venue's big screen" }
   ]
 }

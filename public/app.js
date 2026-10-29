@@ -1000,6 +1000,7 @@
       document.getElementById('all-tournaments')?.scrollIntoView({ behavior: 'smooth' });
     };
     return [
+      installBanner(),
       heroSlider(explore),
       S.me && S.myEntries && S.myEntries.length ? h('section', { class: 'section' },
         h('h2', {}, 'My entries'),
@@ -4372,6 +4373,7 @@
         linkRow('Scorer link', 'Can score matches only.', `${location.origin}/#/t/${t.id}?key=${encodeURIComponent(t.links.scorer)}`, 'Scorer link copied'),
         linkRow('Organiser link', 'Can manage the whole tournament.', `${location.origin}/#/t/${t.id}?key=${encodeURIComponent(t.links.organiser)}`, 'Organiser link copied — keep it private'),
         linkRow('Public link', 'Anyone can follow live scores. Shows the name, dates and cover image when shared.', shareUrl(t), 'Public link copied'),
+        h('p', { class: 'hint' }, 'Tip for the day: ask umpires to add Tonament to their home screen (Chrome: ⋮ → Install app; iPhone Safari: Share → Add to Home Screen). It opens full screen, straight to scoring.'),
         t.visibility !== 'private'
           ? h('div', { class: 'actions' }, h('a', { class: 'btn btn-small', href: whatsappUrl(t), target: '_blank', rel: 'noopener' }, 'Share on WhatsApp'))
           : null) : null,
@@ -4432,6 +4434,7 @@
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.myOrgs && !S.myOrgs.length ? h('a', { href: '/academy/new', onclick: closeMenu }, 'Create an academy page') : null,
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
+            canInstall() ? h('button', { onclick: (e) => { closeMenu(e); installApp(); } }, 'Install the app') : null,
             h('button', { onclick: signOut }, 'Sign out'),
             h('div', { class: 'menu-theme' }, 'Theme', themeSwitch()))),
       ]
@@ -4442,7 +4445,59 @@
   }
 
   function closeMenu(e) {
-    e.target.closest('details').removeAttribute('open');
+    e.target.closest('details')?.removeAttribute('open');
+  }
+
+  // ---------- installing the app (Add to Home screen): no app store needed.
+  // Android and desktop Chrome hand us an install prompt to keep for later;
+  // iPhones never do, so they get the Share → Add to Home Screen steps.
+  let installPrompt = null;
+  const INSTALL_KEY = 'tonament:install-dismissed';
+  const installed = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const canInstall = () => !installed() && Boolean(installPrompt || isIOS);
+  const installDismissed = () => { try { return Date.now() - Number(localStorage.getItem(INSTALL_KEY) || 0) < 30 * 86400000; } catch { return false; } };
+  const refreshInstall = () => { navFor = null; renderNav(); render(); };
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; refreshInstall(); });
+  window.addEventListener('appinstalled', () => { installPrompt = null; refreshInstall(); toast('Tonament is on your home screen ✓'); });
+
+  async function installApp() {
+    if (!installPrompt) return iosInstallSheet();
+    const p = installPrompt;
+    installPrompt = null;
+    p.prompt();
+    try { await p.userChoice; } catch { /* closed */ }
+    refreshInstall();
+  }
+
+  function iosInstallSheet() {
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const shareIcon = h('span', { class: 'share-glyph', 'aria-label': 'Share' });
+    shareIcon.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5v10h14V11h-1"/></g></svg>';
+    const box = h('div', { class: 'sheet-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Add Tonament to your home screen', onclick: (e) => { if (e.target === box) close(); } },
+      h('div', { class: 'sheet' },
+        h('img', { src: '/brand/icon-192.png', alt: '', width: 56, height: 56, class: 'sheet-icon' }),
+        h('h2', {}, 'Add Tonament to your home screen'),
+        h('ol', { class: 'sheet-steps' },
+          h('li', {}, 'Tap ', shareIcon, h('strong', {}, ' Share'), ' in Safari\'s toolbar (at the bottom, or the top on an iPad).'),
+          h('li', {}, 'Scroll down and tap ', h('strong', {}, 'Add to Home Screen'), '.'),
+          h('li', {}, 'Tap ', h('strong', {}, 'Add'), '. Tonament opens full screen, like an app.')),
+        h('button', { class: 'btn btn-primary', type: 'button', onclick: close }, 'Got it')));
+    document.body.append(box);
+    document.addEventListener('keydown', onKey);
+    box.querySelector('button').focus();
+  }
+
+  // A one-line offer on phones (home page, your groups), until it's dismissed.
+  function installBanner() {
+    if (!canInstall() || installDismissed() || !window.matchMedia('(pointer: coarse)').matches) return null;
+    const dismiss = () => { try { localStorage.setItem(INSTALL_KEY, String(Date.now())); } catch { /* this visit only */ } render(); };
+    return h('div', { class: 'card install-banner' },
+      h('img', { src: '/brand/icon-192.png', alt: '', width: 40, height: 40 }),
+      h('span', { class: 'install-text' }, h('strong', {}, 'Get the Tonament app'), h('small', { class: 'muted' }, 'Add it to your home screen — opens full screen, no app store.')),
+      h('button', { class: 'btn btn-primary btn-small', type: 'button', onclick: installApp }, installPrompt ? 'Install' : 'How'),
+      h('button', { class: 'btn btn-ghost btn-small install-close', type: 'button', 'aria-label': 'Not now', onclick: dismiss }, '✕'));
   }
 
   async function signOut() {
@@ -4779,6 +4834,7 @@
     document.title = 'Your groups · Tonament';
     const list = S.groupsList;
     return [
+      installBanner(),
       h('div', { class: 'card-head page-head' }, h('h1', {}, 'Your groups'), h('a', { class: 'btn btn-primary', href: '/groups/new' }, 'Create a group')),
       list == null ? loading()
         : list.length ? h('div', { class: 'card-list' }, list.map((g) => h('a', { class: 'card group-card', href: `/g/${g.slug}` },
@@ -6626,6 +6682,10 @@
   window.addEventListener('popstate', route);
 
   // ---------- boot
+  // The service worker lets the installed app open with no connection (public/sw.js).
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => { /* fine without it */ }));
+  }
   // Old links (#/t/<id>, and share-key and password-reset links, which keep
   // their secret in the # part so it never reaches the server) become paths.
   if (location.hash.startsWith('#/')) history.replaceState(null, '', location.hash.slice(1));
