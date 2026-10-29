@@ -642,3 +642,23 @@ test('claim your spot: guests added by name play and rank, then claim it with th
   await svc.groups.setMember(slug, admin, arjun, 'remove');
   assert.equal((await db.query('SELECT 1 FROM users WHERE id = $1', [arjun])).length, 0);
 });
+
+test('admins mark anyone present (or not), whether or not they said they\'re in', async () => {
+  const admin = await user('Here Admin');
+  const { slug } = await svc.groups.createGroup(admin, { name: 'Walk-in Club', sport: 'badminton', courts: 1, ...nowSchedule() });
+  let g = await svc.groups.view(slug, admin);
+  const regular = await user('Never RSVPs');
+  const other = await user('Another Member');
+  for (const p of [regular, other]) await svc.groups.join(slug, p, { token: g.invite });
+  const sid = g.session.id;
+  const here = async (p) => (await svc.groups.view(slug, admin)).session.players.find((x) => x.id === p.user.id);
+  assert.equal(await here(regular), undefined); // no RSVP
+  await svc.groups.checkIn(slug, admin, sid, true, regular.user.id);
+  assert.ok((await here(regular)).checkedIn);
+  assert.equal((await here(regular)).status, 'in');
+  // Marked by mistake: back to not here.
+  await svc.groups.checkIn(slug, admin, sid, false, regular.user.id);
+  assert.ok(!(await here(regular)).checkedIn);
+  // Only admins can do it for someone else.
+  await assert.rejects(svc.groups.checkIn(slug, other, sid, true, regular.user.id), /Only group admins/);
+});

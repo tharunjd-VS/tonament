@@ -762,9 +762,10 @@
       form.setAttribute('data-dirty', '');
       return;
     }
-    // Other forms count as unsent while anything typed is still in them.
+    // Other forms count as unsent while anything typed (or picked) is still in them.
     const typed = [...form.querySelectorAll('input:not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea')]
-      .some((el) => el.value !== el.defaultValue && el.value.trim());
+      .some((el) => el.value !== el.defaultValue && el.value.trim())
+      || [...form.querySelectorAll('select')].some((sel) => [...sel.options].some((o) => o.selected !== o.defaultSelected));
     if (typed) form.setAttribute('data-dirty', '');
     else form.removeAttribute('data-dirty');
   };
@@ -5077,13 +5078,7 @@
       out.push(h('div', { class: 'card' }, h('h3', { style: 'margin:0 0 6px' }, `Waiting (${s.waiting.length})`),
         h('p', { class: 'rsvp-names' }, s.waiting.map((p) => h('span', { class: 'name-chip here' }, p.name, h('small', {}, ` ${p.games}`))))));
     }
-    if (g.admin) {
-      const notHere = s.players.filter((p) => p.status === 'in' && !p.checkedIn);
-      if (notHere.length) {
-        out.push(h('details', { class: 'card' }, h('summary', {}, `Check in for others (${notHere.length})`),
-          h('ul', { class: 'org-t-list' }, notHere.map((p) => h('li', {}, h('span', {}, p.name), h('button', { class: 'btn btn-small', onclick: () => checkIn(true, p.id) }, 'Here'))))));
-      }
-    }
+    if (g.admin) out.push(whosHereCard(g, s, checkIn));
     // 5. Results.
     if (s.results.length) {
       out.push(h('div', { class: 'card' }, h('h2', {}, 'Results today'),
@@ -5092,6 +5087,37 @@
     if (s.started) out.push(addResultCard(g, s));
     if (g.nextSession) out.push(rsvpCard(g, g.nextSession, true));
     return out;
+  }
+
+  // Admins mark anyone present (or not): everyone in the group, not just
+  // those who said they're in — regulars who just turn up, players added by name.
+  function whosHereCard(g, s, checkIn) {
+    const inSession = new Map(s.players.map((p) => [p.id, p]));
+    const people = g.leaderboard.map((r) => ({ id: r.id, name: r.name, guest: r.guest, ...(inSession.get(r.id) || {}) }));
+    const here = people.filter((p) => p.checkedIn);
+    const said = people.filter((p) => !p.checkedIn && p.status === 'in');
+    const rest = people.filter((p) => !p.checkedIn && p.status !== 'in');
+    const row = (p, on) => h('li', { 'data-name': p.name.toLowerCase() }, h('span', {}, p.name, p.guest ? h('small', { class: 'muted' }, ' · added by name') : null),
+      on ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => checkIn(false, p.id) }, 'Not here')
+        : h('button', { class: 'btn btn-small btn-primary', onclick: () => checkIn(true, p.id) }, 'Here'));
+    const section = (title, list, on) => (list.length
+      ? h('section', { class: 'whos-here-part' }, h('h3', {}, `${title} (${list.length})`), h('ul', { class: 'org-t-list' }, list.map((p) => row(p, on))))
+      : null);
+    // Filtering in place keeps the keyboard up (a redraw would close it).
+    const filter = (box) => {
+      const q = (S.whosHereFind || '').trim().toLowerCase();
+      box.querySelectorAll('li[data-name]').forEach((li) => { li.hidden = Boolean(q) && !li.dataset.name.includes(q); });
+      box.querySelectorAll('.whos-here-part').forEach((sec) => { sec.hidden = !sec.querySelector('li:not([hidden])'); });
+    };
+    const open = S.whosHereOpen ?? here.length < 4;
+    const card = h('details', { class: 'card whos-here', open, ontoggle: (e) => { S.whosHereOpen = e.target.open; } },
+      h('summary', {}, h('strong', {}, 'Who\'s here'), h('small', { class: 'muted' }, ` · ${here.length} checked in — mark anyone present`)),
+      people.length > 8 ? h('input', { type: 'search', class: 'whos-here-find', placeholder: 'Find a name', 'aria-label': 'Find a name', value: S.whosHereFind || '', oninput: (e) => { S.whosHereFind = e.target.value; filter(card); } }) : null,
+      section('Said they\'re in', said, false),
+      section('Everyone else', rest, false),
+      section('Here', here, true));
+    filter(card);
+    return card;
   }
 
   // A game played without the app: who played and how it ended. The other
@@ -5105,13 +5131,26 @@
       others.length ? h('optgroup', { label: 'Everyone else' }, others.map((p) => h('option', { value: p.id }, p.name))) : null,
     ];
     const me = S.me && g.leaderboard.some((r) => r.id === S.me.id) ? String(S.me.id) : '';
-    const pick = (name, optional, value = '') => h('select', { name, 'aria-label': name, required: !optional }, options(optional).map((o) => {
-      if (o && o.tagName === 'OPTGROUP') for (const x of o.children) x.selected = x.value === value;
-      return o;
-    }));
+    // What's been picked and typed so far survives live redraws (S.addResultDraft, by field name).
+    const draft = S.addResultDraft && S.addResultDraft.session === s.id ? S.addResultDraft : { session: s.id };
+    const pick = (name, optional, value = '') => {
+      const chosen = draft[name] ?? value;
+      return h('select', { name, 'aria-label': name, required: !optional }, options(optional).map((o) => {
+        if (o && o.tagName === 'OPTGROUP') for (const x of o.children) x.defaultSelected = x.selected = x.value === chosen;
+        return o;
+      }));
+    };
+    const score = (name, label) => h('input', { name, type: 'number', min: 0, max: 99, required: true, inputmode: 'numeric', placeholder: 'Score', 'aria-label': label, value: draft[name] ?? '' });
+    const keep = (e) => {
+      if (!e.target.name) return;
+      S.addResultDraft = { ...draft, [e.target.name]: e.target.value };
+      Object.assign(draft, S.addResultDraft);
+      form.setAttribute('data-dirty', ''); // picking players holds back live redraws
+    };
     const form = h('form', {
       class: 'add-result',
-      onchange: () => form.setAttribute('data-dirty', ''), // picking players holds back live redraws
+      onchange: keep,
+      oninput: keep,
       onsubmit: (e) => {
         e.preventDefault();
         const fd = new FormData(form);
@@ -5123,13 +5162,14 @@
           await api('POST', `${gPath(g.slug)}/sessions/${s.id}/results`, { a, b, score: { a: Number(fd.get('sa')), b: Number(fd.get('sb')) } });
           form.removeAttribute('data-dirty');
           S.addResultOpen = false;
+          S.addResultDraft = null;
           await loadGroup(S.route.skip || 0);
         }, 'Result added — the other side confirms it');
       },
     },
     h('div', { class: 'add-result-sides' },
-      h('fieldset', {}, h('legend', {}, 'Side 1'), pick('a1', false, me), pick('a2', true), h('input', { name: 'sa', type: 'number', min: 0, max: 99, required: true, inputmode: 'numeric', placeholder: 'Score', 'aria-label': 'Side 1 score' })),
-      h('fieldset', {}, h('legend', {}, 'Side 2'), pick('b1', false), pick('b2', true), h('input', { name: 'sb', type: 'number', min: 0, max: 99, required: true, inputmode: 'numeric', placeholder: 'Score', 'aria-label': 'Side 2 score' }))),
+      h('fieldset', {}, h('legend', {}, 'Side 1'), pick('a1', false, me), pick('a2', true), score('sa', 'Side 1 score')),
+      h('fieldset', {}, h('legend', {}, 'Side 2'), pick('b1', false), pick('b2', true), score('sb', 'Side 2 score'))),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add result')));
     return h('details', { class: 'card add-result-card', open: Boolean(S.addResultOpen), ontoggle: (e) => { S.addResultOpen = e.target.open; } },
       h('summary', {}, h('strong', {}, 'Add a result'), h('small', { class: 'muted' }, ' · played a game without scoring it here?')),

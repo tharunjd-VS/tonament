@@ -1386,3 +1386,8 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .share-glyph { display: inline-flex; vertical-align: -4px; color: var(--link); }
 .sheet .btn { width: 100%; }
 .offline-card { max-width: 520px; margin: 40px auto; text-align: center; }
+
+/* Group admins: Who's here */
+.whos-here summary small { font-weight: 400; }
+.whos-here-find { width: 100%; margin: 12px 0 4px; }
+.whos-here-part h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 14px 0 4px; }
