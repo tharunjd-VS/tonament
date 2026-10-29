@@ -289,4 +289,19 @@ function referralEarnedEmail({ name, friend, milestone, pages = [], url }) {
   };
 }
 
-module.exports = { referralEarnedEmail, createMailer, passwordResetEmail, signInLinkEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };
+// A notification by email (the important ones), with a way to stop them.
+function noticeEmail({ title, body, button = 'Open Tonament', url, unsubscribeUrl }) {
+  return {
+    subject: title,
+    html: layout({
+      heading: title,
+      body: body ? [esc(body)] : [],
+      button,
+      url,
+      footer: unsubscribeUrl ? `Don't want these emails? <a href="${esc(unsubscribeUrl)}" style="color:${NAVY}">Turn them off</a>.` : null,
+    }),
+    text: `${title}${body ? `\n\n${body}` : ''}\n\n${url}${unsubscribeUrl ? `\n\nTurn these emails off: ${unsubscribeUrl}` : ''}`,
+  };
+}
+
+module.exports = { noticeEmail, referralEarnedEmail, createMailer, passwordResetEmail, signInLinkEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };

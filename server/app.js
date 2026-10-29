@@ -32,7 +32,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|notifications|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -395,6 +395,14 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['DELETE', `/api/comments/${N}`, (c, id) => svc.social.deleteComment(c.actor, id)],
     ['POST', '/api/block', (c) => svc.social.block(c.actor, c.body.user, c.body.on !== false)],
     ['POST', '/api/report', (c) => svc.social.report(c.actor, c.body)],
+    // Notifications: the inbox, settings, this phone's push subscription
+    ['GET', '/api/notifications', (c) => svc.notify.list(c.actor, { before: c.query.get('before') })],
+    ['GET', '/api/notifications/unread', (c) => svc.notify.unread(c.actor)],
+    ['POST', '/api/notifications/read', (c) => svc.notify.markRead(c.actor, c.body)],
+    ['GET', '/api/notifications/settings', (c) => svc.notify.settings(c.actor)],
+    ['PATCH', '/api/notifications/settings', (c) => svc.notify.setPref(c.actor, c.body)],
+    ['POST', '/api/notifications/push', (c) => svc.notify.subscribe(c.actor, c.body)],
+    ['DELETE', '/api/notifications/push', (c) => svc.notify.unsubscribe(c.actor, c.body)],
     // Clubs (free; every page is one)
     ['POST', '/api/clubs', (c) => svc.clubs.create(c.actor, c.body)],
     ['GET', '/api/clubs', (c) => svc.clubs.discover(Object.fromEntries(c.query))],
@@ -815,6 +823,13 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
           'X-Content-Type-Options': 'nosniff',
         });
         return res.end(req.method === 'HEAD' ? undefined : html);
+      }
+      // The "turn these emails off" link (no sign-in needed).
+      if ((pathname === '/api/notifications/unsubscribe') && read) {
+        const done = await svc.notify.unsubscribeEmail(url.searchParams.get('t'), url.searchParams.get('k'));
+        res.writeHead(done ? 200 : 404, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+        const msg = done ? `${done === 'All' ? 'All Tonament emails' : `Emails for “${pages.esc(done)}”`} are off. You can turn them back on in the app, under 🔔 › Settings.` : 'That link has expired.';
+        return res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Emails · Tonament</title><link rel="stylesheet" href="/styles.css"><main class="doc" style="padding:48px 16px"><h1>${done ? 'Done' : 'Hmm'}</h1><p>${msg}</p><p><a href="/">Open Tonament</a></p></main>`);
       }
       // Share cards: /img/<kind>/<id>.png (?size=story for 1080×1920).
       const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t)\/([A-Za-z0-9-]{1,100})\.png$/);

@@ -43,6 +43,24 @@ if (typeof module === 'object' && module.exports) {
     }
     return response;
   };
+  // Notifications pushed from the server (server/notify.js): show it, and
+  // open (or focus) the app on its page when it's tapped.
+  self.addEventListener('push', (event) => {
+    let n = {};
+    try { n = event.data ? event.data.json() : {}; } catch { n = { title: event.data && event.data.text() }; }
+    event.waitUntil(self.registration.showNotification(n.title || 'Tonament', {
+      body: n.body || '', icon: '/brand/icon-192.png', badge: '/brand/icon-192.png', data: { url: n.url || '/' }, tag: n.url || undefined,
+    }));
+  });
+  self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const url = new URL((event.notification.data && event.notification.data.url) || '/', self.location.origin).href;
+    event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      const open = list.find((c) => c.url.startsWith(self.location.origin));
+      if (open) return open.focus().then((c) => (c && 'navigate' in c ? c.navigate(url) : null));
+      return self.clients.openWindow(url);
+    }));
+  });
   self.addEventListener('fetch', (event) => {
     const { request } = event;
     const how = strategy(new URL(request.url), request, self.location.origin);

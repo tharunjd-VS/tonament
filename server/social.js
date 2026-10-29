@@ -14,7 +14,7 @@ const PAGE = 30;
 const COMMENT_MAX = 500;
 const MINOR_AGE = 18;
 
-function createSocial({ db, fail, text, mediaUrl }) {
+function createSocial({ db, fail, text, mediaUrl, notify = null }) {
   const needUser = (actor) => { if (!actor?.user) fail(401, 'Sign in first'); return actor.user; };
   const minorYear = () => new Date().getFullYear() - MINOR_AGE;
 
@@ -44,7 +44,13 @@ function createSocial({ db, fail, text, mediaUrl }) {
     if (!id) fail(400, 'Follow what?');
     if (kind === 'user' && Number(id) === me.id) fail(400, 'That\'s you');
     if (input.on === false) await db.query('DELETE FROM follows WHERE follower_id = $1 AND kind = $2 AND target_id = $3', [me.id, kind, id]);
-    else await db.query('INSERT INTO follows (follower_id, kind, target_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [me.id, kind, id]);
+    else {
+      const added = await db.query('INSERT INTO follows (follower_id, kind, target_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING 1', [me.id, kind, id]);
+      if (added.length && kind === 'user' && notify) {
+        const [u] = await db.query('SELECT handle FROM users WHERE id = $1', [me.id]);
+        await notify.send(db.query, { users: [Number(id)], kind: 'follow', actor: me.id, dedupe: `follow:${me.id}`, title: `${me.name} is following you`, url: u && u.handle ? `/p/${u.handle}` : '/' });
+      }
+    }
     return followState(db.query, actor, kind, id);
   }
   // { following, followers } for a follow button.
@@ -165,6 +171,16 @@ function createSocial({ db, fail, text, mediaUrl }) {
 
   // ---------- kudos and comments
 
+  // What a feed item is about, in a few words (for notifications).
+  const about = (a) => {
+    const d = a.data || {};
+    if (a.verb === 'finish') return `${d.finish === 'W' ? 'Winning' : 'The final of'} ${d.event}`;
+    if (a.verb === 'game') return `${((d.winner === 'a' ? d.a : d.b) || []).join(' & ')} ${d.score}`;
+    if (a.verb === 'joined') return `Joining ${d.club}`;
+    if (a.verb === 'club') return d.club;
+    return null;
+  };
+
   async function seeable(q, actor, id) {
     const c = await circle(q, actor?.user?.id);
     const v = visibleSql(c, 1);
@@ -175,7 +191,10 @@ function createSocial({ db, fail, text, mediaUrl }) {
   async function kudos(actor, id, on = true) {
     const me = needUser(actor);
     const a = await seeable(db.query, actor, id);
-    if (on) await db.query('INSERT INTO reactions (activity_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [a.id, me.id]);
+    if (on) {
+      const added = await db.query('INSERT INTO reactions (activity_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING 1', [a.id, me.id]);
+      if (added.length && notify) await notify.send(db.query, { users: a.people, kind: 'kudos', actor: me.id, dedupe: `kudos:${a.id}:${me.id}`, title: `${me.name} gave you kudos 👏`, body: about(a), url: `/a/${a.id}` });
+    }
     else await db.query('DELETE FROM reactions WHERE activity_id = $1 AND user_id = $2', [a.id, me.id]);
     const [{ n }] = await db.query('SELECT COUNT(*)::int AS n FROM reactions WHERE activity_id = $1', [a.id]);
     return { kudos: n, kudoed: on };
@@ -196,7 +215,8 @@ function createSocial({ db, fail, text, mediaUrl }) {
     const body = text(input.body, 'Comment', { max: COMMENT_MAX });
     const [{ n }] = await db.query(`SELECT COUNT(*)::int AS n FROM comments WHERE user_id = $1 AND created_at > now() - interval '10 minutes'`, [me.id]);
     if (n >= 20) fail(429, 'That\'s a lot of comments — try again in a few minutes');
-    await db.query('INSERT INTO comments (activity_id, user_id, body) VALUES ($1, $2, $3)', [a.id, me.id, body]);
+    const [c] = await db.query('INSERT INTO comments (activity_id, user_id, body) VALUES ($1, $2, $3) RETURNING id', [a.id, me.id, body]);
+    if (notify) await notify.send(db.query, { users: a.people, kind: 'comment', actor: me.id, dedupe: `comment:${c.id}`, title: `${me.name} commented on ${about(a) ? `“${about(a)}”` : 'your post'}`, body, url: `/a/${a.id}` });
     return commentsOf(a.id, actor);
   }
   async function deleteComment(actor, commentId) {

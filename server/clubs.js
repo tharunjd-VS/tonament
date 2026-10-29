@@ -14,7 +14,7 @@ const sports = require('./sports');
 const ROLES = ['admin', 'captain', 'coach', 'player'];
 const ROLE_NAMES = { admin: 'Admin', captain: 'Captain', coach: 'Coach', player: 'Player' };
 
-function createClubs({ db, fail, orgs, social, mediaUrl }) {
+function createClubs({ db, fail, orgs, social, mediaUrl, notify = null }) {
   const needUser = (actor) => { if (!actor?.user) fail(401, 'Sign in first'); return actor.user; };
   const token = () => crypto.randomBytes(9).toString('base64url');
 
@@ -39,6 +39,16 @@ function createClubs({ db, fail, orgs, social, mediaUrl }) {
   }
   async function needAdmin(q, o, actor) {
     if (!(await isAdmin(q, o, actor))) fail(actor?.user ? 403 : 401, 'Only the club\'s admins can do this');
+  }
+
+  // Everyone who runs the club: admin members and the page team.
+  async function adminIds(q, o) {
+    const rows = await q(
+      `SELECT user_id AS id FROM club_members WHERE org_id = $1 AND role = 'admin' AND status = 'active'
+       UNION SELECT u.id FROM org_members m JOIN users u ON u.email = m.email WHERE m.org_id = $1`,
+      [o.id],
+    );
+    return rows.map((r) => r.id);
   }
 
   // ---------- views
@@ -133,6 +143,12 @@ function createClubs({ db, fail, orgs, social, mediaUrl }) {
         [o.id, me.id, status],
       );
       if (status === 'active') await joinedActivity(q, o, me.id);
+      else if (notify) {
+        await notify.send(q, {
+          users: await adminIds(q, o), kind: 'club_request', actor: me.id, dedupe: `clubreq:${o.id}:${me.id}`,
+          title: `${me.name} wants to join ${o.name}`, body: 'Let them in, or decline, from the club\'s Members tab.', url: `/club/${o.slug}?tab=members`,
+        });
+      }
       return { o, status };
     });
     return { ...(await clubView(slug, actor)), joined: joined.status, already: Boolean(joined.already) };
@@ -169,6 +185,7 @@ function createClubs({ db, fail, orgs, social, mediaUrl }) {
       if (action === 'approve') {
         await q(`UPDATE club_members SET status = 'active', joined_at = now() WHERE org_id = $1 AND user_id = $2`, [o.id, id]);
         await joinedActivity(q, o, id);
+        if (notify) await notify.send(q, { users: [id], kind: 'club_joined', actor: actor.user.id, dedupe: `clubjoined:${o.id}:${id}`, title: `You're in ${o.name}`, body: 'Say hello in the club feed, and invite your teammates.', url: `/club/${o.slug}` });
       } else if (action === 'decline' || action === 'remove') {
         if (m.role === 'admin' && action === 'remove') {
           const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM club_members WHERE org_id = $1 AND role = 'admin' AND status = 'active'`, [o.id]);

@@ -116,7 +116,7 @@
       "destination": "/api/index?__path=rankings/:path*"
     },
     {
-      "source": "/:page(new|invite|signin|signup|forgot|reset|link|admin)",
+      "source": "/:page(new|invite|signin|signup|forgot|reset|link|admin|notifications)",
       "destination": "/api/index?__path=app"
     },
     {

@@ -631,6 +631,22 @@
           return;
         }
         S.route = { name: 'orgNew' };
+      } else if (parts[0] === 'notifications') {
+        if (!S.me) {
+          navigate('/signin?next=/notifications', { replace: true });
+          return;
+        }
+        S.route = { name: 'notifications' };
+        S.inbox = null;
+        render();
+        [S.inbox, S.notifySettings] = await Promise.all([
+          api('GET', '/notifications').catch(() => ({ items: [] })),
+          api('GET', '/notifications/settings').catch(() => null),
+        ]);
+        render();
+        // Seen: the count goes, the dots stay until the next visit.
+        if (S.inbox.items.some((n) => !n.read)) api('POST', '/notifications/read', {}).then(() => refreshBell(true)).catch(() => {});
+        return;
       } else if (parts[0] === 'clubs') {
         S.route = { name: 'clubs' };
         render();
@@ -838,6 +854,7 @@
     else if (S.route.name === 'clubs') view = viewClubs();
     else if (S.route.name === 'club') view = viewClub();
     else if (S.route.name === 'item') view = viewItem();
+    else if (S.route.name === 'notifications') view = viewNotifications();
     else if (S.route.name === 'profile') view = viewProfile();
     else if (S.route.name === 'groups') view = viewGroups();
     else if (S.route.name === 'groupNew') view = viewGroupNew();
@@ -861,6 +878,7 @@
     keepDetails();
     applyBranding(['tournament', 'match', 'display'].includes(S.route.name) && S.t && !S.error ? S.t.branding : null);
     renderNav();
+    refreshBell();
   }
 
   const markDirty = (e) => {
@@ -4867,6 +4885,7 @@
     nav.replaceChildren(...(S.me
       ? [
         h('a', { class: 'btn btn-small btn-primary', href: '/new' }, 'New tournament'),
+        h('a', { class: 'bell', href: '/notifications', 'aria-label': 'Notifications', title: 'Notifications' }, '🔔', h('span', { class: 'bell-count', hidden: true })),
         h('details', { class: 'menu' },
           h('summary', { class: 'avatar', title: S.me.email, 'aria-label': 'Account menu' }, initials(S.me.name)),
           h('div', { class: 'menu-panel' },
@@ -4887,6 +4906,21 @@
         h('a', { class: 'btn btn-small btn-primary', href: '/signup' }, 'Sign up'),
       ]).filter(Boolean));
   }
+
+  // The 🔔's count: on each page change and every minute while the app is open.
+  let unreadAt = 0;
+  async function refreshBell(force = false) {
+    if (!S.me || (!force && Date.now() - unreadAt < 20000)) return;
+    unreadAt = Date.now();
+    const r = await api('GET', '/notifications/unread').catch(() => null);
+    const badge = document.querySelector('.bell-count');
+    if (!r || !badge) return;
+    badge.textContent = r.unread > 9 ? '9+' : String(r.unread);
+    badge.hidden = !r.unread;
+    badge.closest('.bell')?.setAttribute('aria-label', r.unread ? `Notifications (${r.unread} new)` : 'Notifications');
+  }
+  setInterval(() => { if (!document.hidden) refreshBell(true); }, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshBell(); });
 
   function closeMenu(e) {
     e.target.closest('details')?.removeAttribute('open');
@@ -6726,6 +6760,71 @@
         c.pagePublic ? h('a', { class: 'btn', href: `/@${c.slug}` }, 'View it') : null));
   }
 
+  // ---------- notifications
+  function viewNotifications() {
+    document.title = 'Notifications · Tonament';
+    const list = S.inbox;
+    const open = (n) => { if (n.url) navigate(n.url); };
+    return [
+      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Notifications')),
+      list == null ? loading() : list.items.length
+        ? h('ul', { class: 'card feed inbox' }, list.items.map((n) => h('li', { class: `feed-item${n.read ? '' : ' unread'}` },
+          h('span', { class: 'feed-avatar', 'aria-hidden': 'true' }, n.actor ? n.actor.name.slice(0, 1) : '🔔'),
+          h('button', { class: 'inbox-open', type: 'button', onclick: () => open(n) },
+            h('span', { class: 'feed-text' }, n.title),
+            n.body ? h('small', { class: 'muted' }, n.body) : null,
+            h('small', { class: 'muted' }, ago(n.at))))))
+        : empty('Nothing yet. Comments, kudos, new followers and results to confirm show up here.'),
+      notifySettingsCard(),
+    ];
+  }
+
+  // Push on this phone, and which notifications come by push or email.
+  function notifySettingsCard() {
+    const st = S.notifySettings;
+    if (!st) return null;
+    const set = (kind, channel, on) => act(async () => { S.notifySettings = await api('PATCH', '/notifications/settings', { kind, channel, on }); });
+    const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    const pushOn = async () => {
+      try {
+        if ((await Notification.requestPermission()) !== 'granted') { toast('Notifications are blocked for Tonament in your browser settings', true); return; }
+        const reg = await navigator.serviceWorker.ready;
+        const key = Uint8Array.from(atob(st.push.publicKey.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (st.push.publicKey.length % 4)) % 4)), (c) => c.charCodeAt(0));
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+        S.notifySettings = await api('POST', '/notifications/push', sub.toJSON());
+        S.pushHere = true;
+        toast('Notifications on for this phone ✓');
+      } catch (e) {
+        toast(e.message || 'Couldn\'t turn notifications on', true);
+      }
+      render();
+    };
+    const pushOff = async () => {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) { await api('DELETE', '/notifications/push', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe(); }
+      S.pushHere = false;
+      S.notifySettings = await api('GET', '/notifications/settings');
+      render();
+    };
+    if (supported && st.push.available && S.pushHere === undefined) {
+      S.pushHere = null;
+      navigator.serviceWorker.ready.then((reg) => reg.pushManager.getSubscription()).then((sub) => { S.pushHere = Boolean(sub); render(); }).catch(() => { S.pushHere = false; });
+    }
+    return h('div', { class: 'card' },
+      h('h2', {}, 'Settings'),
+      st.push.available && supported
+        ? h('div', { class: 'card-head' }, h('span', {}, h('strong', {}, 'On this phone'), h('small', { class: 'muted', style: 'display:block' }, S.pushHere ? 'Notifications are on' : 'Get a notification when something happens')),
+          S.pushHere ? h('button', { class: 'btn btn-small btn-ghost', onclick: pushOff }, 'Turn off') : h('button', { class: 'btn btn-small btn-primary', onclick: pushOn, disabled: S.pushHere === null }, 'Turn on'))
+        : h('p', { class: 'muted small' }, st.push.available ? 'This browser can\'t show notifications. Add Tonament to your home screen to get them.' : 'You\'ll see everything here; phone notifications are coming soon.'),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'notify-prefs' },
+        h('thead', {}, h('tr', {}, h('th', {}, ''), st.push.available ? h('th', { class: 'num' }, 'Phone') : null, st.email ? h('th', { class: 'num' }, 'Email') : null)),
+        h('tbody', {}, st.kinds.map((k) => h('tr', {},
+          h('td', {}, k.label),
+          st.push.available ? h('td', { class: 'num' }, h('input', { type: 'checkbox', checked: k.push, 'aria-label': `${k.label} on your phone`, onchange: (e) => set(k.kind, 'push', e.target.checked) })) : null,
+          st.email ? h('td', { class: 'num' }, h('input', { type: 'checkbox', checked: k.email, 'aria-label': `${k.label} by email`, onchange: (e) => set(k.kind, 'email', e.target.checked) })) : null))))));
+  }
+
   // ---------- the feed
   const ago = (iso) => {
     const m = Math.floor((Date.now() - Date.parse(iso)) / 60000);
@@ -7667,7 +7766,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

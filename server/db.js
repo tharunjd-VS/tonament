@@ -593,11 +593,38 @@ INSERT INTO activity (dedupe, actor_id, people, sport, verb, object_kind, object
   FROM event_results r JOIN users u ON u.email = r.email JOIN tournaments t ON t.id = r.tournament_id JOIN events e ON e.id = r.event_id
   WHERE r.finish IN ('W', 'F') AND t.visibility = 'public' AND u.profile_public
   ON CONFLICT (dedupe) DO NOTHING;
+-- v35: notifications. One row per thing to tell someone (the 🔔 inbox), sent
+-- on as a push to their phones (push_subscriptions) and, for the important
+-- ones, by email; notify_prefs turns each off; notify_token unsubscribes.
+CREATE TABLE IF NOT EXISTS notifications (
+  id         SERIAL PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  dedupe     TEXT,
+  kind       TEXT NOT NULL,                       -- comment | kudos | follow | club_request | club_joined | confirm_game | …
+  actor_id   INTEGER,
+  title      TEXT NOT NULL,
+  body       TEXT,
+  url        TEXT,
+  read_at    TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, dedupe)
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id         SERIAL PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint   TEXT NOT NULL UNIQUE,
+  p256dh     TEXT NOT NULL,
+  auth       TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_prefs JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_token TEXT;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 34;
+const SCHEMA_VERSION = 35;
 
 async function migrate(db) {
   try {

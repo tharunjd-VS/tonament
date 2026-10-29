@@ -15,7 +15,7 @@ const AUTO_CONFIRM_MINUTES = 10;
 const MAX_COURTS = 12;
 
 // orgs: the venue / academy pages module (a group can be hosted by one).
-function createGroups({ db, fail, text, orgs, social = null }) {
+function createGroups({ db, fail, text, orgs, social = null, notify = null }) {
   // ---------- helpers
 
   const slugOf = (value) => String(value || '').trim().toLowerCase()
@@ -554,6 +554,7 @@ function createGroups({ db, fail, text, orgs, social = null }) {
         `UPDATE group_games SET rallies = $1, status = $2, winner = $3, ended_at = $4 WHERE id = $5 RETURNING *`,
         [rallies, sc.winner ? 'done' : 'live', sc.winner || null, sc.winner ? new Date().toISOString() : null, x.id],
       );
+      if (row.status === 'done') await askToConfirm(q, g, row, actor.user.id);
       return gameView(q, g, row, m, actor);
     });
   }
@@ -584,7 +585,9 @@ function createGroups({ db, fail, text, orgs, social = null }) {
       if (![a, b].every((n) => Number.isInteger(n) && n >= 0 && n <= 99) || a === b) fail(400, 'Enter both scores, like 21 and 17');
       await q(`UPDATE group_games SET final = $1::jsonb, rallies = '', status = 'done', winner = $2, ended_at = now() WHERE id = $3`,
         [JSON.stringify({ a, b }), a > b ? 'a' : 'b', x.id]);
-      return gameView(q, g, await gameOf(q, g, x.id), m, actor);
+      const done = await gameOf(q, g, x.id);
+      await askToConfirm(q, g, done, actor.user.id);
+      return gameView(q, g, done, m, actor);
     });
   }
 
@@ -611,7 +614,22 @@ function createGroups({ db, fail, text, orgs, social = null }) {
          VALUES ($1, $2, 0, $3, $4, $5, $6, 'done', $7, $8::jsonb, now()) RETURNING id`,
         [g.id, s.id, a[0], a[1] || null, b[0], b[1] || null, sa > sb ? 'a' : 'b', JSON.stringify({ a: sa, b: sb })],
       );
+      await askToConfirm(q, g, await gameOf(q, g, row.id), actor.user.id);
       return { id: row.id };
+    });
+  }
+
+  // The losing side confirms a result: tell them (it confirms itself in a few minutes).
+  async function askToConfirm(q, g, x, actorId) {
+    if (!notify || !x.winner) return;
+    const winners = x.winner === 'a' ? [x.a1, x.a2] : [x.b1, x.b2];
+    const losers = (x.winner === 'a' ? [x.b1, x.b2] : [x.a1, x.a2]).filter(Boolean);
+    const names = await q('SELECT name FROM users WHERE id = ANY($1::int[])', [winners.filter(Boolean)]);
+    const score = x.final ? `${x.final.a}–${x.final.b}` : sportOf(g).summary(scoreOf(g, x));
+    await notify.send(q, {
+      users: losers, kind: 'confirm_game', actor: actorId, dedupe: `confirm:${x.id}`,
+      title: `${names.map((n) => n.name).join(' & ')} won ${score} — confirm the result`,
+      body: `${g.name}. It confirms itself in ${AUTO_CONFIRM_MINUTES} minutes if you don't.`, url: `/g/${g.slug}/game/${x.id}`,
     });
   }
 

@@ -1473,6 +1473,16 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .feed-comment-form { display: flex; gap: 8px; }
 .feed-comment-form input { flex: 1; min-width: 0; }
 .plays-for { margin: 6px 0 0; }
+/* Notifications */
+.bell { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 50%; text-decoration: none; font-size: 1.15rem; }
+.bell:hover { background: rgba(255, 255, 255, 0.08); }
+.bell-count { position: absolute; top: 0; right: -2px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 0.7rem; font-weight: 700; line-height: 18px; text-align: center; }
+.inbox-open { font: inherit; text-align: left; background: none; border: 0; padding: 0; color: var(--text); cursor: pointer; display: grid; gap: 2px; flex: 1; min-width: 0; }
+.inbox { margin-bottom: 16px; }
+.inbox .unread .feed-text { font-weight: 700; }
+.inbox .unread .feed-avatar { box-shadow: 0 0 0 3px var(--accent); }
+.notify-prefs td, .notify-prefs th { padding: 8px 6px; }
+.notify-prefs input { width: 20px; height: 20px; accent-color: var(--lime); }
 .offline-card { max-width: 520px; margin: 40px auto; text-align: center; }
 
 /* Group admins: Who's here */
