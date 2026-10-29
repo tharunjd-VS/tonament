@@ -317,10 +317,11 @@ function daysText(days = []) {
   if (d === '0,6') return 'Weekends';
   return [...days].sort().map((x) => DAY_NAMES[x]).join(', ');
 }
-function nextLabel(iso, timeZone = 'Asia/Kolkata') {
+function nextLabel(iso, timeZone = 'Asia/Kolkata', hours = 3) {
   const day = (d) => new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
   const at = new Date(iso);
   const now = new Date();
+  if (at <= now && now < at.getTime() + hours * 3600000) return 'On now'; // even one that began before midnight
   if (day(at) === day(now)) return at <= now ? 'On now' : 'Today';
   if (day(at) === day(new Date(now.getTime() + 86400000))) return 'Tomorrow';
   return new Intl.DateTimeFormat('en-IN', { timeZone, weekday: 'long' }).format(at);
@@ -329,7 +330,7 @@ function nextLabel(iso, timeZone = 'Asia/Kolkata') {
 const levelText = (levels) => (levels && levels.length ? levels.length === 1 ? levels[0] : `${levels.slice(0, -1).join(', ')} & ${levels[levels.length - 1]}` : 'All levels');
 function groupCardHtml(g) {
   const st = g.settings;
-  const next = g.next ? [nextLabel(g.next, st.timeZone), `${g.going} going`, g.spots != null ? (g.spots ? `${g.spots} spot${g.spots === 1 ? '' : 's'} left` : 'Full — join the waitlist') : null].filter(Boolean).join(' · ') : null;
+  const next = g.next ? [nextLabel(g.next, st.timeZone, st.hours), `${g.going} going`, g.spots != null ? (g.spots ? `${g.spots} spot${g.spots === 1 ? '' : 's'} left` : 'Full — join the waitlist') : null].filter(Boolean).join(' · ') : null;
   return `<a class="card t-card" href="/g/${esc(g.slug)}">
         <div class="card-head"><h3>${iconSvg(g.sport.id)} ${esc(g.name)}</h3><span class="btn btn-small btn-primary">Join</span></div>
         <div class="t-card-when">${esc(`${daysText(st.days)} · ${hours(st.time, st.endTime)}`)}</div>
@@ -361,7 +362,7 @@ function groupHtml(shell, { base, g }) {
       image = 'og-group-join.png';
     } else if (s) {
       const left = s.spots == null ? '' : s.spots ? `, ${s.spots} spot${s.spots === 1 ? '' : 's'} left` : ', full (waitlist open)';
-      title = `${nextLabel(s.startsAt, st.timeZone)} ${time} · ${s.going} going${left}`;
+      title = `${nextLabel(s.startsAt, st.timeZone, st.hours)} ${time} · ${s.going} going${left}`;
       description = `${g.name}${at} · ${g.sport.name} · ${level}. Tap to say you're in (and when you're coming).`;
       image = 'og-group-today.png';
     } else {
