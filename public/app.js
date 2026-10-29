@@ -844,7 +844,7 @@
         label: 'Tournaments',
         eyebrow: ['One platform.', 'Every sport.', h('b', {}, 'Every tournament.')],
         title: ['Run your tournament. ', 'Score it live.'],
-        lead: 'Entries and UPI fees, groups, a league, a knockout bracket and an order of play across your courts — and everyone follows every point on their phone.',
+        lead: 'Entries and UPI fees, team rosters, groups, a league, a knockout bracket and an order of play across your courts — and everyone follows every point on their phone.',
         chips: ['League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'],
         actions: [
           h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
@@ -853,11 +853,35 @@
         visual: shot('/guide/umpire-dark.jpg', 'An umpire scoring a badminton match point by point'),
       },
       {
+        label: 'By level',
+        eyebrow: ['Open events', h('b', {}, 'Split by level')],
+        title: ['One Open event. ', 'Every level.'],
+        lead: 'Beginners play Beginners in the groups, Advanced play Advanced — and the level winners meet in the semis or the final. Just like your paper draw, but live. Move anyone to the right group until they\'ve played.',
+        chips: ['2 or 4 level pools', 'Meet in the semis or final', 'You can always override'],
+        actions: [
+          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/features#everything' }, 'All features'),
+        ],
+        visual: shot('/guide/pools-dark.jpg', 'Groups split by level: Group A Beginner, Group B Beginner+, Group C Intermediate'),
+      },
+      {
+        label: 'On the day',
+        eyebrow: ['On the day', h('b', {}, 'Things change. You\'re ready.')],
+        title: ['Late players? ', 'No problem.'],
+        lead: 'Mark who\'s not here yet and the next ready match goes on instead. Walkovers, retirements, substitute partners and spot entries in a tap — and collect fees by UPI or cash at the desk.',
+        chips: ['Not here yet', 'Walkovers & retirements', 'Spot entries', 'Fees by UPI or cash'],
+        actions: [
+          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/how-it-works' }, 'How it works'),
+        ],
+        visual: shot('/guide/onday-dark.jpg', 'Courts and the order of play: a pair marked not here yet waits, with Is here and Walkover buttons'),
+      },
+      {
         label: 'Groups',
         eyebrow: ['Groups', h('b', {}, 'Your daily games')],
         title: ['Your daily games, ', 'sorted.'],
         lead: 'One link in the group chat. Tap "I\'m in" and say when you\'re coming, get fair teams at the court, score live or add it at the end — and a leaderboard settles who\'s best.',
-        chips: ['I\'m in + coming at', 'Fair games', 'No score arguments', 'Group leaderboard'],
+        chips: ['I\'m in + coming at', 'Add players by name', 'Fair games', 'Group leaderboard'],
         actions: [
           h('a', { class: 'btn btn-primary btn-lg', href: join('/groups/new') }, 'Start a group'),
           h('a', { class: 'btn btn-lg btn-ghost', href: '/features#groups' }, 'How groups work'),
@@ -865,7 +889,7 @@
         visual: shot('/guide/group-rsvp-dark.jpg', 'A group session: I\'m in, coming at 7:30 pm, and who else is coming', 'card'),
       },
       {
-        label: 'Venue display',
+        label: 'Big screen',
         eyebrow: ['On the day', h('b', {}, 'The big screen')],
         title: ['Your venue, ', 'on the big screen.'],
         lead: 'Courts, live scores, who\'s up next and the standings on any TV or projector — just open a link. No app, no cables, no whiteboard.',
@@ -877,10 +901,10 @@
         visual: shot('/guide/display.jpg', 'The venue display: courts with live scores, up next and standings', 'tv'),
       },
       {
-        label: 'Every sport',
+        label: 'Sports',
         eyebrow: [`${sportCount} sports`, h('b', {}, 'Each with its own rules')],
         title: ['Every sport. ', 'Its own rules.'],
-        lead: 'Badminton rally scoring, pickleball side-out, tennis tie-breaks, football penalties, basketball overtime, snooker ball by ball — score live, or just enter the result at the end.',
+        lead: 'Badminton rally scoring, pickleball side-out, tennis tie-breaks, football penalties, kabaddi raids, basketball overtime, snooker ball by ball — score live, or just enter the result at the end.',
         chips: ['Scored live or at the end', 'Serve and side called for you', 'Singles, doubles and teams'],
         actions: [
           h('a', { class: 'btn btn-primary btn-lg', href: '/sports' }, 'See all sports'),
@@ -889,7 +913,7 @@
         visual: h('div', { class: 'hero-visual sports' }, liveSports().map((s) => h('a', { href: `/${s.id}`, title: s.name }, icon(s.id), h('span', {}, s.name)))),
       },
       {
-        label: 'Venues & academies',
+        label: 'Venues',
         eyebrow: ['Venues & academies', h('b', {}, 'Fill your courts')],
         title: ['Daily slots, ', 'by level.'],
         lead: 'Post your slots — Beginners at 6, Intermediates at 7. Players find them on your page and join in one tap, and you see who actually turned up. For academies, it\'s your batch register.',
