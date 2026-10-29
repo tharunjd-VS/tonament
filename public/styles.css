@@ -1423,3 +1423,10 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 /* One phone scores a match at a time */
 .takeover-card { border-color: var(--accent); text-align: center; margin-bottom: 16px; }
 .takeover-card p { margin: 0 0 8px; }
+
+/* Event details (format and scoring, read-only) */
+.event-details h2 { margin-top: 0; }
+.details-list { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.details-list dt { color: var(--muted); font-size: 0.9rem; }
+.details-list dd { margin: 0; font-weight: 600; }
+@media (max-width: 420px) { .details-list { grid-template-columns: 1fr; gap: 0; } .details-list dd { margin-bottom: 8px; } }

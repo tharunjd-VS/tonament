@@ -1370,6 +1370,49 @@
       `With draws, ${unit} 1 each is a draw. Group tables then rank on points: win 2, draw 1, loss 0. Knockout matches keep the length above.`));
   }
 
+  // Event details for everyone: the format and the scoring, read-only. Organisers
+  // edit them in Event settings until the event starts; after that they're
+  // locked (every match is played to the same rules), but still shown here.
+  function eventDetailsCard(t) {
+    const sport = S.sports.find((x) => x.id === t.sport.id);
+    if (!sport) return null;
+    const rules = window.TonamentSports && window.TonamentSports[sport.id];
+    const sc = { ...sport.defaults, ...(t.config.scoring || {}) };
+    const unit = sportUnit(sport.id).toLowerCase();
+    const rows = [];
+    const add = (label, value) => { if (value) rows.push([label, value]); };
+    // Format.
+    const league = t.format === 'league' || t.format === 'league_knockout';
+    const groups = t.groups && t.groups.length;
+    add('Format', [t.formatName,
+      league ? (groups ? `${groups} group${groups === 1 ? '' : 's'}` : t.config.groupSize ? `groups of about ${t.config.groupSize}` : null) : null,
+      t.format === 'league_knockout' && t.config.qualifiers ? `top ${t.config.qualifiers} from each group into the knockout` : null,
+    ].filter(Boolean).join(' · '));
+    if (poolsOn(t)) add('Split by level', t.config.pools === 'two' ? 'Lower and upper levels play apart and meet in the final' : 'Each level plays its own groups; the level winners meet in the semis');
+    // Scoring, in the sport's own words (the same options the organiser chose from).
+    const value = (f) => {
+      const v = sc[f.key];
+      if (f.type === 'select') return (f.options.find((o) => String(o.value) === String(v)) || {}).label || null;
+      return v == null || v === '' ? null : String(v);
+    };
+    for (const f of sport.fields || []) if (!(f.key === 'tie' && t.format === 'league')) add(f.label, value(f)); // no knockout, no tie-break
+    if (league && !(rules && rules.timed)) {
+      add('League matches', t.config.leagueDraws ? `2 ${unit}s — 1 each is a draw (win 2, draw 1, loss 0)` : 'Always a winner');
+    } else if (league && rules && rules.timed && rules.leaguePoints) {
+      add('League points', rules.draws ? `Win ${rules.leaguePoints.win}, draw ${rules.leaguePoints.draw}` : `Win ${rules.leaguePoints.win} (no draws)`);
+    }
+    if (t.config.partners === 'drawn') add('Partners', 'Drawn at random on the day');
+    // Entries.
+    const count = t.entries.filter((e) => e.confirmed !== false && !e.withdrawn).length;
+    add('Entries', `${count}${t.config.maxEntries ? ` of ${t.config.maxEntries} places` : ''}`);
+    if (t.event.fee) add('Entry fee', `${money(t.event.fee)}${t.config.feePer === 'player' ? ' per player' : ''}`);
+    const locked = t.status !== 'setup';
+    return h('div', { class: 'card event-details' },
+      h('h2', {}, 'Event details'),
+      h('dl', { class: 'details-list' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
+      locked && t.can.manage ? h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Format and scoring are locked once the event starts, so every match is played to the same rules.') : null);
+  }
+
   // A select of standard values with "Custom…" revealing a text box.
   function choiceField(label, name, options, value) {
     const custom = value && !options.includes(value);
@@ -2036,6 +2079,7 @@
       return [
         venueCard(t),
         prizesCard(t, [t.event]),
+        eventDetailsCard(t),
         setup && t.entriesOpen ? publicEntryCard(t) : null,
         myTeamCard(t),
         setup && t.solos.length
@@ -2048,7 +2092,7 @@
         list,
       ];
     }
-    if (!setup) return [paymentsToCheck(t), upgradeCard(t), teamEditCard(t), levelPoolsCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, rankedCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
+    if (!setup) return [paymentsToCheck(t), upgradeCard(t), teamEditCard(t), levelPoolsCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), eventDetailsCard(t), list, rankedCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
     return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), levelPoolsCard(t), addEntriesForm(t, usingCheckIn), soloCard(t), teamEditCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
   }
 
