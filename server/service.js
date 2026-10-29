@@ -30,7 +30,7 @@ const VISIBILITY = ['private', 'link', 'public'];
 const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
 const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level', 'ranked', 'dupr', 'duprMin', 'duprMax', 'pools', 'poolOrder', 'feePer'];
 // Event settings that can still change once the event has started.
-const LIVE_EVENT_KEYS = ['lateEntry', 'prizes', 'ranked', 'poolOrder'];
+const LIVE_EVENT_KEYS = ['lateEntry', 'prizes', 'ranked', 'poolOrder', 'fee', 'feePer'];
 const MAX_PRIZE = 10000000; // ₹1 crore
 
 // Prizes for one event: [{ place, cash (whole rupees), reward }].
@@ -1246,6 +1246,12 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (ev.status !== 'setup' && keys.some((k) => !LIVE_EVENT_KEYS.includes(k))) {
       fail(409, 'Settings are locked once the tournament has started');
     }
+    // Fees can change on the day (spot entries pay then), except for events
+    // paid online, and not once the event is over.
+    const feeChange = input.fee !== undefined || input.feePer !== undefined;
+    if (feeChange && ev.status !== 'setup' && (PAY_ONLINE(ev) || ev.status === 'completed')) {
+      fail(409, PAY_ONLINE(ev) ? 'Online entry fees are fixed once the event starts' : 'The event has finished');
+    }
     if (input.format !== undefined && !FORMATS[input.format]) fail(400, 'Unknown format');
     const format = input.format ?? ev.format;
     const config = buildConfig(input, ev.sportDef, ev.config);
@@ -1301,6 +1307,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
       [format, JSON.stringify(eventConfigOf(config)), f.discipline, f.gender, f.age, f.level, f.name, ev.eventId],
     );
     await syncTournament(q, ev.id);
+    // A new fee applies to everyone who hasn't paid yet (paid, waived or
+    // "sent" entries keep what they paid or were asked for).
+    if (feeChange && !PAY_ONLINE(ev)) {
+      const next = { ...ev, config };
+      const unpaid = await q(`SELECT e.id, e.solo, (SELECT COUNT(*)::int FROM entry_players p WHERE p.entry_id = e.id) AS n FROM entries e
+        WHERE e.event_id = $1 AND (e.fee_status IS NULL OR e.fee_status = 'due') AND e.paired_into IS NULL`, [ev.eventId]);
+      for (const e of unpaid) {
+        const owed = !feeOf(next) ? 0 : e.solo ? Math.ceil(feeOf(next) / 2) // a solo player pays half the pair fee
+          : e.n && next.config.feePer === 'player' ? entryFeeFor(next, e.n) : feeOf(next);
+        await q('UPDATE entries SET fee_amount = $1, fee_status = CASE WHEN $1::int = 0 THEN NULL ELSE fee_status END WHERE id = $2', [owed, e.id]);
+      }
+    }
     if (input.ranked !== undefined && ev.status === 'completed') await recordResults(q, { ...ev, config }); // points on or off
     // A higher (or no) maximum makes room for players who were waiting.
     if (input.maxEntries !== undefined) await confirmWaiting(q, ev);
@@ -1732,9 +1750,25 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const result = await mutateEntry(id, actor, entryId, async (q, t) => {
       if (!feeOf(t)) fail(409, 'This event has no entry fee');
       if (!PAY_ONLINE(t)) {
-        if (!['received', 'cash', 'waived', 'missing'].includes(status)) fail(400, 'status must be "received", "cash", "waived" or "missing"');
-        requireSetup(t);
+        if (!['received', 'cash', 'waived', 'missing', null].includes(status ?? null)) fail(400, 'status must be "received", "cash", "waived" or "missing"');
+        if (t.status === 'completed') fail(409, 'The event has finished');
         const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+        // On the day (after the draw): just record the payment — places are already settled.
+        if (t.status !== 'setup') {
+          if (status === 'missing') fail(409, 'The draw has been made — mark it paid, or leave it unpaid');
+          const owed = e.fee_amount || entryFeeFor(t, (await q('SELECT COUNT(*)::int AS n FROM entry_players WHERE entry_id = $1', [e.id]))[0].n);
+          await q('UPDATE entries SET fee_status = $1, fee_amount = $2 WHERE id = $3', [status ?? null, status === 'waived' ? null : owed, e.id]);
+          if (status) await q('UPDATE entry_players SET fee_status = $1 WHERE entry_id = $2 AND fee_status IS NULL', [status === 'waived' ? 'waived' : 'paid', e.id]);
+          else await q('UPDATE entry_players SET fee_status = NULL WHERE entry_id = $1', [e.id]);
+          return;
+        }
+        if (status === null) {
+          // Undo a mark made by mistake: back to unpaid.
+          if (!DIRECT_PAID.includes(e.fee_status)) fail(409, 'This entry isn\'t marked paid');
+          await q(`UPDATE entries SET fee_status = $1, fee_amount = $2 WHERE id = $3`, [e.source === 'self' ? 'due' : null, e.fee_amount, e.id]);
+          await q('UPDATE entry_players SET fee_status = NULL WHERE entry_id = $1', [e.id]);
+          return;
+        }
         if (DIRECT_PAID.includes(e.fee_status) && e.confirmed) fail(409, 'This entry is already paid and confirmed');
         if (status === 'missing') {
           if (e.fee_status !== 'sent') fail(409, 'The player hasn\'t said they paid yet');

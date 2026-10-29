@@ -146,3 +146,43 @@ test('unpaid entries are never confirmed automatically, and stay out of the draw
   const t = await svc.start(id, ORG, { event: singles, skipUnconfirmed: true });
   assert.deepEqual(t.events[0].entries.filter((e) => e.inDraw).map((e) => e.name).sort(), ['Bo', 'Cal']);
 });
+
+test('the fee can change on the day: unpaid entries owe the new amount, paid ones keep theirs', async () => {
+  const { id, singles } = await cup();
+  const a = player('Asha'); const b = player('Bala'); const c = player('Chitra');
+  for (const p of [a, b, c]) await svc.register(id, p, { event: singles, phone: '9840011111' }, base);
+  let e = await orgEntry(id, singles, 'Asha');
+  await svc.setEntryFee(id, ORG, e.id, 'cash');
+  e = await orgEntry(id, singles, 'Bala');
+  await svc.setEntryFee(id, ORG, e.id, 'waived');
+  // Unpaid entries can't be drawn, so confirm Chitra's place another way: the organiser adds two more.
+  await svc.addEntries(id, ORG, ['Walk In'], { event: singles });
+  await svc.start(id, ORG, { event: singles, skipUnconfirmed: true });
+  await svc.updateEvent(id, ORG, singles, { fee: 60000 });
+  assert.equal((await orgEntry(id, singles, 'Asha')).feeAmount, 50000); // paid
+  assert.equal((await orgEntry(id, singles, 'Bala')).feeStatus, 'waived');
+  assert.equal((await orgEntry(id, singles, 'Chitra')).feeAmount, 60000); // still due
+  assert.equal((await orgEntry(id, singles, 'Walk In')).feeAmount, 60000);
+  // Other settings stay locked once started.
+  await assert.rejects(svc.updateEvent(id, ORG, singles, { maxEntries: 9 }), /locked/);
+});
+
+test('a payment marked by mistake can be undone, and payments can be marked after the draw', async () => {
+  const { id, singles } = await cup();
+  const a = player('Devi'); const b = player('Esha');
+  for (const p of [a, b]) await svc.register(id, p, { event: singles, phone: '9840022222' }, base);
+  let e = await orgEntry(id, singles, 'Devi');
+  await svc.setEntryFee(id, ORG, e.id, 'received');
+  await svc.setEntryFee(id, ORG, e.id, null);
+  assert.equal((await orgEntry(id, singles, 'Devi')).feeStatus, 'due');
+  await assert.rejects(svc.setEntryFee(id, ORG, e.id, null), /isn't marked paid/);
+  await svc.setEntryFee(id, ORG, e.id, 'cash');
+  await svc.setEntryFee(id, ORG, (await orgEntry(id, singles, 'Esha')).id, 'cash');
+  await svc.addEntries(id, ORG, ['Walk In'], { event: singles });
+  await svc.start(id, ORG, { event: singles });
+  // On the day: the walk-in pays at the desk.
+  e = await orgEntry(id, singles, 'Walk In');
+  await svc.setEntryFee(id, ORG, e.id, 'cash');
+  assert.equal((await orgEntry(id, singles, 'Walk In')).feeStatus, 'cash');
+  await assert.rejects(svc.setEntryFee(id, ORG, e.id, 'missing'), /draw has been made/);
+});

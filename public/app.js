@@ -1879,8 +1879,11 @@
           t.entries.length > 1 ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => shuffle(t) }, '🔀 Random draw') : null,
           duprTools(t)) : !setup ? duprTools(t) : null),
       t.can.manage && t.event.fee
-        ? h('p', { class: 'muted small', style: 'margin:0 0 8px' }, `Entry fee ${money(t.event.fee)}${t.config.feePer === 'player' ? ' per player' : ''} · ${money(t.event.feeTotal || 0)} collected`)
-        : null,
+        ? h('p', { class: 'muted small', style: 'margin:0 0 8px' }, `Entry fee ${money(t.event.fee)}${t.config.feePer === 'player' ? ' per player' : ''} · ${money(t.event.feeTotal || 0)} collected `,
+          !t.official && t.status !== 'completed' ? h('button', { class: 'link-btn small', onclick: () => openPanel(t, 'settings', 'Entry fees') }, 'Change') : null)
+        : t.can.manage && !t.official && t.status !== 'completed'
+          ? h('p', { class: 'muted small', style: 'margin:0 0 8px' }, 'Free to enter · ', h('button', { class: 'link-btn small', onclick: () => openPanel(t, 'settings', 'Entry fees') }, 'Set an entry fee'))
+          : null,
       t.can.manage && t.limits && t.limits.entries
         ? h('p', { class: 'muted small entry-meter' },
           `${Math.min(confirmedCount, t.limits.entries)} of ${t.limits.entries} ${t.plan === 'free' ? 'free entries' : `entries (${t.planName} plan)`} used${multiEvent(t) ? ', all events' : ''}`,
@@ -2399,7 +2402,10 @@
     const set = (status, msg) => act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/fee`, { status }, t.id); }, msg);
     if (!t.event.feeOnline) {
       // Paid to the organiser: settle it here (the "Payments to check" list has the same buttons).
-      if (e.feeStatus !== 'due' && e.feeStatus !== 'sent') return null;
+      if (['received', 'cash', 'waived'].includes(e.feeStatus) && t.status !== 'completed') {
+        return h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => confirm(`Mark ${e.name} as unpaid?`) && set(null, `${e.name}: marked unpaid`) }, 'Undo'));
+      }
+      if (![null, undefined, 'due', 'sent'].includes(e.feeStatus) || t.status === 'completed') return null;
       return h('span', { class: 'fee-actions' },
         e.feeStatus === 'sent'
           ? h('button', { class: 'btn btn-small btn-primary', onclick: () => set('received', `${e.name}: payment received`) }, 'Received ✓')
@@ -2572,7 +2578,19 @@
       class: 'form',
       onsubmit: (e) => {
         e.preventDefault();
-        saveForm(form, async () => { S.t = await api('PATCH', tPath(t), { ...readTournament(form), courts: readCourts(form, t.sport.id), payment: readPayment(form) }, t.id); }, 'Tournament settings saved');
+        saveForm(form, async () => {
+          S.t = await api('PATCH', tPath(t), { ...readTournament(form), courts: readCourts(form, t.sport.id), payment: readPayment(form) }, t.id);
+          // Each event's fee (from the Entry fees section), when changed.
+          for (const ev of t.events) {
+            const input = form.querySelector(`[name="fee-${ev.id}"]`);
+            if (!input || input.disabled) continue;
+            const fee = Math.round(Number(input.value || 0) * 100);
+            const perSel = form.querySelector(`[name="feePer-${ev.id}"]`);
+            const feePer = perSel ? perSel.value : undefined;
+            if (fee === (ev.fee || 0) && (!perSel || feePer === ((ev.config && ev.config.feePer) || 'entry'))) continue;
+            S.t = await api('PATCH', `${tPath(t)}/events/${ev.id}`, { fee, ...(perSel && { feePer }) }, t.id);
+          }
+        }, 'Tournament settings saved');
       },
     },
     field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: t.name })),
@@ -2601,8 +2619,16 @@
         toast(err.message, true);
       }
     };
+    const per = (ev) => (ev.discipline === 'doubles' ? 'per pair' : ev.discipline === 'team' ? (ev.config && ev.config.feePer === 'player' ? 'per player' : 'per team') : 'per player');
     return h('fieldset', { class: 'details-set' }, h('legend', {}, 'Entry fees'),
-      h('p', { class: 'hint', style: 'margin:0' }, 'For events with an entry fee: players pay you directly — by UPI or cash — and you confirm each payment on the Players tab. Tonament never handles the money.'),
+      h('p', { class: 'hint', style: 'margin:0' }, 'Set a fee for each event (leave empty for free). Players pay you directly — by UPI or cash — and you confirm each payment on the Players tab. Tonament never handles the money.'),
+      h('div', { class: 'fee-rows' }, t.events.map((ev) => h('div', { class: 'fee-row' },
+        h('label', { for: `fee-${ev.id}` }, h('strong', {}, ev.name), h('small', { class: 'muted' }, ` ₹ ${per(ev)}`)),
+        h('input', { id: `fee-${ev.id}`, name: `fee-${ev.id}`, type: 'number', min: 0, max: 50000, step: 1, value: ev.fee ? ev.fee / 100 : '', placeholder: 'Free', disabled: ev.status === 'completed', inputmode: 'numeric' }),
+        ev.discipline === 'team' ? h('select', { name: `feePer-${ev.id}`, 'aria-label': `${ev.name}: charge`, disabled: ev.status === 'completed' },
+          h('option', { value: 'entry', selected: !(ev.config && ev.config.feePer === 'player') }, 'Per team'),
+          h('option', { value: 'player', selected: Boolean(ev.config && ev.config.feePer === 'player') }, 'Per player')) : null))),
+      t.events.some((ev) => ev.status !== 'setup' && ev.status !== 'completed') ? h('p', { class: 'hint', style: 'margin:0' }, 'Changing a fee during the event: anyone who hasn\'t paid yet owes the new amount; payments already made stay as they are.') : null,
       h('div', { class: 'grid-2' },
         field('Your UPI ID', h('input', { name: 'upi', maxlength: 100, value: p.upi || '', placeholder: 'e.g. kavya@okhdfcbank', autocomplete: 'off', inputmode: 'email' })),
         field('Name to pay', h('input', { name: 'payee', maxlength: 60, value: p.payee || '', placeholder: 'As shown in UPI apps' }))),
