@@ -324,6 +324,34 @@
     box.querySelector('.lb-close').focus();
   }
 
+  // The ⋯ menu on a row: one bottom sheet with everything you can do to it.
+  // items: [{ label, hint?, onClick, danger? }] (falsy items are skipped).
+  function actionSheet(title, items) {
+    const list = items.filter(Boolean);
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); if (opener && opener.isConnected) opener.focus(); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const opener = document.activeElement;
+    const box = h('div', { class: 'sheet-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': title, onclick: (e) => { if (e.target === box) close(); } },
+      h('div', { class: 'sheet action-sheet' },
+        h('h2', {}, title),
+        h('div', { class: 'sheet-actions' }, list.map((it) => h('button', {
+          type: 'button', class: `sheet-action${it.danger ? ' danger' : ''}`,
+          onclick: () => { close(); it.onClick(); },
+        }, h('span', {}, it.label), it.hint ? h('small', { class: 'muted' }, it.hint) : null))),
+        h('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel')));
+    document.body.append(box);
+    document.addEventListener('keydown', onKey);
+    box.querySelector('button').focus();
+  }
+  // The ⋯ button that opens it (nothing when there's nothing to do).
+  function moreButton(title, items) {
+    if (!items.filter(Boolean).length) return null;
+    return h('button', {
+      type: 'button', class: 'icon-btn more-btn', 'aria-haspopup': 'dialog', 'aria-label': `More for ${title}`, title: 'More',
+      onclick: () => actionSheet(title, items),
+    }, '⋯');
+  }
+
   // Plain text with line breaks; web links become links (never raw HTML).
   function richText(text) {
     return text.split('\n').map((line) => h('p', {}, line.split(/(https?:\/\/[^\s]+)/g).map((part, i) => (i % 2
@@ -2101,27 +2129,15 @@
             running && t.can.manage && !e.inDraw && !e.withdrawn && e.confirmed && !e.solo
             && (t.status === 'league' || t.format === 'knockout')
             ? arrivedPicker(t, e) : null,
-            running && (t.can.score || t.can.manage) && e.inDraw && !e.withdrawn
-            ? h('span', { class: 'play-actions' },
-              e.awaySince
-                ? h('button', { class: 'btn btn-small', onclick: () => setAway(t, e, false) }, 'Here ✓')
-                : h('button', { class: 'btn btn-small btn-ghost', title: 'Checked in but not at the court: their matches wait', onclick: () => setAway(t, e, true) }, 'Not here'),
-              t.can.manage ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => renameEntry(t, e) }, 'Rename') : null,
-              t.can.manage ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => withdrawEntry(t, e) }, 'Withdraw') : null)
+            running && (t.can.score || t.can.manage) && e.inDraw && !e.withdrawn && e.awaySince
+            ? h('span', { class: 'play-actions' }, h('button', { class: 'btn btn-small', onclick: () => setAway(t, e, false) }, 'Here ✓'))
             : null,
             editable && !e.confirmed && !['pending', 'due', 'sent'].includes(e.feeStatus)
               ? h('button', { class: 'btn btn-small btn-primary confirm-btn', onclick: () => confirmEntry(t, e) }, 'Confirm place')
               : null,
             t.event.fee && t.can.manage && !e.members ? feeActions(t, e) : null,
-            memberFees(t, e),
-            editable && e.source === 'drawn'
-              ? h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => splitPair(t, e) }, 'Split pair'))
-              : null),
-          editable ? h('span', { class: 'row-actions' },
-            h('button', { class: 'icon-btn', title: 'Move up', 'aria-label': `Move ${e.name} up`, disabled: i === 0, onclick: () => move(t, i, -1) }, '↑'),
-            h('button', { class: 'icon-btn', title: 'Move down', 'aria-label': `Move ${e.name} down`, disabled: i === t.entries.length - 1, onclick: () => move(t, i, 1) }, '↓'),
-            h('button', { class: 'icon-btn', title: 'Remove', 'aria-label': `Remove ${e.name}`, onclick: () => removeEntry(t, e) }, '✕')) : null,
-          null)))
+            memberFees(t, e)),
+          moreButton(e.name, entryActions(t, e, i, { editable, running })))))
         : empty(editable ? `No entries yet. Add ${t.event.discipline === 'team' ? 'teams' : 'players or pairs'} above.` : 'No entries yet.'),
       editable && t.entries.length
         ? h('p', { class: 'hint', style: 'margin:8px 0 0' },
@@ -2561,6 +2577,32 @@
           h('button', { class: 'btn btn-small btn-ghost', onclick: () => draw(true) }, 'Pair balanced'))
         : null,
       ready.length > 1 ? h('p', { class: 'hint', style: 'margin:8px 0 0' }, `Balanced pairs the top seed with the lowest, by the order of the entry list${mixed ? ' — always a man with a woman' : ''}.`) : null);
+  }
+  // Everything else you can do to an entry, behind its ⋯ button.
+  function entryActions(t, e, i, { editable, running }) {
+    const team = t.event.discipline === 'team';
+    const people = e.people || [];
+    const linkable = t.can.manage && (team || (e.source !== 'drawn' && !e.solo));
+    const playing = running && e.inDraw && !e.withdrawn;
+    return [
+      playing && (t.can.score || t.can.manage) && !e.awaySince
+        ? { label: 'Not here', hint: 'Checked in but not at the court — their matches wait', onClick: () => setAway(t, e, true) } : null,
+      linkable && S.linking !== e.id ? {
+        label: team ? (people.length ? 'Edit team' : 'Add players') : people.some((p) => p.email) ? 'Edit players' : 'Link players',
+        hint: team ? null : 'Their Tonament accounts, so results reach their profiles',
+        onClick: () => {
+          S.linking = e.id;
+          render();
+          if (team) setTimeout(() => { const c = document.querySelector('.roster-card'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+        },
+      } : null,
+      editable && i > 0 ? { label: 'Move up', hint: `Seed ${i}`, onClick: () => move(t, i, -1) } : null,
+      editable && i < t.entries.length - 1 ? { label: 'Move down', hint: `Seed ${i + 2}`, onClick: () => move(t, i, 1) } : null,
+      editable && e.source === 'drawn' ? { label: 'Split pair', hint: 'Both look for a partner again', onClick: () => splitPair(t, e) } : null,
+      playing && t.can.manage ? { label: 'Rename', hint: 'A substitute partner, or a corrected name', onClick: () => renameEntry(t, e) } : null,
+      playing && t.can.manage ? { label: 'Withdraw', hint: 'Remaining matches become walkovers', danger: true, onClick: () => withdrawEntry(t, e) } : null,
+      editable ? { label: 'Remove', danger: true, onClick: () => removeEntry(t, e) } : null,
+    ];
   }
   function splitPair(t, e) {
     act(async () => { S.t = await api('DELETE', `${tPath(t)}/pairs/${e.id}`, undefined, t.id); }, `${e.name} split — both are looking for a partner again`);
@@ -3172,22 +3214,22 @@
       const ev = evOf(m);
       return h('div', { class: `card court-card${mine(m) ? '' : ' dim'}` },
         h('div', { class: 'court-head' }, h('strong', {}, court.name),
-          m.rallies ? pill('live', 'Playing') : pill('waiting', 'Called')),
+          m.rallies ? pill('live', 'Playing') : pill('waiting', 'Called'),
+          manage && !m.rallies ? moreButton(`${court.name}: ${vsName(m)}`, [
+            ...['a', 'b'].map((sd) => m[sd] ? { label: `${nameOf(m[sd])} isn't here`, hint: 'The next ready match goes on instead; theirs waits', onClick: () => setAway(t, m[sd], true) } : null),
+            { label: 'Take off court', hint: 'Back into the order of play', onClick: () => offCourt(m) },
+          ]) : null),
         h('a', { class: 'court-match', href: `/t/${t.id}/m/${m.id}` },
           evName(ev) ? h('small', { class: 'muted' }, ev.name) : null,
           h('span', {}, vsName(m)),
-          h('small', { class: 'muted' }, m.rallies ? m.summary || 'In progress' : `Called at ${clock(Date.parse(m.calledAt || Date.now()))}`)),
-        manage && !m.rallies ? h('div', { class: 'court-tools' },
-          h('span', { class: 'muted small' }, 'Not here:'),
-          ['a', 'b'].map((sd) => m[sd] ? h('button', { class: 'btn btn-ghost btn-small', title: `${m[sd].name} isn't at the court — play the next match instead`, onclick: () => setAway(t, m[sd], true) }, nameOf(m[sd])) : null),
-          h('button', { class: 'btn btn-ghost btn-small', onclick: () => offCourt(m) }, 'Take off court')) : null);
+          h('small', { class: 'muted' }, m.rallies ? m.summary || 'In progress' : `Called at ${clock(Date.parse(m.calledAt || Date.now()))}`)));
     };
 
     const queue = plan.queue.filter((x) => mine(x.match));
     return h('div', { class: 'court-results' },
       h('div', { class: 'court-grid' }, plan.courts.map(courtCard)),
       c.auto && manage ? h('p', { class: 'hint' }, 'Auto-call is on: when a match ends, the next match goes to that court.') : null,
-      manage ? h('p', { class: 'hint' }, 'Player not at the court? Tap their name under "Not here" — the next ready match goes on instead, and theirs waits until they\'re back.') : null,
+      manage ? h('p', { class: 'hint' }, 'Player not at the court? Tap ⋯ on the court — the next ready match goes on instead, and theirs waits until they\'re back.') : null,
       h('section', { class: 'section' },
         h('h2', {}, `Up next (${plan.queue.length})`),
         queue.length
@@ -3201,15 +3243,21 @@
               ].filter(Boolean).join(' · '))),
             h('span', { class: 'oop-time', title: 'Estimated start' }, x.startsAt <= Date.now() + 60000 && !x.waitingFor.length ? 'Next' : `~${clock(x.startsAt)}`),
             manage
-              ? h('span', { class: 'oop-actions' },
+              ? h('span', { class: `oop-actions${awayIn(x).length ? ' wide' : ''}` },
                 awayIn(x).map((e) => h('button', { class: 'btn btn-small', onclick: () => setAway(t, e, false) }, `${e.name} is here ✓`)),
-                t.can.manage ? awayIn(x).map((e) => {
-                  const other = x.match.a && x.match.a.id === e.id ? x.match.b : x.match.a;
-                  return h('button', { class: 'btn btn-small btn-ghost', onclick: () => confirm(`${e.name} never came? Give the match to ${other.name} as a walkover.`) && act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${x.match.id}/walkover`, { winner: other.id === x.match.a.id ? 'a' : 'b' }, t.id); }, `Walkover to ${other.name}`) }, `Walkover to ${other.name}`);
-                }) : null,
-                x.match.queuePos == null
-                  ? h('button', { class: 'btn btn-small btn-ghost', 'aria-label': `Play ${vsName(x.match)} next`, onclick: () => pin(x.match, true) }, 'Play next')
-                  : [pill('done', 'Next ✓'), h('button', { class: 'btn btn-small btn-ghost', onclick: () => pin(x.match, false) }, 'Unpin')])
+                x.match.queuePos != null ? pill('done', 'Pinned') : null,
+                moreButton(vsName(x.match), [
+                  x.match.queuePos == null
+                    ? { label: 'Play next', hint: 'Goes on the next free court', onClick: () => pin(x.match, true) }
+                    : { label: 'Unpin', hint: 'Back in the usual order', onClick: () => pin(x.match, false) },
+                  ...(t.can.manage ? awayIn(x).map((e) => {
+                    const other = x.match.a && x.match.a.id === e.id ? x.match.b : x.match.a;
+                    return {
+                      label: `Walkover to ${other.name}`, hint: `${e.name} never came`, danger: true,
+                      onClick: () => confirm(`${e.name} never came? Give the match to ${other.name} as a walkover.`) && act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${x.match.id}/walkover`, { winner: other.id === x.match.a.id ? 'a' : 'b' }, t.id); }, `Walkover to ${other.name}`),
+                    };
+                  }) : []),
+                ]))
               : null)))
           : h('p', { class: 'muted' }, find ? 'No matches for that name.' : 'Nothing waiting to be played.'),
         plan.queue.length ? h('p', { class: 'hint', style: 'margin:8px 0 0' }, `Times are estimates, based on ${c.minutes}-minute matches.`) : null));
@@ -6048,7 +6096,6 @@
     if (S.linking === e.id) return h('small', { class: 'contact' }, 'Editing above ↑');
     return [
       people.length ? h('small', { class: 'contact' }, people.map((p) => `${p.name}${p.captain ? ' (C)' : ''}${p.linked ? ' ✓' : p.email ? ' (invited)' : ''}`).join(' · ')) : null,
-      t.can.manage ? h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.linking = e.id; render(); setTimeout(() => { const c = document.querySelector('.roster-card'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50); } }, people.length ? 'Edit team' : 'Add players')) : null,
     ];
   }
   // Organisers: who in a pair or team has paid ("3 of 4 paid").
@@ -6083,7 +6130,7 @@
       ? h('small', { class: 'contact' }, people.map((p) => `${p.name}: ${p.linked ? '✓ on Tonament' : p.email ? `invited (${p.email})` : 'not linked'}`).join(' · '))
       : null;
     if (!open) {
-      return [status, h('span', { class: 'fee-actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.linking = e.id; render(); } }, people.some((p) => p.email) ? 'Edit players' : 'Link players'))];
+      return status;
     }
     const doubles = t.event.discipline === 'doubles';
     const names = doubles ? e.name.split(' / ') : [e.name];

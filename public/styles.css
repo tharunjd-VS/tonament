@@ -1257,10 +1257,11 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 
 /* On the day: not here yet, arrived, retired, play next */
 .banner.warn { background: var(--live-soft); border: 1px solid var(--live); }
-.court-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.court-head .pill { margin-left: auto; }
 .oop-actions, .play-actions, .arrive-form, .retire-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .order-of-play li { flex-wrap: wrap; }
-.order-of-play .oop-actions { flex-basis: 100%; justify-content: flex-end; }
+.order-of-play .oop-actions { margin: 0 0 0 auto; justify-content: flex-end; }
+.order-of-play .oop-actions.wide { flex-basis: 100%; margin-top: 6px; }
 .arrive-form select { width: auto; max-width: 100%; }
 
 /* Team rosters and payments per player */
@@ -1385,6 +1386,14 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .sheet-steps { text-align: left; margin: 0 0 16px; padding-left: 1.3em; display: grid; gap: 10px; }
 .share-glyph { display: inline-flex; vertical-align: -4px; color: var(--link); }
 .sheet .btn { width: 100%; }
+.action-sheet { text-align: left; padding-bottom: 14px; }
+.action-sheet h2 { margin: 0 0 10px; font-size: 1.05rem; overflow-wrap: anywhere; }
+.sheet-actions { display: grid; margin: 0 -8px 10px; }
+.sheet-action { font: inherit; text-align: left; display: grid; gap: 1px; padding: 12px 10px; min-height: 48px; border: 0; border-radius: 10px; background: transparent; color: var(--text); font-weight: 600; cursor: pointer; }
+.sheet-action:hover, .sheet-action:focus-visible { background: var(--surface-2); }
+.sheet-action small { font-weight: 400; font-size: 0.8rem; }
+.sheet-action.danger { color: var(--danger); }
+.more-btn { flex: none; font-size: 1.25rem; line-height: 1; color: var(--text); }
 .offline-card { max-width: 520px; margin: 40px auto; text-align: center; }
 
 /* Group admins: Who's here */
