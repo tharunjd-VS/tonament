@@ -45,7 +45,7 @@ If you change the fee on the day (a late-entry fee, say), apply it only to peopl
 
 Tonament puts all of this on the Players tab — and **never handles the money**: players pay you directly.
 
-1. **Set the fee** for each event in Tournament settings → Entry fees, with your UPI ID, the payee name, and (optionally) your UPI QR code and a note like "cash is also fine at the desk".
+1. **Set the fee** for each event in Setup › Dates, venue & fees, with your UPI ID, the payee name, and (optionally) your UPI QR code and a note like "cash is also fine at the desk".
 2. **Players enter**, and their UPI app opens with your UPI ID and the amount filled in. On a computer they scan your QR code. They tap **I've paid** and can add the 12-digit UPI reference.
 3. **You confirm** each payment from the "Payments to check" list: **Received**, **Not received**, **Paid in cash** or **Waive**. Their place is confirmed.
 4. **Places are held** for 24 hours, 48 hours or until entries close while unpaid — your choice.

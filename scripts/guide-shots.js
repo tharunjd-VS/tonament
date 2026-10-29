@@ -115,6 +115,14 @@ async function main() {
     for (const side of game(i ? 'b' : 'a', 16 + i, seed++) + game(i ? 'b' : 'a', 13 + i, seed++)) await svc.rally(id, ORG, m.id, side);
   }
 
+  // A group on today with its admin: 4 players checked in, both courts free.
+  const t0 = new Date(Date.now() - 3600000);
+  const nowTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(t0);
+  const { slug } = await svc.groups.createGroup(ORG, { name: 'Evening Smashers', sport: 'badminton', city: 'Chennai', venue: 'Anna Nagar Indoor Arena', courts: 2, days: [0, 1, 2, 3, 4, 5, 6], time: nowTime, hours: 3, timeZone: 'Asia/Kolkata' });
+  await svc.groups.addGuests(slug, ORG, { names: ['Arjun Mehta', 'Rohan Iyer', 'Karthik Raman', 'Vikram Shah', 'Aditya Rao', 'Rahul Menon'] });
+  const g = await svc.groups.view(slug, ORG);
+  for (const r of g.leaderboard.filter((x) => x.guest).slice(0, 4)) await svc.groups.checkIn(slug, ORG, g.session.id, true, r.id);
+
   // ----- screenshots
   const shots = [];
   for (const theme of ['dark', 'light']) {
@@ -148,6 +156,20 @@ async function main() {
     // 3. Organiser's Players tab (Women's Singles, still open)
     await o.goto(`${base}/t/${id}/entries?e=${ws}`); await o.waitForSelector('.entries');
     await snap(o, 'entries', { scrollTo: '.card:has(h2:text-matches("^Entries"))', top: 70 });
+    // The ⋯ menu on a player row
+    await o.click('.entries li:nth-child(2) .more-btn'); await o.waitForSelector('.action-sheet');
+    await snap(o, 'rowmenu');
+    await o.keyboard.press('Escape');
+    // Setup: every setting in one place
+    await o.goto(`${base}/t/${id}/setup?s=format&e=${ws}`); await o.waitForSelector('.setup-nav');
+    await snap(o, 'setup', { scrollTo: '.setup-nav', top: 70 });
+    // Today: the organiser's Next step on Live
+    await o.goto(`${base}/t/${id}/live?e=${ms}`); await o.waitForSelector('.next-step');
+    await snap(o, 'today', { scrollTo: '.event-picker', top: 70 });
+    // Search: a player and their matches
+    await o.click('.t-search'); await o.fill('.search-q', 'Arjun'); await o.waitForSelector('.search-hit');
+    await snap(o, 'search');
+    await o.keyboard.press('Escape');
     // 5. Courts
     await o.goto(`${base}/t/${id}/courts`); await o.waitForSelector('.court-card');
     await snap(o, 'courts', { scrollTo: '.court-grid', top: 70 });
@@ -155,10 +177,14 @@ async function main() {
     await o.goto(`${base}/t/${id}/m/${liveId}`); await o.waitForSelector('.score-btn');
     await snap(o, 'umpire', { scrollTo: '.scoreboard', top: 60 });
     // 4. Groups and bracket
-    await o.goto(`${base}/t/${id}/groups?e=${ms}`); await o.waitForSelector('.groups-grid');
+    await o.goto(`${base}/t/${id}/draw?e=${ms}`); await o.waitForSelector('.draw-seg');
+    await o.click('.draw-seg button:has-text("Groups")'); await o.waitForSelector('.groups-grid');
     await snap(o, 'groups', { scrollTo: '.groups-grid', top: 70 });
-    await o.goto(`${base}/t/${id}/bracket?e=${xd}`); await o.waitForSelector('.bracket, .rounds, .b-round');
-    await snap(o, 'bracket', { scrollTo: '.event-title', top: 70, height: 600 });
+    await o.goto(`${base}/t/${id}/draw?e=${xd}`); await o.waitForSelector('.bracket');
+    await snap(o, 'bracket', { scrollTo: '.event-picker', top: 70, height: 600 });
+    // A group admin's Today: Next step "Court 1 is free"
+    await o.goto(`${base}/g/${slug}`); await o.waitForSelector('.next-step');
+    await snap(o, 'group-admin', { scrollTo: '.next-step', top: 70 });
     await o.context().close();
 
     // 2. Public page and 6. live, as a visitor
@@ -166,7 +192,7 @@ async function main() {
     await v.goto(`${base}/t/${id}/entries?e=${ws}`); await v.waitForSelector('.entry-card');
     await snap(v, 'public', { scrollTo: '.t-header', top: 64 });
     await v.goto(`${base}/t/${id}/live?e=${ms}`); await v.waitForSelector('.match-card');
-    await snap(v, 'live', { scrollTo: '.event-title', top: 70 });
+    await snap(v, 'live', { scrollTo: '.event-picker', top: 70 });
     await v.context().close();
 
     // Player: the entry form, prefilled

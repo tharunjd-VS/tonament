@@ -42,7 +42,7 @@ const OUT = path.join(__dirname, '..', 'public', 'guide'); const W = 390;
     const [n, v] = cookie.split('='); await c.addCookies([{ name: n, value: v, url: base }]);
     const p = await c.newPage();
     const snap = async (name, sel, top = 70) => { await p.locator(sel).first().evaluate((el, off) => window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - off), top); await p.waitForTimeout(500); await p.screenshot({ path: path.join(OUT, `${name}-${theme}.jpg`), type: 'jpeg', quality: 80 }); };
-    await p.goto(`${base}/t/${id}/groups`); await p.waitForSelector('.groups-grid'); await p.evaluate(() => document.querySelectorAll('.groups-grid details').forEach((d) => { d.open = false; })); await snap('pools', '.groups-grid');
+    await p.goto(`${base}/t/${id}/draw`); await p.waitForSelector('.groups-grid'); await p.evaluate(() => document.querySelectorAll('.groups-grid details').forEach((d) => { d.open = false; })); await snap('pools', '.groups-grid');
     await p.goto(`${base}/t/${id}/courts`); await p.waitForSelector('.court-card'); await snap('onday', '.court-grid');
     
   }
