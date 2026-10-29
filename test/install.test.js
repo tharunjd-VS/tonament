@@ -69,3 +69,11 @@ test('every page can be added to the home screen', async () => {
     assert.match(html, /<link rel="apple-touch-icon"/, p);
   }
 });
+
+test('the live release, so an app resumed from the home screen knows to reload', async () => {
+  const a = await (await fetch(`${base}/api/version`)).json();
+  const res = await fetch(`${base}/api/version`);
+  assert.match(a.version, /^[0-9a-f]{16}$/);
+  assert.equal((await res.json()).version, a.version); // stable between calls
+  assert.equal(res.headers.get('cache-control'), 'no-store'); // never cached
+});

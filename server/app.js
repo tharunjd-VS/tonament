@@ -15,6 +15,22 @@ const { createMailer } = require('./email');
 const { billingConfig, publicBillingConfig } = require('./billing');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+
+// The release the browser should be running: a fingerprint of the app's own
+// files, so a phone that resumed an old copy (an app opened from the home
+// screen) knows to reload. Falls back to the deployed commit.
+let appVersion = null;
+function currentAppVersion() {
+  if (appVersion) return appVersion;
+  try {
+    const hash = require('node:crypto').createHash('sha256');
+    for (const f of ['index.html', 'app.js', 'styles.css']) hash.update(require('node:fs').readFileSync(path.join(PUBLIC_DIR, f)));
+    appVersion = hash.digest('hex').slice(0, 16);
+  } catch {
+    appVersion = (process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || String(Date.now())).slice(0, 16);
+  }
+  return appVersion;
+}
 // The app's pages other than tournaments (served the app page; see vercel.json).
 const APP_ROUTES = /^\/(?:new|signin|signup|forgot|reset|link|admin|academy\/new|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
@@ -201,6 +217,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
   // public: it ignores who is asking so the CDN can share it.
   const routes = [
     ['GET', '/api/sports', () => sports.list(), 300],
+    ['GET', '/api/version', () => ({ version: currentAppVersion() })],
     ['GET', '/api/sports/interest', (c) => svc.sportInterest(c.actor)],
     ['POST', '/api/sports/([a-z-]+)/interest', (c, id) => svc.setSportInterest(c.actor, id, c.body.want)],
     ['GET', '/api/tournaments', (c) => svc.listTournaments(Object.fromEntries(c.query)), 5],

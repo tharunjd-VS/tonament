@@ -1399,3 +1399,6 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .pick-card summary small { font-weight: 400; }
 .pick-players { margin-top: 12px; }
 .pick-players .actions select { width: auto; }
+
+/* "A new version is ready" (shown instead of reloading while something is unsaved) */
+.update-bar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 70; display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-radius: 14px; background: var(--surface); color: var(--text); border: 1px solid var(--accent); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); width: max-content; max-width: calc(100% - 32px); font-size: 0.92rem; }

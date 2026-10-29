@@ -107,7 +107,7 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 10,
-      "includeFiles": "{public/index.html,content/**}"
+      "includeFiles": "{public/index.html,public/app.js,public/styles.css,content/**}"
     }
   },
   "headers": [

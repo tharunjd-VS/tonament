@@ -6813,6 +6813,38 @@
   });
   window.addEventListener('popstate', route);
 
+  // ---------- staying up to date
+  // An app opened from the home screen usually just resumes the copy still in
+  // memory, so a new release wouldn't show until a manual refresh. Whenever the
+  // app comes back on screen (and every 15 minutes while it's open) it checks
+  // the live release; if it's newer it reloads at once — unless something is
+  // being typed or points are still being sent, when it offers a Reload bar.
+  let loadedVersion = null;
+  const liveVersion = () => fetch('/api/version', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((x) => x && x.version).catch(() => null);
+  const unsent = () => isEditing() || [...queues.values(), ...gQueues.values()].some((q) => q.length);
+  function updateBar() {
+    if (document.querySelector('.update-bar')) return;
+    document.body.append(h('div', { class: 'update-bar', role: 'status' },
+      h('span', {}, 'A new version of Tonament is ready.'),
+      h('button', { class: 'btn btn-small btn-primary', type: 'button', onclick: () => (unsent() && !confirm('Something isn\'t saved yet. Reload anyway?') ? null : location.reload()) }, 'Reload')));
+  }
+  async function checkForUpdate() {
+    const v = await liveVersion();
+    if (!v) return;
+    if (!loadedVersion) { loadedVersion = v; return; }
+    if (v === loadedVersion) return;
+    if (!unsent() && !document.hidden) location.reload();
+    else updateBar();
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    checkForUpdate();
+    navigator.serviceWorker?.getRegistration().then((reg) => reg && reg.update()).catch(() => {});
+  });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) checkForUpdate(); }); // back from the browser's page cache
+  setInterval(() => { if (!document.hidden) checkForUpdate(); }, 15 * 60000);
+  checkForUpdate(); // remembers the release this page loaded
+
   // ---------- boot
   // The service worker lets the installed app open with no connection (public/sw.js).
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
