@@ -106,17 +106,24 @@
   }
 
   let toastTimer;
-  function toast(msg, error = false) {
+  // undo: a function that reverses what was just done; the toast offers it for a few seconds.
+  function toast(msg, error = false, undo = null) {
     toastEl.textContent = msg;
-    toastEl.className = error ? 'show error' : 'show';
+    toastEl.className = `${error ? 'show error' : 'show'}${undo ? ' has-undo' : ''}`;
+    if (undo) {
+      toastEl.append(h('button', {
+        type: 'button', class: 'toast-undo',
+        onclick: () => { toastEl.className = ''; act(undo, 'Undone'); },
+      }, 'Undo'));
+    }
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toastEl.className = ''; }, 3500);
+    toastTimer = setTimeout(() => { toastEl.className = ''; }, undo ? 6000 : 3500);
   }
 
-  async function act(fn, success) {
+  async function act(fn, success, undo = null) {
     try {
       await fn();
-      if (success) toast(success);
+      if (success) toast(success, false, undo);
     } catch (e) {
       if (e.code === 'upgrade' && S.t) S.upgradeFor = S.t.id; // show the upgrade card
       toast(e.message, true);
@@ -1884,12 +1891,13 @@
         h('div', { class: 't-title' }, h('h1', {}, tt.name), pill(tt.status, STATUS[tt.status]), tt.can.score ? visibilityPill(tt.visibility) : null,
           tt.official ? pill('org', 'Organised by Tonament') : null,
           tt.org && tt.org.public ? h('a', { class: 't-byline', href: `/@${tt.org.slug}` }, `by ${tt.org.name}`) : null,
-          tt.visibility !== 'private' ? h('button', { class: 'btn btn-small btn-ghost t-share', onclick: () => shareTournament(tt) }, 'Share') : null),
+          tt.visibility !== 'private' ? h('button', { class: 'btn btn-small btn-ghost t-share', onclick: () => shareTournament(tt) }, 'Share') : null,
+          allEntries(tt).length ? h('button', { class: 'icon-btn t-search', type: 'button', 'aria-label': 'Find a player or match', title: 'Find a player or match', onclick: () => searchSheet(tt) }, icon('search')) : null),
         h('p', { class: 'muted small' },
           [fmtSchedule(tt), placeLine(tt.venue, tt.location.city), tt.sport.name, multiEvent(tt) ? `${tt.events.length} events` : t.formatName, statusLine]
             .filter(Boolean).join(' · '), '  ', connDot())),
       roleBar(t),
-      tt.visibility === 'private' && !(active === 'entries' && checklistOn(t)) ? visibilityBanner(t) : null,
+      tt.visibility === 'private' && !(t.can.own && S.me && t.role && !t.can.claim) ? visibilityBanner(t) : null,
       perEvent ? eventPicker(tt, ev) : null,
       h('nav', { class: `tabs t-tabs${tabs.length > 1 ? ' bar' : ''}`, 'aria-label': 'Tournament' }, tabs.map((x) => h('a', {
         href: tabHref(t, x.id), class: x.id === active ? 'active' : '', 'aria-current': x.id === active ? 'page' : null,
@@ -1897,6 +1905,38 @@
       h('section', {}, panels[active](t)),
       brandFooter(tt),
     ];
+  }
+
+  // Find a player in any event, with their matches (live, next, played).
+  function searchSheet(tt) {
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const order = { live: 0, scheduled: 1, done: 2 };
+    const results = h('div', { class: 'search-results' });
+    const show = (q) => {
+      q = q.trim().toLowerCase();
+      const hits = q ? tt.events.flatMap((ev) => ev.entries.filter((e) => e.name.toLowerCase().includes(q)).map((e) => ({ ev, e }))).slice(0, 12) : [];
+      results.replaceChildren(...(!q ? [h('p', { class: 'muted small' }, 'Type a name to see their matches.')]
+        : !hits.length ? [h('p', { class: 'muted small' }, 'No one by that name.')]
+          : hits.map(({ ev, e }) => {
+            const ms = ev.matches.filter((m) => m.status !== 'bye' && [m.a && m.a.id, m.b && m.b.id].includes(e.id))
+              .sort((x, y) => order[x.status] - order[y.status] || byOrder(x, y)).slice(0, 5);
+            return h('section', { class: 'search-hit' },
+              h('a', { class: 'search-name', href: `/t/${tt.id}/entries${multiEvent(tt) ? `?e=${ev.id}` : ''}`, onclick: close },
+                h('strong', {}, e.name), h('small', { class: 'muted' }, [multiEvent(tt) ? ev.name : null, e.group != null && ev.format !== 'knockout' ? `Group ${String.fromCharCode(65 + e.group)}` : null, e.withdrawn ? 'Withdrew' : null].filter(Boolean).join(' · '))),
+              ms.length ? h('ul', {}, ms.map((m) => h('li', {}, h('a', { href: `/t/${tt.id}/m/${m.id}`, onclick: close },
+                h('span', {}, vsName(m), h('small', { class: 'muted' }, matchLabel(m))), statusTag(m))))) : null);
+          })));
+    };
+    const input = h('input', { type: 'search', class: 'search-q', placeholder: 'Player or team name', 'aria-label': 'Find a player or match', oninput: (e) => show(e.target.value) });
+    const box = h('div', { class: 'sheet-backdrop top', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Find a player', onclick: (e) => { if (e.target === box) close(); } },
+      h('div', { class: 'sheet search-sheet' },
+        h('div', { class: 'search-bar' }, icon('search'), input, h('button', { type: 'button', class: 'btn btn-ghost btn-small', onclick: close }, 'Close')),
+        results));
+    show('');
+    document.body.append(box);
+    document.addEventListener('keydown', onKey);
+    input.focus();
   }
 
   // ----- entries tab
@@ -2499,8 +2539,8 @@
   }
   // Not here yet / back: their matches wait in the order of play meanwhile.
   function setAway(t, e, away) {
-    act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/away`, { away }, t.id); },
-      away ? `${e.name}: not here yet — their matches wait` : `${e.name} is here ✓`);
+    const set = (on) => async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/away`, { away: on }, t.id); };
+    act(set(away), away ? `${e.name}: not here yet — their matches wait` : `${e.name} is here ✓`, set(!away));
   }
   // A substitute partner (or a corrected name) after the draw.
   function renameEntry(t, e) {
@@ -2533,14 +2573,17 @@
     act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/withdraw`, {}, t.id); }, `${e.name} withdrawn`);
   }
 
-  function saveOrder(t, ids, msg) {
-    const all = [...ids, ...(t.solos || []).map((e) => e.id)]; // solo players keep their places after the pairs
-    act(async () => { S.t = await api('PUT', `${tPath(t)}/entries/order`, withEv(t, { ids: all }), t.id); }, msg);
+  // undoable: offer Undo (back to the order before).
+  function saveOrder(t, ids, msg, undoable) {
+    const put = (list) => api('PUT', `${tPath(t)}/entries/order`, withEv(t, { ids: [...list, ...(t.solos || []).map((e) => e.id)] }), t.id); // solo players keep their places after the pairs
+    const before = t.entries.map((e) => e.id);
+    act(async () => { S.t = await put(ids); }, msg, undoable ? async () => { S.t = await put(before); } : null);
   }
   function move(t, i, dir) {
     const ids = t.entries.map((e) => e.id);
+    const name = t.entries[i].name;
     [ids[i], ids[i + dir]] = [ids[i + dir], ids[i]];
-    saveOrder(t, ids);
+    saveOrder(t, ids, `${name} is now seed ${i + dir + 1}`, true);
   }
   function shuffle(t) {
     const ids = t.entries.map((e) => e.id);
@@ -2548,7 +2591,7 @@
       const j = Math.floor(Math.random() * (i + 1));
       [ids[i], ids[j]] = [ids[j], ids[i]];
     }
-    saveOrder(t, ids, 'Order shuffled');
+    saveOrder(t, ids, 'Order shuffled', true);
   }
   // ----- doubles players without a partner
   function soloCard(t) {
@@ -2939,7 +2982,10 @@
         }, 'Event settings saved');
       },
     },
-    categoryFields(t.event, t.sport.id),
+    // Type, age group and level are set when the event is made: folded, so the format is in view.
+    h('details', { class: 'fold', open: Boolean(S.eventFoldOpen), ontoggle: (e) => { S.eventFoldOpen = e.target.open; } },
+      h('summary', {}, h('span', {}, h('strong', {}, 'Event'), h('span', { class: 'muted' }, ` · ${t.event.name}`)), h('span', { class: 'fold-change' }, 'Change')),
+      categoryFields(t.event, t.sport.id)),
     t.event.discipline === 'doubles'
       ? h('fieldset', { class: 'details-set' }, h('legend', {}, 'Partners'),
         h('label', { class: 'check-field' },
@@ -3204,8 +3250,10 @@
     const mine = (m) => !find || [m.a, m.b].some((p) => p && p.name.toLowerCase().includes(find));
     const evName = (ev) => (multiEvent(t) ? ev.name : null);
     const call = (m, court) => act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${m.id}/call`, { court }, t.id); }, `${vsName(m)} called to ${court}`);
-    const pin = (m, top) => act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${m.id}/queue`, { top }, t.id); }, top ? 'Moved to the front' : 'Back in the usual order');
-    const offCourt = (m) => patchMatch(t, m, { status: 'scheduled' }, 'Taken off court');
+    const pinTo = (m, top) => async () => { S.t = await api('POST', `${tPath(t)}/matches/${m.id}/queue`, { top }, t.id); };
+    const pin = (m, top) => act(pinTo(m, top), top ? 'Moved to the front' : 'Back in the usual order', pinTo(m, !top));
+    const offCourt = (m) => act(async () => { mergeMatch(await api('PATCH', `${tPath(t)}/matches/${m.id}`, { status: 'scheduled' }, t.id)); }, 'Taken off court',
+      m.court ? async () => { S.t = await api('POST', `${tPath(t)}/matches/${m.id}/call`, { court: m.court }, t.id); } : null);
     const evOf = (m) => t.events.find((e) => e.matches.some((x) => x.id === m.id));
     // Entries in this queued match marked not here yet.
     const awayIn = (x) => (x.event.entries || []).filter((e) => e.awaySince && [x.match.a && x.match.a.id, x.match.b && x.match.b.id].includes(e.id));
@@ -4430,6 +4478,17 @@
         }, 'Add to my account'));
     }
     if (!t.role) return null;
+    // A private tournament's owner: one line to publish it (instead of a role bar and a banner).
+    if (t.visibility === 'private' && t.can.own && S.me) {
+      return h('div', { class: 'admin-bar private-bar' },
+        h('span', {}, '🔒 ', h('strong', {}, 'Private'), h('span', { class: 'muted' }, ' — only your team can see it')),
+        h('span', { class: 'actions' },
+          h('button', { class: 'btn btn-small btn-primary', onclick: () => setVisibility(t, 'public') }, 'Publish'),
+          moreButton('Who can see this', [
+            { label: 'Link only', hint: 'Anyone with the link can open it; not listed on Tonament', onClick: () => setVisibility(t, 'link') },
+            { label: 'Copy link', hint: 'Only your team can open it until you publish', onClick: () => copy(shareUrl(t), 'Link copied — only your team can open it until you publish') },
+          ])));
+    }
     const label = {
       admin: 'You are a site admin',
       owner: 'You own this tournament',
@@ -5193,14 +5252,16 @@
   // ---------- groups: daily play (tonament.com/g/<slug>)
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const gPath = (slug) => `/groups/${encodeURIComponent(slug)}`;
-  const fmtTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  // In the group's time zone (a phone set to another zone still sees the venue's times, like the header).
+  const fmtTime = (iso, timeZone) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', ...(timeZone && { timeZone }) });
   // "Today, 6:00 – 9:00 am"
-  function fmtSessionDay(iso, endIso) {
+  function fmtSessionDay(iso, endIso, timeZone) {
     const d = new Date(iso);
-    const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-    const diff = Math.round((day(d) - day(new Date())) / 86400000);
-    const label = diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
-    return `${label}, ${fmtTime(iso)}${endIso ? ` – ${fmtTime(endIso)}` : ''}`;
+    const ymd = (x) => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', ...(timeZone && { timeZone }) }).format(x);
+    const diff = Math.round((Date.parse(ymd(d)) - Date.parse(ymd(new Date()))) / 86400000);
+    const on = endIso && Date.parse(iso) <= Date.now() && Date.now() < Date.parse(endIso); // began before midnight, still going
+    const label = diff === 0 || on ? 'Today' : diff === 1 ? 'Tomorrow' : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', ...(timeZone && { timeZone }) });
+    return `${label}, ${fmtTime(iso, timeZone)}${endIso ? ` – ${fmtTime(endIso, timeZone)}` : ''}`;
   }
   // Half-hour arrival times for a session: [{ value: '06:30', label: '6:30 am' }, …] (after the start, before the end).
   function etaOptions(st) {
@@ -5251,7 +5312,8 @@
       else if (S.route.name === 'group') loadGroup(S.route.skip || 0);
     }, busy);
   }
-  const groupAct = (fn, msg) => act(async () => { await fn(); await loadGroup(S.route.skip || 0); }, msg);
+  const groupAct = (fn, msg, undo) => act(async () => { await fn(); await loadGroup(S.route.skip || 0); }, msg,
+    undo ? async () => { await undo(); await loadGroup(S.route.skip || 0); } : null);
 
   // Your groups.
   function viewGroups() {
@@ -5399,7 +5461,7 @@
     const share = () => shareSession(g, s);
     return h('div', { class: `card rsvp-card${small ? ' small' : ''}` },
       h('div', { class: 'card-head' },
-        h('h2', {}, fmtSessionDay(s.startsAt, s.endsAt)),
+        h('h2', {}, fmtSessionDay(s.startsAt, s.endsAt, g.settings.timeZone)),
         h('button', { class: 'btn btn-small btn-ghost', onclick: share }, 'Share on WhatsApp')),
       h('div', { class: 'rsvp-buttons' },
         h('button', { class: `btn btn-lg${me && me.status !== 'out' ? ' btn-primary' : ''}`, 'aria-pressed': String(Boolean(me && me.status !== 'out')), onclick: () => set('in') },
@@ -5434,7 +5496,7 @@
     const where = g.host ? g.host.name : g.venue;
     const text = [
       `${g.sport.name} · ${g.name}${where && where !== g.name ? ` at ${where}` : ''}${g.settings.levels && g.settings.levels.length ? ` · ${levelText(g.settings.levels)}` : ''}`,
-      `${fmtSessionDay(s.startsAt, s.endsAt)} · ${going} going${max ? (going < max ? `, ${max - going} spot${max - going === 1 ? '' : 's'} left` : ', full (waitlist open)') : ''}`,
+      `${fmtSessionDay(s.startsAt, s.endsAt, g.settings.timeZone)} · ${going} going${max ? (going < max ? `, ${max - going} spot${max - going === 1 ? '' : 's'} left` : ', full (waitlist open)') : ''}`,
       // ?s= gives the link a "come and play" preview with today's count.
       `Say you're in (and when you're coming): ${groupUrl(g, true)}${g.invite ? '&' : '?'}s=${s.id}`,
     ].join('\n');
@@ -5455,7 +5517,9 @@
     }
     const me = s.me;
     const here = me && me.checkedIn;
-    const checkIn = (on, user) => groupAct(() => api('POST', `${gPath(g.slug)}/sessions/${s.id}/checkin`, { here: on, ...(user && { user }) }), on ? (user ? 'Checked in' : 'You\'re checked in') : 'See you next time');
+    const post = (on, user) => () => api('POST', `${gPath(g.slug)}/sessions/${s.id}/checkin`, { here: on, ...(user && { user }) });
+    // Admins marking others get Undo (a mis-tap in a long list).
+    const checkIn = (on, user) => groupAct(post(on, user), on ? (user ? 'Checked in' : 'You\'re checked in') : 'See you next time', user ? post(!on, user) : null);
     const step = g.admin ? groupNextStep(g, s) : null;
     if (step) out.push(step.card);
     // Before it starts: RSVP as usual (people decide half an hour before).
@@ -5463,7 +5527,7 @@
     // 1. Me: check in.
     out.push(h('div', { class: `card checkin-card${here ? ' on' : ''}` },
       h('div', { class: 'card-head' },
-        h('div', {}, h('h2', {}, fmtSessionDay(s.startsAt, s.endsAt)), h('p', { class: 'muted small' }, `${s.players.filter((p) => p.checkedIn).length} here · ${s.players.filter((p) => p.status === 'in').length} in`)),
+        h('div', {}, h('h2', {}, fmtSessionDay(s.startsAt, s.endsAt, g.settings.timeZone)), h('p', { class: 'muted small' }, `${s.players.filter((p) => p.checkedIn).length} here · ${s.players.filter((p) => p.status === 'in').length} in`)),
         here ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => checkIn(false) }, 'Leaving')
           : h('button', { class: 'btn btn-primary btn-lg', onclick: () => checkIn(true) }, 'I\'m here')),
       here ? h('p', { class: 'small', style: 'margin:0' }, '✓ You\'re checked in — you\'ll be picked for games fairly.') : null,
@@ -5809,7 +5873,7 @@
   // A member with no games yet, while spots are unclaimed (once, until "I'm new here").
   function groupFindNameForMember(g) {
     const me = S.me && g.leaderboard.find((r) => r.id === S.me.id);
-    if (!me || me.games || me.guest) return null;
+    if (!me || me.games || me.guest || g.admin) return null; // admins added the names
     try { if (localStorage.getItem(findNameKey(g))) return null; } catch { /* storage unavailable */ }
     return groupFindName(g, g.leaderboard.filter((r) => r.guest), {
       dismiss: () => { try { localStorage.setItem(findNameKey(g), '1'); } catch { /* fine */ } render(); },
@@ -5914,7 +5978,8 @@
     const guests = g.leaderboard.filter((r) => r.guest);
     const shareInvite = () => (guests.length ? shareFindName(g, guests)
       : shareText(`Join ${g.name} on Tonament — RSVP, fair games and live scores:\n${link}`));
-    const setMember = (id, action, msg) => groupAct(() => api('POST', `${gPath(g.slug)}/members/${id}`, { action }), msg);
+    const setMember = (id, action, msg, undoAction) => groupAct(() => api('POST', `${gPath(g.slug)}/members/${id}`, { action }), msg,
+      undoAction ? () => api('POST', `${gPath(g.slug)}/members/${id}`, { action: undoAction }) : null);
     return [
       h('div', { class: 'card' },
         h('h2', {}, 'Invite players'),
@@ -5936,8 +6001,8 @@
           h('span', {}, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : r.name, r.role === 'admin' ? [' ', pill('org', 'Admin')] : null),
           g.admin && r.id !== (S.me && S.me.id) ? moreButton(r.name, [
             r.role === 'admin'
-              ? { label: 'Remove admin', hint: 'Stays in the group', onClick: () => setMember(r.id, 'member', 'No longer an admin') }
-              : { label: 'Make admin', hint: 'Can check people in, start games and change settings', onClick: () => setMember(r.id, 'admin', `${r.name} is now an admin`) },
+              ? { label: 'Remove admin', hint: 'Stays in the group', onClick: () => setMember(r.id, 'member', `${r.name} is no longer an admin`, 'admin') }
+              : { label: 'Make admin', hint: 'Can check people in, start games and change settings', onClick: () => setMember(r.id, 'admin', `${r.name} is now an admin`, 'member') },
             { label: 'Remove from the group', danger: true, onClick: () => confirm(`Remove ${r.name} from the group?`) && setMember(r.id, 'remove', 'Removed') },
           ]) : null)))),
       guests.length ? h('div', { class: 'card' }, h('h2', {}, `Waiting to claim their spot (${guests.length})`),
@@ -6002,10 +6067,10 @@
     if (!a) return loading();
     if (a.error) return h('div', { class: 'card' }, h('p', { class: 'muted' }, a.error));
     if (!a.sessions.length) return h('div', { class: 'card' }, h('h2', {}, 'Attendance'), h('p', { class: 'muted' }, 'Nobody has played yet. After each session you\'ll see who said they\'re in and who checked in.'));
-    const day = (iso) => new Date(iso).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+    const day = (iso) => new Date(iso).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', timeZone: g.settings.timeZone || undefined });
     const last = a.sessions[0];
     const came = a.players.filter((p) => p.marks[last.id] === 'here').map((p) => p.name);
-    const copyText = `${g.name} · ${day(last.startsAt)}, ${fmtTime(last.startsAt)}${a.settings.endTime ? ` – ${fmtClock(a.settings.endTime)}` : ''}: ${came.length} came${came.length ? ` (${came.join(', ')})` : ''}`;
+    const copyText = `${g.name} · ${day(last.startsAt)}, ${fmtTime(last.startsAt, g.settings.timeZone)}${a.settings.endTime ? ` – ${fmtClock(a.settings.endTime)}` : ''}: ${came.length} came${came.length ? ` (${came.join(', ')})` : ''}`;
     const mark = { here: '✓', in: 'in', waitlist: 'wl' };
     return h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Attendance'),
@@ -6175,7 +6240,7 @@
       x.status === 'live' && !x.can.score ? h('p', { class: 'muted small center' }, 'Live — the players are scoring this game.') : null,
       x.status !== 'live' ? h('div', { class: 'card' },
         h('h2', {}, x.status === 'confirmed' ? 'Confirmed ✓' : x.status === 'disputed' ? 'Disputed — an admin will check it' : x.status === 'void' ? 'Voided' : 'Game over'),
-        x.status === 'done' ? h('p', { class: 'muted small' }, `${teamName(x[x.winner === 'a' ? 'b' : 'a'])} confirm the result. It confirms itself at ${fmtTime(x.confirmBy)}.`) : null,
+        x.status === 'done' ? h('p', { class: 'muted small' }, `${teamName(x[x.winner === 'a' ? 'b' : 'a'])} confirm the result. It confirms itself at ${fmtTime(x.confirmBy, g.settings && g.settings.timeZone)}.`) : null,
         x.deltas ? h('p', { class: 'small' }, [...x.a, ...x.b].map((p) => `${p.name} ${x.deltas[p.id] >= 0 ? '+' : ''}${x.deltas[p.id]}`).join(' · ')) : null,
         h('div', { class: 'actions' },
           x.can.confirm ? h('button', { class: 'btn btn-primary', onclick: () => post('confirm', 'Result confirmed') }, x.status === 'disputed' ? 'Keep this result' : `Confirm ${x.summary}`) : null,

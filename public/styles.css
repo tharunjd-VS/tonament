@@ -516,6 +516,8 @@ a.b-match:hover { border-color: var(--accent); }
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 #toast.error { background: #B91C1C; color: #fff; }
+#toast.has-undo { pointer-events: auto; display: flex; align-items: center; gap: 14px; padding-right: 8px; }
+.toast-undo { font: inherit; font-weight: 700; border: 0; border-radius: 8px; padding: 6px 12px; min-height: 34px; cursor: pointer; background: var(--accent); color: var(--on-accent); }
 
 /* ---------- accounts & team */
 .nav { display: flex; align-items: center; gap: 10px; }
@@ -1423,7 +1425,26 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .next-progress { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; }
 .next-links { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 0; }
 .draw-seg, .seg.draw-seg { margin: 0 0 12px; }
- max-width: 520px; margin: 40px auto; text-align: center; }
+.sheet-backdrop.top { align-items: flex-start; }
+.search-sheet { text-align: left; padding: 12px 14px; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.search-bar { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.search-sheet .search-bar .btn { width: auto; flex: none; }
+.search-q { flex: 1; min-width: 0; }
+.search-results { margin-top: 10px; }
+.search-results > p { margin: 8px 2px; }
+.search-hit { padding: 10px 0; border-top: 1px solid var(--border); }
+.search-name { display: grid; gap: 1px; text-decoration: none; color: var(--text); }
+.search-hit ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+.search-hit li a { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); color: var(--text); text-decoration: none; }
+.search-hit li a small { display: block; }
+.t-search { flex: none; }
+.fold { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+.fold > summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; list-style: none; font-weight: 400; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold[open] > summary { margin-bottom: 12px; }
+.fold[open] .fold-change { visibility: hidden; }
+.fold-change { color: var(--link); font-weight: 600; font-size: 0.9rem; flex: none; }
+.offline-card { max-width: 520px; margin: 40px auto; text-align: center; }
 
 /* Group admins: Who's here */
 .whos-here summary small { font-weight: 400; }
