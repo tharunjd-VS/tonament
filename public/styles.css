@@ -20,6 +20,11 @@
   --paper-margin: #E7A3A3;
   --ink: #1E3A8A;
   --ink-red: #B91C1C;
+  /* Printed fixtures (the free tools): plain black on white. */
+  --print-bg: #FFFFFF;
+  --print-ink: #000000;
+  --print-line: #999999;
+  --print-muted: #444444;
   --lime: #A3E635;
   --slate: #475569;
   --mist: #E5E7EB;
@@ -248,10 +253,11 @@ legend { font-weight: 700; padding: 0 6px; }
 .hero-visual.tv { width: min(440px, 40vw); overflow: hidden; border: 7px solid #000; border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); outline: 1px solid #2A3550; }
 .hero-visual.paper-app { position: relative; width: 390px; height: 380px; }
 .paper-sheet {
-  position: absolute; left: 0; top: 14px; width: 270px; padding: 20px 14px 18px 34px; border-radius: 8px; transform: rotate(-4deg);
+  position: relative; padding: 20px 14px 18px 34px; border-radius: 8px;
   background: repeating-linear-gradient(transparent 0 27px, var(--paper-rule) 27px 28px) 0 14px / 100% auto, var(--paper);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
 }
+.paper-app .paper-sheet { position: absolute; left: 0; top: 14px; width: 270px; transform: rotate(-4deg); }
 .paper-sheet::after { content: ''; position: absolute; top: 0; bottom: 0; left: 24px; width: 2px; background: var(--paper-margin); opacity: 0.7; }
 .paper-sheet p { margin: 0; font-size: 0.8rem; line-height: 28px; font-style: italic; font-weight: 500; white-space: nowrap; }
 .paper-sheet .ink { color: var(--ink); }
@@ -1275,3 +1281,93 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .fee-row input { width: 100%; }
 .fee-row select { width: auto; }
 .fee-row label small { display: block; }
+
+/* Free fixture tools (/tools/*) */
+.tool-hero { margin-bottom: 14px; }
+.tool { padding: 18px; margin-bottom: 32px; }
+.tool-form .field { display: grid; gap: 6px; margin: 0 0 12px; }
+.tool-form .field > span { font-weight: 600; font-size: 0.9rem; }
+.tool-form textarea { width: 100%; font: inherit; }
+.tool-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0 12px; }
+.tool-levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 12px; }
+.tool-actions { margin: 4px 0 6px; }
+.tool-note { margin: 6px 0 0; }
+.tool-print-title { display: none; }
+.tool-output { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.tool-summary { margin: 0 0 12px; }
+.tool-group { margin: 0 0 22px; }
+.tool-group h3, .tool-pool { margin: 0 0 8px; }
+.tool-pool { margin-top: 22px; font-size: 1.15rem; }
+.tool-members { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0 0 10px; list-style: none; counter-reset: m; }
+.tool-members li { counter-increment: m; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 0.88rem; background: var(--surface-2); }
+.tool-members li::before { content: counter(m) '. '; color: var(--muted); }
+.tool-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.tool-table th, .tool-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.tool-table th:first-child, .tool-table td:first-child { width: 3.5em; color: var(--muted); }
+.tool-match { display: inline-block; margin: 0 14px 2px 0; }
+.tool-bye { display: inline-block; color: var(--muted); font-style: italic; }
+.tool-bracket { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+.tool-round { flex: 0 0 190px; display: flex; flex-direction: column; justify-content: space-around; gap: 8px; }
+.tool-round h3 { font-size: 0.9rem; margin: 0 0 4px; color: var(--muted); }
+.tool-slot { display: grid; gap: 2px; border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; background: var(--surface-2); font-size: 0.88rem; }
+.tool-slot.bye { opacity: 0.75; }
+.tool-steps { padding-left: 1.2em; }
+.tool-steps li { margin-bottom: 10px; }
+.tool-steps p { margin: 2px 0 0; color: var(--muted); }
+.tool-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 32px; }
+.tool-card { display: grid; gap: 6px; color: var(--text); text-decoration: none; }
+.tool-card:hover { border-color: var(--accent); }
+
+/* Blog (/blog) */
+.post-tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+.post-tags a { border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; font-size: 0.88rem; color: var(--text); text-decoration: none; background: var(--surface); }
+.post-tags a[aria-current="page"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.post-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 12px 0 24px; }
+.post-card { display: grid; gap: 6px; color: var(--text); text-decoration: none; align-content: start; }
+.post-card:hover { border-color: var(--accent); }
+.post-card h2, .post-card h3 { margin: 0; }
+.post-card p { margin: 0; }
+.post-card.featured { padding: 22px; margin-bottom: 12px; }
+.post-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 0.85rem; }
+.post { max-width: 720px; margin: 0 auto 32px; }
+.post-head h1 { font-size: clamp(1.8rem, 5vw, 2.6rem); line-height: 1.12; letter-spacing: -0.02em; margin: 10px 0; text-wrap: balance; }
+.post-head .lead { font-size: 1.12rem; color: var(--muted); }
+.post-toc { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin: 18px 0; background: var(--surface); font-size: 0.92rem; }
+.post-toc ul { margin: 6px 0 0; padding-left: 1.2em; }
+.post-body { font-size: 1.05rem; line-height: 1.7; }
+.post-body h2 { font-size: 1.45rem; margin: 36px 0 10px; line-height: 1.25; scroll-margin-top: 80px; }
+.post-body h3 { font-size: 1.15rem; margin: 26px 0 8px; }
+.post-body img { max-width: 100%; height: auto; }
+.post-body blockquote { margin: 18px 0; padding: 4px 16px; border-left: 4px solid var(--accent); color: var(--muted); }
+.post-body .table-wrap { overflow-x: auto; margin: 16px 0; }
+.post-body table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+.post-body th, .post-body td { border-bottom: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+.post-body th { background: var(--surface); }
+.post-figure { margin: 22px 0; text-align: center; }
+.post-figure img { border-radius: 12px; border: 1px solid var(--border); }
+.post-figure.phone-shot img { max-width: 320px; }
+.post-figure figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 6px; }
+.paper-inline { margin: 22px auto; max-width: 420px; transform: rotate(-1deg); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25); }
+.paper-inline p { white-space: normal; }
+.post-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+.post-compare > div { border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 16px; background: var(--surface); }
+.post-compare > div:last-child { border-color: var(--accent); }
+@media (max-width: 640px) { .post-compare { grid-template-columns: 1fr; } }
+.post-cta { margin: 36px 0 0; padding: 20px; border-color: var(--accent); }
+.post-cta h2 { margin: 0 0 6px; }
+.rank-mini { padding-left: 1.3em; margin: 0 0 6px; }
+
+/* Printing a tool's fixtures: just the draw, black on white. */
+@media print {
+  .topbar, .footer, .crumbs, .tool-hero, .tool-form, main > section:not(.tool), main > nav, main > div:not(.tool-cards) { display: none !important; }
+  main > .tool-cards { display: none !important; }
+  body, .card, .tool { background: var(--print-bg) !important; color: var(--print-ink) !important; box-shadow: none !important; border: 0 !important; }
+  .tool { padding: 0; }
+  .tool-print-title { display: block; margin: 0 0 8px; color: var(--print-ink); }
+  .tool-output { border: 0; margin: 0; padding: 0; }
+  .tool-members li, .tool-slot { background: var(--print-bg) !important; border-color: var(--print-line) !important; color: var(--print-ink) !important; }
+  .tool-table th, .tool-table td { border-color: var(--print-line) !important; color: var(--print-ink) !important; }
+  .tool-bracket { overflow: visible; flex-wrap: wrap; }
+  .tool-group { break-inside: avoid; }
+  .muted { color: var(--print-muted) !important; }
+}

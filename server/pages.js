@@ -204,16 +204,18 @@ ${pages.map(url).join('\n')}
 
 // ---------- sport landing pages (/badminton, /pickleball, …) and /sports
 
-const SITE_LINKS = [['/features', 'Features'], ['/sports', 'Sports'], ['/rankings', 'Rankings'], ['/how-it-works', 'How it works'], ['/faq', 'FAQ'], ['/pricing', 'Pricing'],
+const SITE_LINKS = [['/features', 'Features'], ['/sports', 'Sports'], ['/rankings', 'Rankings'], ['/tools', 'Free tools'], ['/blog', 'Blog'], ['/how-it-works', 'How it works'], ['/faq', 'FAQ'], ['/pricing', 'Pricing'],
   ['/contact', 'Contact'], ['/terms', 'Terms'], ['/privacy', 'Privacy'], ['/refunds', 'Refunds'], ['/delivery', 'Delivery']];
 const SIGN_UP = '/signup?next=%2Fnew';
 const iconSvg = (id, cls = 'icon') => `<span class="${cls}" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="/icons.svg#${esc(id)}"></use></svg></span>`;
 const isoDate = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : d || null);
 
 // A whole page in the static pages' frame (theme, header, footer, site.js).
-function sitePage({ base, path, title, description, ld, body }) {
+// trail: breadcrumbs as [[name, path], …] after Home, added as BreadcrumbList data.
+function sitePage({ base, path, title, description, ld, body, trail, image: img, type = 'website', head = '', scripts = '' }) {
   const url = base + path;
-  const image = `${base}/brand/og-features.png`;
+  const image = img ? (img.startsWith('http') ? img : base + img) : `${base}/brand/og-features.png`;
+  if (trail) ld = [crumbs(base, [['Home', '/'], ...trail]), ...(ld || [])];
   const meta = (attr, name, content) => `<meta ${attr}="${name}" content="${esc(content)}">`;
   return `<!doctype html>
 <html lang="en" data-theme="dark">
@@ -223,8 +225,9 @@ function sitePage({ base, path, title, description, ld, body }) {
   <title>${esc(title)}</title>
   ${meta('name', 'description', description)}
   <link rel="canonical" href="${esc(url)}">
-  ${meta('property', 'og:type', 'website')}
+  ${meta('property', 'og:type', type)}
   ${meta('property', 'og:site_name', 'Tonament')}
+  ${meta('property', 'og:locale', 'en_IN')}
   ${meta('property', 'og:title', title)}
   ${meta('property', 'og:description', description)}
   ${meta('property', 'og:url', url)}
@@ -232,7 +235,9 @@ function sitePage({ base, path, title, description, ld, body }) {
   ${meta('property', 'og:image:width', 1200)}
   ${meta('property', 'og:image:height', 630)}
   ${meta('name', 'twitter:card', 'summary_large_image')}
-  ${meta('name', 'twitter:image', image)}
+  ${meta('name', 'twitter:title', title)}
+  ${meta('name', 'twitter:description', description)}
+  ${meta('name', 'twitter:image', image)}${head}
   <meta name="theme-color" content="#0B1220">
   <script>
     (function () {
@@ -271,7 +276,7 @@ ${body}
     </div>
     <p class="footer-legal">© <span data-year>${new Date().getFullYear()}</span> <span data-biz="name">Tonament</span>. Payments are processed securely by Razorpay.</p>
   </footer>
-  <script src="/site.js"></script>
+  <script src="/site.js"></script>${scripts}
 </body>
 </html>
 `;
@@ -385,7 +390,7 @@ function groupHtml(shell, { base, g }) {
 
 // sport: { id, name, presets: [label], courtWord, courtWords, team }, content: server/sport-pages.js entry,
 // tournaments: upcoming public cards, others: [{ id, name }].
-function sportHtml({ base, sport, content, tournaments, others }) {
+function sportHtml({ base, sport, content, tournaments, others, cities = [], posts = [] }) {
   const path = `/${sport.id}`;
   const lower = sport.name.toLowerCase();
   const courts = (sport.courtWords || `${sport.courtWord}s`).toLowerCase();
@@ -407,6 +412,8 @@ function sportHtml({ base, sport, content, tournaments, others }) {
       <h2 class="features-title">Upcoming ${esc(lower)} tournaments</h2>
       ${list}
       <p><a href="/rankings/${esc(sport.id)}">${esc(sport.name)} player rankings →</a></p>
+      ${cities.length ? `<h3>${esc(sport.name)} tournaments by city</h3>
+      <nav class="sport-strip" aria-label="Cities">${cities.map((c) => `<a href="/${esc(sport.id)}/${esc(citySlug(c))}">${esc(c)}</a>`).join('')}</nav>` : ''}
     </section>
 
     <section>
@@ -433,6 +440,8 @@ function sportHtml({ base, sport, content, tournaments, others }) {
       <div class="faq-list">
         ${content.faqs.map(([q, a]) => `<details class="faq"><summary>${esc(q)}</summary><p>${esc(a)}</p></details>`).join('\n        ')}
       </div>
+      <p>Free tools: <a href="/tools/round-robin">round robin generator</a> · <a href="/tools/knockout-bracket">knockout bracket maker</a> · <a href="/tools/split-by-level">split by level</a></p>
+      ${posts.length ? `<p>Guides: ${posts.map((x) => `<a href="${esc(x.path)}">${esc(x.title)}</a>`).join(' · ')}</p>` : ''}
     </section>
 
     <section class="hero hero-end">
@@ -710,4 +719,143 @@ function rankingsTableHtml({ base, sport, category, name, table, places, scope, 
   return sitePage({ base, path: path + qs({ state: scope.region, city: scope.city }), title, description: `${sport.name} ${name} player rankings in ${where}, from tournaments on Tonament. ${table.players.slice(0, 3).map((r) => `#${r.rank} ${r.name}`).join(', ')}`, ld, body });
 }
 
-module.exports = { dateRange, clock, when, summary, eventData, tournamentHtml, groupHtml, sitemap, esc, sportHtml, sportsHubHtml, orgHtml, playerHtml, rankingsHubHtml, rankingsSportHtml, rankingsTableHtml };
+// ---------- free tools (/tools/*): see tools-pages.js
+const toolPages = require('./tools-pages').createToolPages({ sitePage, esc });
+
+// ---------- city pages: /<sport>/<city>
+const citySlug = (city) => String(city).toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+function cityHtml({ base, sport, city, upcoming, past, orgs, players, others, posts }) {
+  const lower = sport.name.toLowerCase();
+  const path = `/${sport.id}/${citySlug(city)}`;
+  const cards = (list) => `<div class="card-list sport-list">${list.map(tournamentCardHtml).join('\n      ')}</div>`;
+  const orgList = orgs.length
+    ? `<div class="card-list">${orgs.map((o) => `<a class="card t-card" href="/@${esc(o.slug)}"><div class="card-head"><h3>${esc(o.name)}</h3><span class="pill org">${esc(o.kindName)}</span></div></a>`).join('')}</div>`
+    : '';
+  const playerList = players.filter((c) => c.players.length).map((c) => `<section><h3>${esc(c.name)}</h3><ol class="rank-mini">${c.players.map((r) => `<li><a href="/p/${esc(r.handle)}">${esc(r.name)}</a> <span class="muted">${r.points} pts</span></li>`).join('')}</ol>
+        <p><a href="/rankings/${esc(sport.id)}/${esc(c.slug)}?city=${encodeURIComponent(city)}">Full ${esc(city)} rankings →</a></p></section>`).join('');
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <a href="/sports">Sports</a> › <a href="/${esc(sport.id)}">${esc(sport.name)}</a> › <span>${esc(city)}</span></nav>
+    <section class="hero">
+      <p class="eyebrow">${iconSvg(sport.id, 'icon hero-icon')} ${esc(sport.name)} · <b>${esc(city)}</b></p>
+      <h1>${esc(sport.name)} tournaments in <span class="accent">${esc(city)}</span></h1>
+      <p class="lead">Upcoming ${esc(lower)} tournaments in ${esc(city)}, recent results${orgs.length ? `, ${esc(lower)} academies and venues` : ''} and the city's ranked players — all run and scored live on Tonament.</p>
+      <p class="actions"><a class="btn btn-primary btn-lg" href="${SIGN_UP}">Run a tournament in ${esc(city)}</a> <a class="btn btn-lg btn-ghost" href="/?sport=${esc(sport.id)}&amp;city=${encodeURIComponent(city)}">Search tournaments</a></p>
+    </section>
+
+    <section>
+      <h2 class="features-title">Upcoming ${esc(lower)} tournaments in ${esc(city)}</h2>
+      ${upcoming.length ? cards(upcoming) : `<div class="card empty-list"><p><strong>Nothing listed right now.</strong> Organising one? It's free for up to <span data-free-limit>16</span> entries.</p><p class="actions"><a class="btn btn-primary" href="${SIGN_UP}">Create a ${esc(lower)} tournament</a></p></div>`}
+    </section>
+    ${past.length ? `<section>
+      <h2 class="features-title">Recent results</h2>
+      ${cards(past)}
+    </section>` : ''}
+    ${orgList ? `<section>
+      <h2 class="features-title">${esc(sport.name)} academies &amp; venues in ${esc(city)}</h2>
+      ${orgList}
+    </section>` : ''}
+    ${playerList ? `<section>
+      <h2 class="features-title">Top ${esc(lower)} players in ${esc(city)}</h2>
+      <div class="feature-groups">${playerList}</div>
+    </section>` : ''}
+    ${posts.length ? `<section>
+      <h2 class="features-title">Guides for organisers</h2>
+      <ul>${posts.map((p) => `<li><a href="${esc(p.path)}">${esc(p.title)}</a></li>`).join('')}</ul>
+    </section>` : ''}
+    <section class="hero hero-end">
+      <h2>Running a ${esc(lower)} tournament in ${esc(city)}?</h2>
+      <p class="lead">Online entries and UPI fees, fixtures split by level, an order of play across your ${esc((sport.courtWords || `${sport.courtWord}s`).toLowerCase())} and live scores for every player — free for up to <span data-free-limit>16</span> entries.</p>
+      <p class="actions"><a class="btn btn-primary btn-lg" href="${SIGN_UP}">Sign up free</a> <a class="btn btn-lg btn-ghost" href="/${esc(sport.id)}">${esc(sport.name)} on Tonament</a></p>
+    </section>
+    ${others.length ? `<nav class="sport-strip" aria-label="Other cities">${others.map((c) => `<a href="/${esc(sport.id)}/${esc(citySlug(c))}">${esc(c)}</a>`).join('')}</nav>` : ''}`;
+  const list = [...upcoming, ...past];
+  const ld = [
+    { '@context': 'https://schema.org', '@type': 'CollectionPage', name: `${sport.name} tournaments in ${city}`, url: base + path },
+    ...(list.length ? [{ '@context': 'https://schema.org', '@type': 'ItemList', name: `${sport.name} tournaments in ${city}`, itemListElement: list.map((t, i) => ({ '@type': 'ListItem', position: i + 1, url: `${base}/t/${t.id}`, name: t.name })) }] : []),
+  ];
+  const description = `${sport.name} tournaments in ${city}: ${upcoming.length ? `${upcoming.length} coming up` : 'upcoming events'}${past.length ? ', recent results' : ''}${orgs.length ? `, ${orgs.length} academ${orgs.length === 1 ? 'y' : 'ies'} and venues` : ''} and local rankings. Enter online and follow every score live.`;
+  return sitePage({ base, path, title: `${sport.name} Tournaments in ${city} — Upcoming Events & Results | Tonament`, description, body, ld, trail: [['Sports', '/sports'], [sport.name, `/${sport.id}`], [city, path]] });
+}
+
+// ---------- blog: /blog, /blog/tag/<tag>, /blog/<slug>, /blog/rss.xml (posts from blog.js)
+const longDate = (iso) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+const tagName = (t) => t.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase());
+function postCardHtml(p, big = false) {
+  return `<a class="card post-card${big ? ' featured' : ''}" href="${esc(p.path)}">
+        <p class="post-meta">${p.tags.slice(0, 2).map((t) => `<span class="event-tag">${esc(tagName(t))}</span>`).join('')} <span class="muted">${esc(longDate(p.date))} · ${p.minutes} min read</span></p>
+        <h${big ? 2 : 3}>${esc(p.title)}</h${big ? 2 : 3}>
+        <p class="muted">${esc(p.description)}</p>
+      </a>`;
+}
+function blogIndexHtml({ base, posts, tags, tag = null }) {
+  const path = tag ? `/blog/tag/${tag}` : '/blog';
+  const [first, ...rest] = posts;
+  const title = tag ? `${tagName(tag)} — Tonament blog` : 'Tonament Blog — Guides for Tournament Organisers';
+  const description = tag ? `Posts about ${tagName(tag).toLowerCase()} on the Tonament blog: practical guides for running tournaments.` : 'Practical guides and stories for tournament organisers: running the day, draws and formats, splitting by level, entry fees by UPI, and going from paper to live scores.';
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › ${tag ? `<a href="/blog">Blog</a> › <span>${esc(tagName(tag))}</span>` : '<span>Blog</span>'}</nav>
+    <section class="hero">
+      <p class="eyebrow">The Tonament blog · <b>For organisers</b></p>
+      <h1>${tag ? esc(tagName(tag)) : 'Run better tournaments'}</h1>
+      <p class="lead">${tag ? esc(description) : 'Practical guides from the courts: draws and formats, the day itself, fees, and keeping the flexibility of paper without the chaos.'}</p>
+    </section>
+    <nav class="post-tags" aria-label="Topics"><a href="/blog"${tag ? '' : ' aria-current="page"'}>All</a>${tags.map((t) => `<a href="/blog/tag/${esc(t)}"${t === tag ? ' aria-current="page"' : ''}>${esc(tagName(t))}</a>`).join('')}</nav>
+    ${first ? postCardHtml(first, !tag) : '<p class="muted">No posts yet.</p>'}
+    <div class="post-list">${rest.map((p) => postCardHtml(p)).join('\n      ')}</div>
+    <p class="muted small"><a href="/blog/rss.xml">RSS feed</a></p>`;
+  const ld = [{ '@context': 'https://schema.org', '@type': 'Blog', name: 'Tonament blog', url: base + path, description,
+    blogPost: posts.map((p) => ({ '@type': 'BlogPosting', headline: p.title, url: base + p.path, datePublished: p.date })) }];
+  const trail = tag ? [['Blog', '/blog'], [tagName(tag), path]] : [['Blog', '/blog']];
+  return sitePage({ base, path, title: tag ? title : `${title}`, description, body, ld, trail,
+    head: `\n  <link rel="alternate" type="application/rss+xml" title="Tonament blog" href="${esc(base)}/blog/rss.xml">` });
+}
+function blogPostHtml({ base, post: p, related }) {
+  const image = p.image || '/brand/og-features.png';
+  const toc = p.headings.length >= 4
+    ? `<nav class="post-toc" aria-label="In this post"><strong>In this post</strong><ul>${p.headings.map((x) => `<li><a href="#${esc(x.id)}">${esc(x.text.replace(/[*_`]/g, ''))}</a></li>`).join('')}</ul></nav>` : '';
+  const body = `    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <a href="/blog">Blog</a> › <span>${esc(p.title)}</span></nav>
+    <article class="post">
+      <header class="post-head">
+        <p class="post-meta">${p.tags.map((t) => `<a class="event-tag" href="/blog/tag/${esc(t)}">${esc(tagName(t))}</a>`).join('')}</p>
+        <h1>${esc(p.title)}</h1>
+        <p class="lead">${esc(p.description)}</p>
+        <p class="muted small">${esc(p.author)} · <time datetime="${esc(p.date)}">${esc(longDate(p.date))}</time>${p.updated ? ` · updated <time datetime="${esc(p.updated)}">${esc(longDate(p.updated))}</time>` : ''} · ${p.minutes} min read</p>
+      </header>
+      ${toc}
+      <div class="post-body">
+${p.html}
+      </div>
+      <aside class="card post-cta">
+        <h2>Run your next tournament on Tonament</h2>
+        <p>Entries and UPI fees, fixtures your way, an order of play across your courts and live scores on every phone. Free for up to <span data-free-limit>16</span> entries.</p>
+        <p class="actions"><a class="btn btn-primary" href="${SIGN_UP}">Sign up free</a> <a class="btn btn-ghost" href="/tools">Try the free fixture tools</a></p>
+      </aside>
+    </article>
+    ${related.length ? `<section>
+      <h2 class="features-title">Keep reading</h2>
+      <div class="post-list">${related.map((r) => postCardHtml(r)).join('')}</div>
+    </section>` : ''}`;
+  const ld = [{
+    '@context': 'https://schema.org', '@type': 'BlogPosting', headline: p.title, description: p.description, url: base + p.path,
+    mainEntityOfPage: base + p.path, datePublished: p.date, dateModified: p.updated || p.date, image: [base + image],
+    author: { '@type': 'Organization', name: p.author, url: base }, publisher: { '@type': 'Organization', name: 'Tonament', logo: { '@type': 'ImageObject', url: `${base}/brand/icon-512.png` } },
+    keywords: p.tags.join(', '),
+  }];
+  return sitePage({ base, path: p.path, title: `${p.title} | Tonament`, description: p.description, body, ld, image, type: 'article',
+    trail: [['Blog', '/blog'], [p.title, p.path]],
+    head: `\n  <meta property="article:published_time" content="${esc(p.date)}">${p.tags.map((t) => `\n  <meta property="article:tag" content="${esc(tagName(t))}">`).join('')}\n  <link rel="alternate" type="application/rss+xml" title="Tonament blog" href="${esc(base)}/blog/rss.xml">` });
+}
+function blogRss({ base, posts }) {
+  const item = (p) => `<item><title>${esc(p.title)}</title><link>${esc(base + p.path)}</link><guid>${esc(base + p.path)}</guid><pubDate>${new Date(`${p.date}T00:00:00Z`).toUTCString()}</pubDate><description>${esc(p.description)}</description>${p.tags.map((t) => `<category>${esc(tagName(t))}</category>`).join('')}</item>`;
+  const newest = [...posts].sort((a, b) => b.date.localeCompare(a.date));
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>
+<title>Tonament blog</title><link>${esc(base)}/blog</link><description>Guides for tournament organisers</description><language>en-in</language>
+<atom:link href="${esc(base)}/blog/rss.xml" rel="self" type="application/rss+xml"/>
+${newest.map(item).join('\n')}
+</channel></rss>
+`;
+}
+
+module.exports = {
+  dateRange, clock, when, summary, eventData, tournamentHtml, groupHtml, sitemap, esc, sportHtml, sportsHubHtml, orgHtml, playerHtml, rankingsHubHtml, rankingsSportHtml, rankingsTableHtml,
+  toolHtml: toolPages.toolHtml, toolsHubHtml: toolPages.toolsHubHtml, toolPaths: toolPages.paths, citySlug, cityHtml, blogIndexHtml, blogPostHtml, blogRss,
+};

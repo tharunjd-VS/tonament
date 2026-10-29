@@ -10,6 +10,7 @@ const pages = require('./pages');
 const rankings = require('./rankings');
 const catalog = require('../public/sports/events');
 const { SPORTS: SPORT_PAGES } = require('./sport-pages');
+const blog = require('./blog');
 const { createMailer } = require('./email');
 const { billingConfig, publicBillingConfig } = require('./billing');
 
@@ -459,6 +460,8 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         content: SPORT_PAGES[sport.id],
         tournaments: (await svc.listTournaments({ sport: sport.id, when: 'upcoming' })).slice(0, 8),
         others: all.filter((x) => x.id !== sport.id),
+        cities: (await svc.cityPlaces()).filter((c) => c.sport === sport.id).slice(0, 24).map((c) => c.city),
+        posts: blog.posts().filter((p) => p.tags.includes(sport.id)).slice(0, 4),
       })
       : pages.sportsHubHtml({ base, sports: all });
     res.writeHead(200, {
@@ -470,6 +473,65 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     });
     res.end(req.method === 'HEAD' ? undefined : html);
     return true;
+  }
+
+  // /<sport>/<city> (on Vercel, /api/city/<sport>/<city>): only for cities
+  // with enough going on (service.cityPlaces); anything else is a 404.
+  async function cityPage(req, res, sportId, slug) {
+    const base = baseUrl(req) || SITE;
+    const sport = livePages().find((x) => x.id === sportId);
+    if (!sport) return notFound(req, res);
+    const places = (await svc.cityPlaces()).filter((c) => c.sport === sportId);
+    const place = places.find((c) => pages.citySlug(c.city) === slug);
+    if (!place) return notFound(req, res);
+    const { city } = place;
+    const [upcoming, past, orgs, overview] = await Promise.all([
+      svc.listTournaments({ sport: sportId, city, when: 'upcoming' }),
+      svc.listTournaments({ sport: sportId, city, when: 'past' }),
+      svc.orgs.inCity(sportId, city),
+      svc.players.overview(sportId, 0),
+    ]);
+    const players = [];
+    for (const c of overview.slice(0, 3)) players.push({ ...c, players: (await svc.players.table(sportId, c.slug, { city, limit: 5 })).players });
+    const html = pages.cityHtml({
+      base, sport, city, upcoming: upcoming.slice(0, 12), past: past.slice(0, 6), orgs, players,
+      others: places.filter((c) => c.city !== city).slice(0, 16).map((c) => c.city),
+      posts: blog.posts().filter((p) => p.tags.includes(sportId) || p.tags.includes('organisers')).slice(0, 3),
+    });
+    res.writeHead(200, htmlHeaders(true));
+    return res.end(req.method === 'HEAD' ? undefined : html);
+  }
+
+  // /tools and /tools/<slug> (on Vercel, /api/tools/…): the free fixture tools.
+  async function toolPage(req, res, slug) {
+    const base = baseUrl(req) || SITE;
+    const html = slug ? pages.toolHtml({ base, slug }) : pages.toolsHubHtml({ base });
+    if (!html) return notFound(req, res);
+    res.writeHead(200, htmlHeaders(true, 86400));
+    return res.end(req.method === 'HEAD' ? undefined : html);
+  }
+
+  // /blog, /blog/tag/<tag>, /blog/<slug>, /blog/rss.xml (on Vercel, /api/blog/…).
+  async function blogPage(req, res, rest) {
+    const base = baseUrl(req) || SITE;
+    const all = blog.posts();
+    if (rest === 'rss.xml') {
+      res.writeHead(200, { 'Content-Type': 'application/rss+xml; charset=utf-8', 'Cache-Control': 'public, max-age=0, s-maxage=3600' });
+      return res.end(req.method === 'HEAD' ? undefined : pages.blogRss({ base, posts: all }));
+    }
+    let html;
+    const tag = rest && rest.match(/^tag\/([a-z0-9-]{1,40})$/);
+    if (!rest) html = pages.blogIndexHtml({ base, posts: all, tags: blog.tags() });
+    else if (tag) {
+      const list = all.filter((p) => p.tags.includes(tag[1]));
+      if (list.length) html = pages.blogIndexHtml({ base, posts: list, tags: blog.tags(), tag: tag[1] });
+    } else {
+      const post = blog.find(rest);
+      if (post) html = pages.blogPostHtml({ base, post, related: blog.related(post) });
+    }
+    if (!html) return notFound(req, res);
+    res.writeHead(200, htmlHeaders(true, 3600));
+    return res.end(req.method === 'HEAD' ? undefined : html);
   }
 
   // /@slug (on Vercel, rewritten to /api/org/<slug>): an academy's public page,
@@ -554,8 +616,16 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
 
   async function sitemapXml(req, res) {
     const base = baseUrl(req) || SITE;
-    const fixed = ['/', '/features', '/sports', ...livePages().map((x) => `/${x.id}`), '/how-it-works', '/faq', '/pricing', '/contact', '/terms', '/privacy', '/refunds', '/delivery'].map((p) => ({ path: p }));
-    const xml = pages.sitemap(base, [...fixed, ...await svc.orgs.sitemapOrgs(), ...await svc.players.sitemapPlayers(), ...await svc.sitemapTournaments()]);
+    const posts = blog.posts();
+    const fixed = ['/', '/features', '/sports', ...livePages().map((x) => `/${x.id}`), ...pages.toolPaths, '/rankings', '/how-it-works', '/faq', '/pricing', '/contact', '/terms', '/privacy', '/refunds', '/delivery'].map((p) => ({ path: p }));
+    const content = [
+      { path: '/blog', lastmod: posts.map((p) => p.updated || p.date).sort().pop() },
+      ...posts.map((p) => ({ path: p.path, lastmod: p.updated || p.date })),
+      ...blog.tags().map((t) => ({ path: `/blog/tag/${t}` })),
+      ...(await svc.players.sportCounts()).map((x) => ({ path: `/rankings/${x.id}` })),
+      ...(await svc.cityPlaces()).filter((c) => SPORT_PAGES[c.sport]).map((c) => ({ path: `/${c.sport}/${pages.citySlug(c.city)}` })),
+    ];
+    const xml = pages.sitemap(base, [...fixed, ...content, ...await svc.orgs.sitemapOrgs(), ...await svc.players.sitemapPlayers(), ...await svc.sitemapTournaments()]);
     res.writeHead(200, {
       'Content-Type': 'application/xml; charset=utf-8',
       'Cache-Control': 'public, max-age=0, s-maxage=3600',
@@ -662,6 +732,13 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       if (playerPath && read) return await playerPage(req, res, playerPath[1], url.searchParams.has('me'));
       const rankPath = pathname.match(/^\/(?:api\/)?rankings(?:\/([a-z-]{1,40}))?(?:\/([a-z0-9-]{2,20}))?\/?$/);
       if (rankPath && read) return await rankingsPage(req, res, rankPath[1] || null, rankPath[2] || null, url.searchParams);
+      // Free tools, the blog and city pages.
+      const toolPath = pathname.match(/^\/(?:api\/)?tools(?:\/([a-z-]{1,40}))?\/?$/);
+      if (toolPath && read) return await toolPage(req, res, toolPath[1] || null);
+      const blogPath = pathname.match(/^\/(?:api\/)?blog(?:\/((?:tag\/)?[a-z0-9-]{1,80}|rss\.xml))?\/?$/);
+      if (blogPath && read) return await blogPage(req, res, blogPath[1] || null);
+      const cityPath = pathname.match(/^\/(?:api\/city\/)?([a-z-]{1,40})\/([a-z0-9-]{2,60})\/?$/);
+      if (cityPath && read && SPORT_PAGES[cityPath[1]]) return await cityPage(req, res, cityPath[1], cityPath[2]);
       // Sport landing pages: /badminton, /pickleball, … and the /sports hub.
       const sportPath = pathname.match(/^\/(?:api\/sport(?:\/([a-z-]{1,40}))?|sports|([a-z-]{1,40}))\/?$/);
       if (sportPath && read && (sportPath[1] || sportPath[2] || /sport/.test(pathname)) && await sportPage(req, res, sportPath[1] || sportPath[2] || null)) return;

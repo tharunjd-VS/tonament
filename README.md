@@ -152,14 +152,20 @@ server/
   auth.js             sign up / sign in, password hashing, sessions, password reset
   email.js            Resend sender and email templates (invites, resets, receipts)
   billing.js          Razorpay orders, signature checks, billing settings
-  formats.js          round-robin, snake groups, bracket seeding, standings (works for any sport)
+  formats.js          re-exports public/formats.js: round-robin, snake groups, bracket seeding, standings
+  pages.js            server-rendered pages: tournaments, sports, cities, clubs, players, rankings, blog
+  tools-pages.js      the free fixture tools' pages (/tools/*)
+  blog.js             blog posts from content/blog/*.md (front matter + a small Markdown renderer)
   db.js               Postgres (pg) or embedded PGlite, plus the schema
   sports/<sport>.js   re-exports public/sports/<sport>.js (the scoring rules, shared with the browser)
   sports/index.js     sport registry
 public/               single-page front end (plain JS, no build step)
   brand/              logos, app icons, email logo, link-preview image
   fonts/              Outfit (self-hosted)
+  formats.js          draw logic shared by the server and the free fixture tools (tools.js)
+content/blog/         blog posts, one Markdown file each (see docs/BLOG.md)
 docs/BRAND.md         brand guidelines
+docs/BLOG.md          how to write a blog post
 scripts/brand/        logo generator and PNG renderer
 test/                 unit and integration tests
 vercel.json           Vercel config: static output and API rewrite

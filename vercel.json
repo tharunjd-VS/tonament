@@ -3,7 +3,9 @@
   "buildCommand": "",
   "outputDirectory": "public",
   "cleanUrls": true,
-  "regions": ["sin1"],
+  "regions": [
+    "sin1"
+  ],
   "rewrites": [
     {
       "source": "/t/:path*",
@@ -16,6 +18,34 @@
     {
       "source": "/:sport(badminton|pickleball|table-tennis|squash|tennis|padel|volleyball|beach-volleyball|throwball|sepak-takraw|snooker|pool|carrom|football|futsal|hockey|kabaddi|basketball)",
       "destination": "/api/index?__path=sport/:sport"
+    },
+    {
+      "source": "/tools",
+      "destination": "/api/index?__path=tools"
+    },
+    {
+      "source": "/tools/:slug([a-z-]+)",
+      "destination": "/api/index?__path=tools/:slug"
+    },
+    {
+      "source": "/blog",
+      "destination": "/api/index?__path=blog"
+    },
+    {
+      "source": "/blog/rss.xml",
+      "destination": "/api/index?__path=blog/rss.xml"
+    },
+    {
+      "source": "/blog/tag/:tag([a-z0-9-]+)",
+      "destination": "/api/index?__path=blog/tag/:tag"
+    },
+    {
+      "source": "/blog/:slug([a-z0-9-]+)",
+      "destination": "/api/index?__path=blog/:slug"
+    },
+    {
+      "source": "/:sport(badminton|pickleball|table-tennis|squash|tennis|padel|volleyball|beach-volleyball|throwball|sepak-takraw|snooker|pool|carrom|football|futsal|hockey|kabaddi|basketball)/:city([a-z0-9-]+)",
+      "destination": "/api/index?__path=city/:sport/:city"
     },
     {
       "source": "/sports",
@@ -77,7 +107,7 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 10,
-      "includeFiles": "public/index.html"
+      "includeFiles": "{public/index.html,content/**}"
     }
   }
 }

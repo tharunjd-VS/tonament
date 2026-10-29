@@ -385,6 +385,23 @@ function createOrgs({ db, fail, text, imageType, maxImageBytes, mediaUrl, billin
     return { ...fields(o), ...(await mediaOf(db.query, o)), tournaments: await orgCards(db.query, o.id, { includePrivate: false }) };
   }
 
+  // Public academy and venue pages for a sport in a city (the /<sport>/<city> pages).
+  async function inCity(sport, city) {
+    const rows = await db.query(
+      `SELECT slug, name, kind, city, region FROM orgs WHERE paid_until > now() - interval '${GRACE_DAYS} days'
+       AND $1 = ANY(sports) AND lower(city) = lower($2) ORDER BY name LIMIT 30`,
+      [sport, city],
+    );
+    return rows.map((o) => ({ slug: o.slug, name: o.name, kindName: KIND_NAMES[o.kind] || 'Academy', city: o.city, region: o.region }));
+  }
+  // [{ sport, city, n }]: public pages per sport and city.
+  async function cityCounts() {
+    return db.query(
+      `SELECT s AS sport, min(city) AS city, COUNT(*)::int AS n FROM orgs, unnest(sports) AS s
+       WHERE paid_until > now() - interval '${GRACE_DAYS} days' AND COALESCE(city, '') <> '' GROUP BY s, lower(city)`,
+    );
+  }
+
   async function sitemapOrgs() {
     const rows = await db.query(`SELECT slug, paid_until FROM orgs WHERE paid_until > now() - interval '${GRACE_DAYS} days' ORDER BY slug`);
     return rows.map((r) => ({ path: `/@${r.slug}`, lastmod: new Date().toISOString().slice(0, 10) }));
@@ -452,7 +469,7 @@ function createOrgs({ db, fail, text, imageType, maxImageBytes, mediaUrl, billin
 
   return {
     GRACE_DAYS, KIND_NAMES, slugOf, createOrg, slugStatus, getOrg, mine, updateOrg, uploadMedia, deleteMedia, getMedia, addMember, removeMember,
-    checkout, applyPayment, takeBackYear, linkTournament, forTournament, page, sitemapOrgs, adminOrgs, adminUpdate, adminDelete,
+    checkout, applyPayment, takeBackYear, linkTournament, forTournament, page, sitemapOrgs, inCity, cityCounts, adminOrgs, adminUpdate, adminDelete,
   };
 }
 

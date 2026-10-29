@@ -23,7 +23,9 @@
     connected: false,
     seq: 0, // bumped on every change we make, so stale poll results are dropped
     offline: false, // scoring requests are waiting for the connection to come back
-    draft: '',
+    // Names from a free fixture tool (/tools, "Run this live"), waiting in the add-players box.
+    // (Kept until they're added, so it survives signing up on the way.)
+    draft: (() => { try { return sessionStorage.getItem('tonament:tool-names') || ''; } catch (e) { return ''; } })(),
     pendingRender: false,
     pendingCheckIns: new Map(), // entry id -> here, shown at once while the server saves it
     checkAllBusy: false,
@@ -859,7 +861,7 @@
         chips: ['Your format', 'Change anything on the day', 'Live for everyone'],
         actions: [
           h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'),
+          h('a', { class: 'btn btn-lg btn-ghost', href: '/blog/from-paper-to-live' }, 'See how it compares'),
         ],
         visual: paperApp(),
       },
@@ -992,7 +994,7 @@
   }
 
   function viewHome() {
-    document.title = 'Tonament — One platform. Every sport. Every tournament.';
+    document.title = 'Tournament App with Live Scoring — Badminton, Pickleball & 16 More Sports | Tonament';
     const explore = (e) => {
       e.preventDefault();
       document.getElementById('all-tournaments')?.scrollIntoView({ behavior: 'smooth' });
@@ -2036,6 +2038,7 @@
         act(async () => {
           S.t = await api('POST', `${tPath(t)}/entries`, withEv(t, { names, walkIn, level }), t.id);
           S.draft = '';
+          try { sessionStorage.removeItem('tonament:tool-names'); } catch (e2) { /* fine */ }
         }, `Added ${names.length} ${names.length === 1 ? 'entry' : 'entries'}`);
       },
     },

@@ -1033,6 +1033,27 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return rows.map((r) => ({ path: `/t/${r.id}`, lastmod: new Date(r.lastmod).toISOString().slice(0, 10) }));
   }
 
+  // Cities worth a page of their own (/<sport>/<city>): at least 2 public
+  // tournaments in the last year (or coming up), or a public venue/academy page.
+  // [{ sport, city, tournaments, orgs }], busiest first.
+  async function cityPlaces() {
+    const rows = await db.query(
+      `SELECT t.sport, min(t.city) AS city, COUNT(*)::int AS n FROM tournaments t
+       WHERE t.visibility = 'public' AND COALESCE(t.city, '') <> ''
+         AND COALESCE(t.ends_on, t.starts_on, to_char(t.created_at, 'YYYY-MM-DD')) > to_char(now() - interval '365 days', 'YYYY-MM-DD')
+       GROUP BY t.sport, lower(t.city)`,
+    );
+    const key = (sport, city) => `${sport}|${city.toLowerCase()}`;
+    const out = new Map();
+    for (const r of rows) out.set(key(r.sport, r.city), { sport: r.sport, city: r.city, tournaments: r.n, orgs: 0 });
+    for (const r of await orgs.cityCounts()) {
+      const k = key(r.sport, r.city);
+      out.set(k, { ...(out.get(k) || { sport: r.sport, city: r.city, tournaments: 0 }), orgs: r.n });
+    }
+    return [...out.values()].filter((x) => sports.get(x.sport) && (x.tournaments >= 2 || x.orgs >= 1))
+      .sort((a, b) => b.tournaments + b.orgs - (a.tournaments + a.orgs) || a.city.localeCompare(b.city));
+  }
+
   // ---------- tournaments
 
   // Find public tournaments. Filters (all optional): country, region, city,
@@ -3537,6 +3558,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     sharePreview,
     tournamentPage,
     sitemapTournaments,
+    cityPlaces,
     queueMatch,
     deleteEvent,
     reorderEvents,

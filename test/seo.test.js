@@ -78,7 +78,7 @@ test('a public tournament page: details, preview tags and event data', async () 
   for (const text of ['City Sports Hall', '19th Cross Street', 'Men&#39;s Singles', 'Winner: ₹5,000 + Trophy', 'Drinking water', 'Our yearly &lt;/script&gt; open.']) {
     assert.ok(html.includes(text), text);
   }
-  assert.ok(!html.includes('Run your tournament. Score every point live.')); // not the home page's content
+  assert.ok(!html.includes('Flexible as paper. Easy as an app.')); // not the home page's content
 
   const data = ld(html);
   assert.equal(data['@type'], 'SportsEvent');
@@ -173,7 +173,7 @@ test('sitemap, robots.txt, app routes and real 404s', async () => {
     assert.ok(page.html.includes('<script src="/app.js"></script>'), path);
   }
   const home = await get('/');
-  assert.match(home.html, /<h1>Run your tournament\. Score every point live\.<\/h1>/);
+  assert.match(home.html, /<h1>Flexible as paper\. Easy as an app\.<\/h1>/);
   assert.match(home.html, /"@type":"Organization"/);
   const nope = await get('/no-such-page');
   assert.equal(nope.res.status, 404);
@@ -209,8 +209,8 @@ test('How it works and FAQ pages', async () => {
 
   const faq = await get('/faq');
   assert.equal(faq.res.status, 200);
-  const data = ld(faq.html);
-  assert.equal(data['@type'], 'FAQPage');
+  const data = [...faq.html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)].map((m) => JSON.parse(m[1])).find((x) => x['@type'] === 'FAQPage');
+  assert.ok(data, 'FAQPage data');
   const questions = [...faq.html.matchAll(/<summary>([^<]+)<\/summary>/g)].map((m) => m[1]);
   assert.equal(data.mainEntity.length, questions.length);
   assert.ok(questions.length >= 20);
