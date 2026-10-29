@@ -335,9 +335,9 @@
       h('div', { class: 'sheet action-sheet' },
         h('h2', {}, title),
         h('div', { class: 'sheet-actions' }, list.map((it) => h('button', {
-          type: 'button', class: `sheet-action${it.danger ? ' danger' : ''}`,
-          onclick: () => { close(); it.onClick(); },
-        }, h('span', {}, it.label), it.hint ? h('small', { class: 'muted' }, it.hint) : null))),
+          type: 'button', class: `sheet-action${it.danger ? ' danger' : ''}${it.current ? ' current' : ''}`, 'aria-current': it.current ? 'true' : null,
+          onclick: () => { close(); if (!it.current) it.onClick(); },
+        }, h('span', {}, it.dot ? h('span', { class: `dot ${it.dot}`, 'aria-hidden': 'true' }) : null, it.label, it.current ? ' ✓' : null), it.hint ? h('small', { class: 'muted' }, it.hint) : null))),
         h('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel')));
     document.body.append(box);
     document.addEventListener('keydown', onKey);
@@ -1819,36 +1819,46 @@
   }
 
   // ---------- tournament page
+  // Short names with icons: on phones they're a bar at the bottom of the screen.
   function tabsFor(t) {
-    if (t.status === 'setup') return [{ id: 'entries', label: 'Entries' }];
-    const tabs = [{ id: 'live', label: 'Live & results' }];
-    if (t.format !== 'knockout') tabs.push({ id: 'groups', label: 'Groups' });
-    if (t.format !== 'league') tabs.push({ id: 'bracket', label: 'Knockout' });
-    tabs.push({ id: 'entries', label: 'Players' });
-    return tabs;
+    if (t.status === 'setup') return [{ id: 'entries', label: 'Entries', icon: 'tab-entries' }];
+    return [
+      { id: 'live', label: 'Live', icon: 'tab-live' },
+      // Groups and the knockout bracket together.
+      { id: 'draw', label: t.format === 'league' ? 'Groups' : t.format === 'knockout' ? 'Bracket' : 'Draw', icon: 'tab-draw' },
+      { id: 'entries', label: 'Players', icon: 'tab-players' },
+    ];
   }
 
   function tabsWithTeam(t) {
     const tabs = tabsFor(t);
-    if (t.courts) tabs.push({ id: 'courts', label: CAT.courtWords(t.sport.id) });
-    if (hasPage(t)) tabs.push({ id: 'about', label: 'About' });
+    if (t.courts) tabs.push({ id: 'courts', label: CAT.courtWords(t.sport.id), icon: 'tab-courts' });
+    if (hasPage(t)) tabs.push({ id: 'about', label: 'About', icon: 'tab-about' });
     // Every setting lives on one Setup tab (events, format, details & fees, prizes, page, team).
-    if (t.can.manage) tabs.push({ id: 'setup', label: 'Setup' });
+    if (t.can.manage) tabs.push({ id: 'setup', label: 'Setup', icon: 'tab-setup' });
     return tabs;
   }
+  // Old addresses: /groups and /bracket are the two views of Draw.
+  const DRAW_VIEWS = { groups: 'groups', bracket: 'knockout' };
 
-  // Chips to switch event; only shown when there's more than one.
+  // The event you're looking at, and a button to switch (only with more than one).
   function eventPicker(t, current) {
     if (!multiEvent(t)) return null;
-    return h('nav', { class: 'event-picker', 'aria-label': 'Events' },
-      t.events.map((ev) => h('a', {
-        class: `event-chip${ev.id === current.id ? ' active' : ''}`,
-        href: `/t/${t.id}/${S.route.tab && !['events', 'team', 'courts', 'about'].includes(S.route.tab) ? S.route.tab : 'entries'}?e=${ev.id}${S.route.tab === 'setup' && S.route.section ? `&s=${S.route.section}` : ''}`,
-        'aria-current': ev.id === current.id ? 'true' : null,
+    const href = (ev) => `/t/${t.id}/${S.route.tab && !['events', 'team', 'courts', 'about'].includes(S.route.tab) ? S.route.tab : 'entries'}?e=${ev.id}${S.route.tab === 'setup' && S.route.section ? `&s=${S.route.section}` : ''}`;
+    const count = (ev) => `${ev.entries.length} ${ev.discipline === 'team' ? (ev.entries.length === 1 ? 'team' : 'teams') : ev.entries.length === 1 ? 'entry' : 'entries'}`;
+    const ev = current;
+    return h('div', { class: 'event-picker' },
+      h('button', {
+        type: 'button', class: 'event-switch', 'aria-haspopup': 'dialog', 'aria-label': `Event: ${ev.name}. Switch event`,
+        onclick: () => actionSheet('Switch event', t.events.map((x) => ({
+          label: x.name, hint: `${STATUS[x.status]} · ${count(x)}`, current: x.id === ev.id, dot: x.status,
+          onClick: () => navigate(href(x)),
+        }))),
       },
       h('span', { class: `dot ${ev.status}`, 'aria-hidden': 'true' }),
-      h('span', { class: 'event-chip-name' }, ev.name),
-      h('span', { class: 'event-chip-count' }, ev.entries.length))));
+      h('strong', { class: 'event-switch-name' }, ev.name),
+      h('span', { class: 'event-switch-more' }, `${t.events.length} events ▾`)),
+      h('p', { class: 'muted small event-line' }, [ev.formatName, count(ev), ev.fee ? `${money(ev.fee)} entry` : null, prizeMoney(ev) ? `🏆 ${rupees(prizeMoney(ev))} in prizes` : null, ev.status !== 'setup' ? STATUS[ev.status] : null].filter(Boolean).join(' · ')));
   }
 
   function viewTournament() {
@@ -1859,8 +1869,9 @@
     const tabs = tabsWithTeam(t);
     // Old addresses (/team, /events) open the matching part of Setup.
     if ((S.route.tab === 'team' || S.route.tab === 'events') && t.can.manage) { S.route.section = S.route.tab; S.route.tab = 'setup'; }
+    if (DRAW_VIEWS[S.route.tab]) { S.drawView = DRAW_VIEWS[S.route.tab]; S.route.tab = 'draw'; }
     const active = tabs.some((x) => x.id === S.route.tab) ? S.route.tab : tabs[0].id;
-    const panels = { entries: panelEntries, live: panelLive, groups: panelGroups, bracket: panelBracket, setup: panelSetup, about: panelAbout, courts: () => panelCourts(tt) };
+    const panels = { entries: panelEntries, live: panelLive, draw: panelDraw, setup: panelSetup, about: panelAbout, courts: () => panelCourts(tt) };
     const perEvent = active === 'setup' ? SETUP_PER_EVENT.includes(setupSection(t)) : !['about', 'courts'].includes(active);
     const statusLine = multiEvent(tt) ? (tt.entriesOpen ? 'Entries open' : null) : entryStatusLine(t);
     const b = tt.branding;
@@ -1880,10 +1891,9 @@
       roleBar(t),
       tt.visibility === 'private' && !(active === 'entries' && checklistOn(t)) ? visibilityBanner(t) : null,
       perEvent ? eventPicker(tt, ev) : null,
-      h('nav', { class: 'tabs' }, tabs.map((x) => h('a', { href: tabHref(t, x.id), class: x.id === active ? 'active' : '' }, x.label))),
-      perEvent && multiEvent(tt)
-        ? h('p', { class: 'event-title' }, h('strong', {}, ev.name), ' · ', ev.formatName, ev.fee ? ` · ${money(ev.fee)} entry` : '', prizeMoney(ev) ? ` · 🏆 ${rupees(prizeMoney(ev))} in prizes` : '', ev.status !== 'setup' ? ` · ${STATUS[ev.status]}` : '')
-        : null,
+      h('nav', { class: `tabs t-tabs${tabs.length > 1 ? ' bar' : ''}`, 'aria-label': 'Tournament' }, tabs.map((x) => h('a', {
+        href: tabHref(t, x.id), class: x.id === active ? 'active' : '', 'aria-current': x.id === active ? 'page' : null,
+      }, icon(x.icon), h('span', {}, x.label)))),
       h('section', {}, panels[active](t)),
       brandFooter(tt),
     ];
@@ -2049,7 +2059,7 @@
         h('span', {}, poolMeetings(pools)),
         swap ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => save({ poolOrder: swap }, 'Pairings swapped') }, 'Swap pairings') : null) : null,
       mode && t.status === 'setup' && none ? h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'Tap a level next to each player in the list. Everyone needs one before you start.') : null,
-      mode && t.status === 'league' ? h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'Wrong level? Move them on the Groups tab until their group starts playing.') : null);
+      mode && t.status === 'league' ? h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'Wrong level? Move them on the Draw tab until their group starts playing.') : null);
   }
   // One-tap level buttons on an entry (organisers, before the draw).
   function levelChips(t, e) {
@@ -3148,6 +3158,8 @@
     h('span', { class: 'muted small' }, ' Show courts, scores and what\'s next on a TV or projector. ',
       t.official ? null : t.whiteLabel ? 'Your logo and sponsors lead, with a small "Powered by Tonament".' : 'Your own logo and sponsors on the display come with the Open plan.'));
 
+  const displayLinkInline = (t) => h('a', { href: `/t/${t.id}/display`, target: '_blank', rel: 'noopener' }, '📺 Venue display');
+
   function panelLive(t) {
     const ms = t.matches.filter((m) => m.status !== 'bye');
     const live = ms.filter((m) => m.status === 'live').sort(byOrder);
@@ -3157,10 +3169,8 @@
     const results = ms.filter((m) => m.status === 'done')
       .sort((x, y) => (y.updatedAt || '').localeCompare(x.updatedAt || '') || y.id - x.id).slice(0, 12);
     return [
-      t.can.manage ? displayLink(t) : null,
       championBanner(t),
-      stageBanner(t),
-      redrawCard(t),
+      t.can.manage ? nextStepCard(t) : stageBanner(t),
       matchSection(t, 'On court now', live, 'No matches in progress.', true),
       upcoming.length || t.status !== 'completed' ? matchSection(t, 'Up next', upcoming, 'Nothing scheduled right now.') : null,
       matchSection(t, 'Latest results', results, 'No results yet.'),
@@ -3464,21 +3474,76 @@
           h('div', { class: 'dc-foot-cta' }, h('span', {}, 'Run your own tournament — free'), 'Entries, draws and live scores')));
   }
 
-  // Redo the draw (e.g. more players arrived) until the first point is played.
-  function redrawCard(t) {
-    if (!t.can.manage) return null;
-    const canRedraw = (t.status === 'league' || (t.status === 'knockout' && t.format === 'knockout'))
-      && !t.matches.some((m) => m.rallies > 0 || m.walkover);
-    if (!canRedraw) return null;
-    return h('div', { class: 'banner info' },
-      h('span', {}, h('strong', {}, 'More players just arrived? '), 'You can redo the draw until the first point is played.'),
-      h('button', {
-        class: 'btn btn-small',
-        onclick: () => {
-          if (!confirm('Redo the draw? All fixtures are removed and you go back to the entry list to add players and start again.')) return;
-          act(async () => { S.t = await api('POST', `${tPath(t)}/redraw`, withEv(t), t.id); navigate(tabHref(t, 'entries')); }, 'Draw undone — add players and start again');
-        },
-      }, 'Redraw'));
+  // Organisers: the one thing to do now, as the day goes on — call the next
+  // match, draw the knockout, move on to the next event — with the progress.
+  function nextStepCard(t) {
+    const ms = t.matches.filter((m) => m.status !== 'bye');
+    const done = ms.filter((m) => m.status === 'done').length;
+    const stage = t.status === 'league' ? 'League stage' : t.status === 'knockout' ? 'Knockout' : null;
+    const others = t.events.filter((e) => e.id !== t.eventId && e.status !== 'completed');
+    const otherEvent = others.find((e) => e.status === 'setup' && e.entries.length >= 2) || others[0];
+    const goTo = (e) => h('a', { class: 'btn btn-small', href: `/t/${t.id}/${e.status === 'setup' ? 'entries' : 'live'}?e=${e.id}` }, e.status === 'setup' ? `Set up ${e.name}` : `Go to ${e.name}`);
+    let title;
+    let text = null;
+    let action = null;
+    const leagueDone = t.status === 'league' && t.format === 'league_knockout' && ms.filter((m) => m.stage === 'league').every((m) => m.status === 'done');
+    if (t.status === 'completed') {
+      if (!otherEvent) return null;
+      title = `${t.event.name} is finished`;
+      text = otherEvent.status === 'setup' ? `${otherEvent.name} hasn't started yet.` : `${otherEvent.name} is still playing.`;
+      action = goTo(otherEvent);
+    } else if (leagueDone) {
+      title = 'Draw the knockout bracket';
+      text = [`Every group match is played. The top ${t.config.qualifiers} from each group go through.`,
+        poolsOn(t) && poolList(t).length > 1 ? ` Level pools: ${poolMeetings(poolList(t))}.` : ''].join('');
+      action = h('button', {
+        class: 'btn btn-primary',
+        onclick: () => act(async () => {
+          S.t = await api('POST', `${tPath(t)}/knockout`, withEv(t), t.id);
+          S.drawView = 'knockout';
+          navigate(tabHref(t, 'draw'));
+        }, 'Knockout bracket drawn'),
+      }, 'Draw knockout bracket');
+    } else if (t.courts) {
+      const plan = TonamentSchedule.orderOfPlay({ events: t.events, courts: t.courts.names, minutes: t.courts.minutes, now: Date.now() });
+      const free = plan.courts.find((c) => !c.match && c.next);
+      if (free) {
+        title = `${free.name} is free`;
+        text = `Next up: ${vsName(free.next.match)}${multiEvent(t) ? ` (${free.next.event.name})` : ''}.`;
+        action = h('button', {
+          class: 'btn btn-primary',
+          onclick: () => act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${free.next.match.id}/call`, { court: free.name }, t.id); }, `${vsName(free.next.match)} called to ${free.name}`),
+        }, `Call to ${free.name}`);
+      } else {
+        const busy = plan.courts.filter((c) => c.match).length;
+        title = busy ? `${busy} of ${plan.courts.length} ${CAT.courtWord(t.sport.id).toLowerCase()}${plan.courts.length === 1 ? '' : 's'} in use` : 'Nothing ready to call';
+        text = plan.queue.length ? `Next up: ${vsName(plan.queue[0].match)}${plan.queue[0].waitingFor.length ? ` — waiting for ${waitingText(plan.queue[0].waitingFor)}` : ''}.` : 'Waiting for matches to finish.';
+        action = h('a', { class: 'btn btn-small', href: `/t/${t.id}/courts` }, `Open ${CAT.courtWords(t.sport.id)}`);
+      }
+    } else {
+      const live = ms.filter((m) => m.status === 'live');
+      const next = ms.filter((m) => m.status === 'scheduled' && m.a && m.b).sort((x, y) => Number(y.catchUp) - Number(x.catchUp) || byOrder(x, y))[0];
+      title = next ? `Next match: ${vsName(next)}` : live.length ? `${live.length} match${live.length === 1 ? '' : 'es'} on now` : 'Waiting for the next round';
+      text = next ? [matchLabel(next), live.length ? `${live.length} on now` : null].filter(Boolean).join(' · ') : null;
+      action = next ? h('a', { class: 'btn btn-primary', href: `/t/${t.id}/m/${next.id}` }, 'Score it') : null;
+    }
+    const canRedraw = (t.status === 'league' || (t.status === 'knockout' && t.format === 'knockout')) && !ms.some((m) => m.rallies > 0 || m.walkover);
+    return h('div', { class: 'card next-step' },
+      h('p', { class: 'eyebrow' }, 'Next step'),
+      h('h2', {}, title),
+      text ? h('p', { class: 'muted small' }, text) : null,
+      action ? h('div', { class: 'actions' }, action, t.status !== 'completed' && otherEvent && otherEvent.status === 'setup' ? goTo(otherEvent) : null) : null,
+      stage ? h('p', { class: 'muted small next-progress' }, `${stage} · ${done} of ${ms.length} played`,
+        h('span', { class: 'progress' }, h('span', { style: `width:${ms.length ? (done / ms.length) * 100 : 0}%` }))) : null,
+      h('p', { class: 'next-links small' },
+        displayLinkInline(t),
+        canRedraw ? h('button', {
+          class: 'link-btn small', type: 'button',
+          onclick: () => {
+            if (!confirm('Redo the draw? All fixtures are removed and you go back to the entry list to add players and start again.')) return;
+            act(async () => { S.t = await api('POST', `${tPath(t)}/redraw`, withEv(t), t.id); navigate(tabHref(t, 'entries')); }, 'Draw undone — add players and start again');
+          },
+        }, 'More players arrived? Redraw') : null));
   }
 
   function championBanner(t) {
@@ -3503,7 +3568,8 @@
             class: 'btn btn-primary',
             onclick: () => act(async () => {
               S.t = await api('POST', `${tPath(t)}/knockout`, withEv(t), t.id);
-              navigate(tabHref(t, 'bracket'));
+              S.drawView = 'knockout';
+              navigate(tabHref(t, 'draw'));
             }, 'Knockout bracket drawn'),
           }, 'Draw knockout bracket')
           : h('span', { class: 'muted' }, 'Waiting for the organiser to draw the bracket.'));
@@ -3668,6 +3734,20 @@
   }
 
   // ----- knockout tab
+  // Groups and the knockout bracket; League + Knockout switches between them.
+  function panelDraw(t) {
+    if (t.format === 'league') return panelGroups(t);
+    if (t.format === 'knockout') return panelBracket(t);
+    const view = S.drawView || (t.matches.some((m) => m.stage === 'knockout') ? 'knockout' : 'groups');
+    return [
+      h('div', { class: 'seg draw-seg', role: 'group', 'aria-label': 'Show' }, [['groups', 'Groups'], ['knockout', 'Knockout']].map(([v, label]) => h('button', {
+        type: 'button', class: v === view ? 'active' : '', 'aria-pressed': String(v === view),
+        onclick: () => { S.drawView = v; render(); },
+      }, label))),
+      view === 'knockout' ? panelBracket(t) : panelGroups(t),
+    ];
+  }
+
   function panelBracket(t) {
     const ko = t.matches.filter((m) => m.stage === 'knockout');
     if (!ko.length) {
@@ -3735,7 +3815,7 @@
     const m = withPending(t, confirmed);
     if (pendingOps(m.id).length && !sending.has(m.id)) sendQueue(t, m.id); // resume after navigating away
     document.title = `${nameOf(m.a)} v ${nameOf(m.b)} · ${t.name}`;
-    const backTab = m.stage === 'knockout' ? 'bracket' : 'live';
+    const backTab = m.stage === 'knockout' ? 'draw' : 'live';
     return [
       h('a', { class: 'back', href: tabHref(t, backTab) }, `← ${t.name}${multiEvent(t) ? ` · ${t.event.name}` : ''}`),
       h('div', { class: 'match-head' },

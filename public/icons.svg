@@ -80,4 +80,20 @@
     <circle cx="7.5" cy="4.8" r="2"/><path d="M8.2 7.6 10 13l3.8 2.6M10 13l-3.4 7M8.7 9.4l5.6-2.2"/><path d="M19 3v18" stroke-dasharray="2 2.6"/></g></symbol>
   <symbol id="basketball" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3v18M5.6 5.6c2.4 2.4 2.4 10.4 0 12.8M18.4 5.6c-2.4 2.4-2.4 10.4 0 12.8"/></g></symbol>
+
+  <!-- Tournament tabs (the bottom bar on phones) -->
+  <symbol id="tab-live" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2.5 12h4l2.5-6 4 12 2.5-6h6"/></g></symbol>
+  <symbol id="tab-draw" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 4.5h5v5H3M3 14.5h5v5H3M8 7h3v10H8M11 12h3"/><path d="M14 9.5h5v5h-5z"/></g></symbol>
+  <symbol id="tab-players" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="9" cy="8" r="3.2"/><path d="M3 19.5c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M15.5 4.9a3.2 3.2 0 0 1 0 6.2M17.5 14.3c2 .7 3.5 2.6 3.5 5.2"/></g></symbol>
+  <symbol id="tab-courts" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3.5" y="3" width="17" height="18" rx="1.5"/><path d="M3.5 12h17M7.5 3v18M16.5 3v18"/></g></symbol>
+  <symbol id="tab-about" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/></g></symbol>
+  <symbol id="tab-setup" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></g></symbol>
+  <symbol id="tab-entries" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></g></symbol>
 </svg>
