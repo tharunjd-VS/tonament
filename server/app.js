@@ -203,6 +203,12 @@ ${meta('name', 'twitter:image', base + image.path)}
 `;
 }
 
+// The phone's own id (the app keeps one per device), for "one phone scores a match".
+const deviceOf = (req) => {
+  const d = req.headers['x-device'];
+  return typeof d === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(d) ? d : null;
+};
+
 function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
   const svc = createService(db, { mailer, fetchImpl });
   const auth = createAuth(db, { mailer, onSignup: (q, user, ref) => svc.referrals.attach(q, user, ref) });
@@ -278,6 +284,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${T}/matches/${N}/rally`, (c, id, mid) => svc.rally(id, c.actor, mid, c.body.side, c.body.at, { points: c.body.points, foul: c.body.foul, end: c.body.end })],
     ['POST', `${T}/matches/${N}/result`, (c, id, mid) => svc.setResult(id, c.actor, mid, c.body.games, c.body.at)],
     ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid, c.body.at)],
+    ['POST', `${T}/matches/${N}/takeover`, (c, id, mid) => svc.takeOverScoring(id, c.actor, mid)],
 
     ['GET', '/api/auth/me', async (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled, gift: c.actor.user ? await svc.referrals.welcomeFor(c.actor.user) : null })],
     ['POST', '/api/auth/forgot', async (c) => {
@@ -782,7 +789,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
           // Public (cacheable) responses never depend on who is asking.
           ctx.actor = cache
             ? { user: null, key: null }
-            : { user: await auth.userFromRequest(req), key: req.headers['x-admin-key'] || null };
+            : { user: await auth.userFromRequest(req), key: req.headers['x-admin-key'] || null, device: deviceOf(req) };
           const result = await route.handler(ctx, ...m.slice(1));
           // A file download (e.g. the payments CSV) instead of JSON.
           if (result && result.download) {

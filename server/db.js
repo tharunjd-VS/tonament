@@ -498,11 +498,16 @@ CREATE TABLE IF NOT EXISTS plan_credits (
   UNIQUE (user_id, reason, friend_id)
 );
 CREATE INDEX IF NOT EXISTS plan_credits_user ON plan_credits(user_id, used_at);
+-- v32: one phone scores a match at a time. The device that's scoring it (an
+-- id the app keeps on the phone), who that is, and when it last scored.
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS scorer_device TEXT;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS scorer_name TEXT;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS scorer_seen_at TIMESTAMPTZ;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 31;
+const SCHEMA_VERSION = 32;
 
 async function migrate(db) {
   try {

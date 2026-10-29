@@ -580,6 +580,35 @@ test('scoring with the expected rally count rejects stale or repeated requests',
   assert.equal((await svc.rally(id, OWNER, m.id, 'b')).log, 'ab');
 });
 
+test('one phone scores a match at a time: the other is turned away until it takes over', async () => {
+  const { id } = await svc.createTournament(OWNER, { visibility: 'public', name: 'One Phone', format: 'knockout' });
+  await svc.addEntries(id, OWNER, ['A', 'B']);
+  const [m] = (await svc.start(id, OWNER)).matches;
+  const phone1 = { ...OWNER, device: 'phone-one-1234' };
+  const phone2 = { ...OWNER, device: 'phone-two-5678' };
+  const umpireLink = { user: null, key: (await db.query('SELECT scorer_key FROM tournaments WHERE id = $1', [id]))[0].scorer_key, device: 'borrowed-phone-99' };
+  let r = await svc.rally(id, phone1, m.id, 'a', 0);
+  assert.deepEqual(r.scorer, { name: 'Owner', device: 'phone-one-1234' });
+  // Phone 2 can't add a point, undo, or enter a result while phone 1 is scoring.
+  await assert.rejects(svc.rally(id, phone2, m.id, 'b', 1), (err) => err.status === 409 && err.code === 'claimed' && /Owner is scoring this match/.test(err.message));
+  await assert.rejects(svc.undo(id, phone2, m.id, 1), (err) => err.code === 'claimed');
+  await assert.rejects(svc.setResult(id, umpireLink, m.id, [{ a: 21, b: 10 }], 1), (err) => err.code === 'claimed');
+  r = await svc.rally(id, phone1, m.id, 'b', 1); // phone 1 carries on
+  assert.equal(r.log, 'ab');
+  // The scorer-link phone takes over: now phone 1 is turned away.
+  r = await svc.takeOverScoring(id, umpireLink, m.id);
+  assert.deepEqual(r.scorer, { name: 'A scorer-link phone', device: 'borrowed-phone-99' });
+  await assert.rejects(svc.rally(id, phone1, m.id, 'a', 2), (err) => err.code === 'claimed');
+  r = await svc.rally(id, umpireLink, m.id, 'a', 2);
+  assert.equal(r.log, 'aba');
+  // A phone that's gone quiet for 3 minutes lets go on its own.
+  await db.query(`UPDATE matches SET scorer_seen_at = now() - interval '4 minutes' WHERE id = $1`, [m.id]);
+  r = await svc.rally(id, phone2, m.id, 'b', 3);
+  assert.equal(r.scorer.device, 'phone-two-5678');
+  // An older app (no device id) is never blocked.
+  assert.equal((await svc.rally(id, OWNER, m.id, 'a', 4)).log, 'ababa');
+});
+
 // ---------- sport catalogue & requests
 
 test('sport catalogue lists playable and upcoming sports', async () => {

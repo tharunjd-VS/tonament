@@ -1419,3 +1419,7 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .run-your-own { text-align: center; margin: 22px 0 6px; }
 .invite-price { margin: 18px 0; border-color: var(--accent); }
 .invite-price h2 { margin-top: 0; }
+
+/* One phone scores a match at a time */
+.takeover-card { border-color: var(--accent); text-align: center; margin-bottom: 16px; }
+.takeover-card p { margin: 0 0 8px; }

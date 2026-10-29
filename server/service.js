@@ -619,6 +619,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
       score,
       summary: m.walkover ? 'Walkover' : m.retired ? `${t.sportDef.summary(score) || '0–0'} ret.` : t.sportDef.summary(score),
       updatedAt: m.updated_at,
+      // Who's scoring it right now (one phone at a time), while it's being scored.
+      scorer: m.status !== 'done' && m.status !== 'bye' && m.scorer_device && m.scorer_seen_at && Date.now() - Date.parse(m.scorer_seen_at) < CLAIM_MS
+        ? { name: m.scorer_name, device: m.scorer_device } : null,
     };
   }
 
@@ -866,6 +869,31 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const ids = [row.a_id, row.b_id].filter((x) => x != null);
     const rows = ids.length ? await q('SELECT id, name FROM entries WHERE id = ANY($1::int[])', [ids]) : [];
     return matchView(t, row, scoreOf(t, row), new Map(rows.map((e) => [e.id, e.name])));
+  }
+
+  // One phone scores a match at a time. The first device to score it holds it
+  // while points keep coming (CLAIM_MS); another device is turned away until
+  // someone there taps Take over. Requests without a device id (older app
+  // versions) aren't held to it.
+  const CLAIM_MS = 3 * 60 * 1000;
+  const claimHeld = (m, device) => Boolean(m.scorer_device && m.scorer_device !== device && m.scorer_seen_at && Date.now() - Date.parse(m.scorer_seen_at) < CLAIM_MS);
+  async function claimMatch(q, m, actor, { take = false } = {}) {
+    if (!actor.device) return;
+    if (claimHeld(m, actor.device) && !take) {
+      fail(409, `${m.scorer_name || 'Another phone'} is scoring this match on another phone — tap Take over to score it here`, 'claimed');
+    }
+    const name = actor.user ? actor.user.name : 'A scorer-link phone';
+    await q('UPDATE matches SET scorer_device = $1, scorer_name = $2, scorer_seen_at = now() WHERE id = $3', [actor.device, name, m.id]);
+  }
+  async function takeOverScoring(id, actor, mid) {
+    if (!actor.device) fail(400, 'Update the app to take over scoring');
+    return db.tx(async (q) => {
+      const { t: tournament } = await lockWith(q, id, actor, 'score');
+      const m = await matchOf(q, tournament, mid);
+      if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished');
+      await claimMatch(q, m, actor, { take: true });
+      return viewOfRow(q, await eventFor(q, tournament, m.event_id), (await q('SELECT * FROM matches WHERE id = $1', [m.id]))[0]);
+    });
   }
 
   // Scoring requests carry the rally count the device saw (`at`), so a retry
@@ -2747,6 +2775,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished');
       if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
       requireStageOpen(t, m);
+      await claimMatch(q, m, actor);
       checkAt(m, at);
 
       const tap = sports.tapFor(scoreOf(t, m), { ...extra, side });
@@ -2787,6 +2816,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished — undo the last point to change it');
       if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
       requireStageOpen(t, m);
+      await claimMatch(q, m, actor);
       checkAt(m, at);
       const built = fromScores((log) => scoreOf(t, m, log), games);
       if (built.error) fail(400, built.error);
@@ -2809,6 +2839,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const t = await eventFor(q, tournament, m.event_id);
       if (m.walkover) fail(409, 'Walkovers can\'t be undone');
       if (m.status === 'bye' || (!m.rallies && !m.retired)) fail(409, 'Nothing to undo');
+      await claimMatch(q, m, actor);
       checkAt(m, at);
       if (m.status === 'done' && m.stage === 'league') {
         if (t.status === 'knockout' || (t.status === 'completed' && t.format === 'league_knockout')) {
@@ -3545,6 +3576,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     groups,
     referrals,
     useCredit,
+    takeOverScoring,
     players: profiles,
     connectDupr,
     disconnectDupr,

@@ -70,8 +70,17 @@
     return el;
   }
 
+  // This phone's own id: one phone scores a match at a time (the server's "claim").
+  const DEVICE = (() => {
+    try {
+      let d = localStorage.getItem('tonament:device');
+      if (!d) { d = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join(''); localStorage.setItem('tonament:device', d); }
+      return d;
+    } catch { return `tab${Math.random().toString(36).slice(2, 14)}`; }
+  })();
+
   async function api(method, path, body, tid) {
-    const headers = {};
+    const headers = { 'X-Device': DEVICE };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const key = tid ? keys.get(tid) : null;
     if (key) headers['X-Admin-Key'] = key;
@@ -3502,6 +3511,21 @@
   function stageOpen(t, m) {
     return m.stage === 'league' ? t.status === 'league' : t.status === 'knockout';
   }
+  // Another phone is scoring this match right now: follow it, or take over on purpose.
+  const scoredElsewhere = (m) => Boolean(m.scorer && m.scorer.device !== DEVICE);
+  function takeOverCard(t, m) {
+    return h('div', { class: 'card takeover-card' },
+      h('p', {}, h('strong', {}, `${m.scorer.name} is scoring this match`), ' on another phone. The score here updates live.'),
+      h('p', { class: 'muted small' }, 'Only one phone scores a match at a time, so points are never counted twice. Taking over moves scoring to this phone — the other one stops.'),
+      h('button', {
+        class: 'btn btn-primary', type: 'button',
+        onclick: () => confirm(`Score this match on this phone instead? ${m.scorer.name}'s phone will stop scoring it.`) && act(async () => {
+          mergeMatch(await api('POST', `${tPath(t)}/matches/${m.id}/takeover`, {}, t.id));
+          render();
+        }, 'You\'re scoring this match now'),
+      }, 'Take over scoring'));
+  }
+
   function canScore(t, m) {
     return t.can.score && m.a && m.b && (m.status === 'scheduled' || m.status === 'live') && stageOpen(t, m);
   }
@@ -3526,7 +3550,7 @@
         h('span', {}, matchLabel(m)),
         h('span', { class: 'actions' }, connDot(), statusTag(m))),
       scoreboard(m),
-      canScore(t, m) ? scorer(t, m) : null,
+      canScore(t, m) && scoredElsewhere(m) ? takeOverCard(t, m) : canScore(t, m) ? scorer(t, m) : null,
       // The winning point may still be on its way: scorers see when it's saved.
       !canScore(t, m) && t.can.score && m.rallies ? syncLine(m) : null,
       t.can.score && m.status === 'done' && m.rallies
