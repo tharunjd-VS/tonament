@@ -43,6 +43,8 @@ test('catalogue: names, short names and validation', () => {
   assert.equal(catalog.eventName({ discipline: 'any', gender: 'open', age: 'Open', level: 'Open' }), 'Open');
   assert.equal(catalog.eventName({ discipline: 'singles', gender: 'men', age: 'Open', level: 'Open', name: 'Club Ladder' }), 'Club Ladder');
   assert.equal(catalog.shortName({ discipline: 'doubles', gender: 'mixed', age: 'U19', level: 'Advanced' }), 'XD U19 Adv');
+  assert.equal(catalog.shortName({ discipline: 'doubles', gender: 'men', age: 'Open', level: 'Beginner+' }), 'MD Beg+');
+  assert.equal(catalog.eventName({ discipline: 'doubles', gender: 'men', age: 'Open', level: 'Beginner+' }), 'Men\'s Doubles · Beginner+');
   assert.throws(() => catalog.normalize({ discipline: 'singles', gender: 'mixed' }), /doubles only/);
   assert.throws(() => catalog.normalize({ discipline: 'triples' }), /singles, doubles or team/);
   assert.deepEqual(catalog.normalize({ discipline: 'doubles', gender: 'men', age: 'u15', level: 'over 40 social' }), {

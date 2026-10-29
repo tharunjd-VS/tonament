@@ -85,7 +85,7 @@
 
   const GENDER_WORD = { men: 'Men\'s', women: 'Women\'s', mixed: 'Mixed', open: 'Open' };
   const DISCIPLINE_WORD = { singles: 'Singles', doubles: 'Doubles', team: 'Team' };
-  const SHORT_LEVEL = { Beginner: 'Beg', Intermediate: 'Int', Advanced: 'Adv' };
+  const SHORT_LEVEL = { Beginner: 'Beg', 'Beginner+': 'Beg+', Intermediate: 'Int', Advanced: 'Adv' };
 
   const clean = (v) => (typeof v === 'string' ? v.trim().replace(/\s+/g, ' ') : '');
 
