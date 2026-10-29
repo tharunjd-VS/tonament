@@ -73,7 +73,15 @@
     },
     {
       "source": "/club/:slug",
-      "destination": "/api/index?__path=app"
+      "destination": "/api/index?__path=clubpage/:slug"
+    },
+    {
+      "source": "/a/:id(\\d{1,12})",
+      "destination": "/api/index?__path=item/:id"
+    },
+    {
+      "source": "/img/:kind(a|club|p|t)/:file",
+      "destination": "/api/index?__path=img/:kind/:file"
     },
     {
       "source": "/me/profile",
@@ -119,7 +127,7 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 10,
-      "includeFiles": "{public/index.html,public/app.js,public/styles.css,content/**}"
+      "includeFiles": "{public/index.html,public/app.js,public/styles.css,public/brand/logo-white.svg,server/fonts/**,content/**}"
     }
   },
   "headers": [

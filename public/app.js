@@ -143,11 +143,34 @@
   const whatsappUrl = (t) => `https://wa.me/?text=${encodeURIComponent(`${t.name} — ${shareUrl(t)}`)}`;
   // The phone's share sheet where there is one; otherwise copy the link.
   function shareTournament(t) {
-    if (navigator.share) {
-      navigator.share({ title: t.name, url: shareUrl(t) }).catch(() => { /* closed */ });
-    } else {
-      copy(shareUrl(t), 'Link copied');
-    }
+    shareSheet({ title: t.name, text: t.name, url: shareUrl(t), image: t.visibility === 'private' ? null : `/img/t/${t.id}.png` });
+  }
+  // One way to share anything: WhatsApp, an image for an Instagram story, the
+  // link, or the phone's own share menu. image: the share card (/img/…png).
+  function shareSheet({ title, text, url, image = null }) {
+    const story = async () => {
+      try {
+        const blob = await (await fetch(`${image}?size=story`)).blob();
+        const file = new File([blob], 'tonament.png', { type: 'image/png' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title });
+          return;
+        }
+        const a = h('a', { href: URL.createObjectURL(blob), download: 'tonament.png' });
+        document.body.append(a);
+        a.click();
+        a.remove();
+        toast('Image saved — add it to your story');
+      } catch (e) {
+        if (e.name !== 'AbortError') toast('Couldn\'t make the image — try again', true);
+      }
+    };
+    actionSheet(title, [
+      { label: 'WhatsApp', hint: 'Send it to a chat or your group', onClick: () => window.open(`https://wa.me/?text=${encodeURIComponent(`${text}\n${url}`)}`, '_blank', 'noopener') },
+      image ? { label: 'Instagram story', hint: 'A picture sized for stories', onClick: story } : null,
+      { label: 'Copy link', onClick: () => copy(url, 'Link copied') },
+      navigator.share ? { label: 'More…', hint: 'Other apps', onClick: () => navigator.share({ title, text, url }).catch(() => {}) } : null,
+    ]);
   }
   const pad2 = (n) => String(n).padStart(2, '0');
   // ISO time -> value for <input type="datetime-local"> in the viewer's timezone
@@ -615,6 +638,11 @@
           S.me ? api('GET', '/clubs/mine').catch(() => []) : [],
           api('GET', '/clubs').catch(() => []),
         ]);
+      } else if (parts[0] === 'a' && /^\d+$/.test(parts[1] || '')) {
+        S.route = { name: 'item', id: Number(parts[1]) };
+        S.item = null;
+        render();
+        S.item = await api('GET', `/activity/${S.route.id}`).catch((e) => ({ error: e.message }));
       } else if (parts[0] === 'club' && parts[1]) {
         const slug = parts[1].toLowerCase();
         S.route = { name: 'club', slug, tab: params.get('tab') || 'feed', join: params.get('join') };
@@ -809,6 +837,7 @@
     else if (S.route.name === 'orgNew') view = viewOrgNew();
     else if (S.route.name === 'clubs') view = viewClubs();
     else if (S.route.name === 'club') view = viewClub();
+    else if (S.route.name === 'item') view = viewItem();
     else if (S.route.name === 'profile') view = viewProfile();
     else if (S.route.name === 'groups') view = viewGroups();
     else if (S.route.name === 'groupNew') view = viewGroupNew();
@@ -6609,7 +6638,7 @@
       return r;
     }, c.open || c.inviteOk ? `Welcome to ${c.name}!` : 'Request sent to the club\'s admins');
     const follow = () => act(async () => { c.follow = await api('POST', '/follow', { kind: 'club', id: c.id, on: !c.follow.following }); });
-    const invite = () => shareText(`Join ${c.name} on Tonament — results, the club leaderboard and challenges:\n${clubUrl(c)}`);
+    const invite = () => shareSheet({ title: `Invite to ${c.name}`, text: `Join ${c.name} on Tonament — results, the club leaderboard and challenges:`, url: clubUrl(c), image: `/img/club/${c.slug}.png` });
     const tabs = [['feed', 'Feed', 'tab-live'], ['members', 'Members', 'tab-players'], ['leaderboard', 'Leaderboard', 'tab-board'], ['challenges', 'Challenges', 'tab-draw'],
       ...(c.can.admin ? [['page', 'Page', 'tab-setup']] : [])];
     const tab = tabs.some(([id]) => id === S.route.tab) ? S.route.tab : 'feed';
@@ -6626,7 +6655,7 @@
                 : h('button', { class: 'btn btn-primary', onclick: join }, c.open || c.inviteOk ? 'Join the club' : 'Ask to join'),
           S.me && !member ? h('button', { class: `btn btn-small${c.follow.following ? '' : ' btn-ghost'}`, 'aria-pressed': String(c.follow.following), onclick: follow }, c.follow.following ? 'Following ✓' : 'Follow') : null,
           moreButton(c.name, [
-            { label: 'Share the club', hint: member ? 'With your invite link' : 'A link to this page', onClick: () => shareText(`${c.name} on Tonament: ${member ? clubUrl(c) : `${location.origin}/club/${c.slug}`}`) },
+            { label: 'Share the club', hint: member ? 'With your invite link' : 'A link to this page', onClick: () => shareSheet({ title: c.name, text: `${c.name} on Tonament`, url: member ? clubUrl(c) : `${location.origin}/club/${c.slug}`, image: `/img/club/${c.slug}.png` }) },
             c.pagePublic ? { label: 'Public page', hint: `tonament.com/@${c.slug}`, onClick: () => { location.href = `/@${c.slug}`; } } : null,
             member ? { label: 'Leave the club', danger: true, onClick: () => confirm(`Leave ${c.name}?`) && act(async () => { await api('POST', `${clubPath(c.slug)}/leave`, {}); await loadClub(); }, `You left ${c.name}`) } : null,
             S.me && !member ? { label: 'Report this club', onClick: () => report('club', c.id) } : null,
@@ -6732,6 +6761,9 @@
     return [who, ` ${x.verb}`];
   }
 
+  // A feed item as plain text (for a WhatsApp message).
+  const feedText = (x) => { const el = h('span', {}, feedSentence(x)); return el.textContent.replace(/\s+/g, ' ').trim(); };
+
   function feedItem(x) {
     const open = S.openComments === x.id;
     const kudo = () => act(async () => { Object.assign(x, await api('POST', `/activity/${x.id}/kudos`, { on: !x.kudoed })); });
@@ -6750,7 +6782,10 @@
           S.me ? [
             h('button', { class: `link-btn small${x.kudoed ? ' on' : ''}`, 'aria-pressed': String(x.kudoed), onclick: kudo }, `👏 ${x.kudos || ''}`.trim()),
             h('button', { class: 'link-btn small', 'aria-expanded': String(open), onclick: toggle }, `💬 ${x.comments || ''}`.trim()),
-            moreButton('This post', [{ label: 'Report', onClick: () => report('activity', x.id) }]),
+            moreButton('This post', [
+              { label: 'Share', onClick: () => shareSheet({ title: 'Share', text: feedText(x), url: `${location.origin}/a/${x.id}`, image: x.public ? `/img/a/${x.id}.png` : null }) },
+              { label: 'Report', onClick: () => report('activity', x.id) },
+            ]),
           ] : (x.kudos ? ` · 👏 ${x.kudos}` : '')),
         open ? h('div', { class: 'feed-comments' },
           list == null ? loading() : h('ul', {}, list.map((c) => h('li', {}, h('strong', {}, c.by.name), ' ', c.body,
@@ -6769,6 +6804,21 @@
     if (!feed) return loading();
     if (!feed.items.length) return empty(emptyText);
     return h('ul', { class: 'card feed' }, feed.items.map(feedItem));
+  }
+
+  // One shared item (/a/<id>), and a way in for people new to Tonament.
+  function viewItem() {
+    document.title = 'Tonament';
+    const x = S.item;
+    if (!x) return loading();
+    if (x.error) return errorView('This post isn\'t available — it may be private, or it was removed.');
+    return [
+      h('ul', { class: 'card feed' }, feedItem(x)),
+      S.me ? h('p', { class: 'center' }, h('a', { class: 'btn', href: '/' }, 'Your feed'))
+        : h('div', { class: 'card center' }, h('h2', {}, 'Play, compete, share'),
+          h('p', { class: 'muted' }, 'Tournaments, clubs and live scores for every sport — and a feed of your friends\' results.'),
+          h('div', { class: 'actions', style: 'justify-content:center' }, h('a', { class: 'btn btn-primary btn-lg', href: '/signup' }, 'Join free'))),
+    ];
   }
 
   // Home, signed in: the latest from people and clubs you follow.
@@ -7617,7 +7667,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

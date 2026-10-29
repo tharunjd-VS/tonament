@@ -71,7 +71,11 @@ test('a public tournament page: details, preview tags and event data', async () 
   assert.match(html, new RegExp(`<link rel="canonical" href="${base}/t/${id}">`));
   assert.equal(meta(html, 'robots'), null);
   assert.equal(meta(html, 'og:title'), 'Diwali &quot;Smash&quot; &lt;Open&gt;');
-  assert.equal(meta(html, 'og:image'), `${base}/brand/og.png`);
+  // No uploaded image: the tournament's own share card, a real PNG.
+  assert.equal(meta(html, 'og:image'), `${base}/img/t/${id}.png`);
+  const card = await fetch(`${base}/img/t/${id}.png`);
+  assert.equal(card.headers.get('content-type'), 'image/png');
+  assert.deepEqual([...new Uint8Array(await card.arrayBuffer()).slice(1, 4)], [80, 78, 71]); // "PNG"
   assert.equal(html.match(/<link rel="canonical"/g).length, 1); // the home page's is replaced
   assert.ok(html.includes('<div class="prerender">'));
   assert.match(html, /<h1>Diwali &quot;Smash&quot; &lt;Open&gt;<\/h1>/);

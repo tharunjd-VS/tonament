@@ -155,7 +155,8 @@ function tournamentHtml(shell, { base, id, page, match = false }) {
   const indexable = t && t.visibility === 'public' && !match;
   const canonical = `${base}/t/${id}`;
   const image = page && page.preview.image;
-  const imageUrl = image ? base + image.path : `${base}/brand/og.png`;
+  // An uploaded image, else the tournament's own card (name, dates, entries).
+  const imageUrl = image ? base + image.path : t ? `${base}/img/t/${id}.png` : `${base}/brand/og.png`;
   const meta = (attr, name, content) => `<meta ${attr}="${name}" content="${esc(content)}">`;
   let head;
   if (t) {
@@ -336,6 +337,30 @@ function groupCardHtml(g) {
         <div class="t-card-when">${esc(`${daysText(st.days)} · ${hours(st.time, st.endTime)}`)}</div>
         <div class="t-card-events"><span class="event-tag level-tag">${esc(levelText(st.levels))}</span>${next ? `<span class="event-tag">${esc(next)}</span>` : ''}</div>
       </a>`;
+}
+
+// An app page with a link preview: { base, path, title, description, image } (noindex).
+function appShareHtml(shell, { base, path, title, description, image }) {
+  const meta = (attr, name, content) => `<meta ${attr}="${name}" content="${esc(content)}">`;
+  const img = image.startsWith('http') ? image : base + image;
+  const head = [
+    `<title>${esc(title)} · Tonament</title>`,
+    meta('name', 'description', description),
+    meta('name', 'robots', 'noindex'),
+    meta('property', 'og:type', 'website'),
+    meta('property', 'og:site_name', 'Tonament'),
+    meta('property', 'og:title', title),
+    meta('property', 'og:description', description),
+    meta('property', 'og:url', base + path),
+    meta('property', 'og:image', img),
+    meta('property', 'og:image:width', 1200),
+    meta('property', 'og:image:height', 630),
+    meta('name', 'twitter:card', 'summary_large_image'),
+    meta('name', 'twitter:title', title),
+    meta('name', 'twitter:description', description),
+    meta('name', 'twitter:image', img),
+  ].join('\n  ');
+  return shell.replace(/<!-- head:start[\s\S]*?<!-- head:end -->/, head);
 }
 
 // /g/<slug>: the app page with a preview that says what the link is for —
@@ -601,7 +626,7 @@ ${list('Past tournaments', past)}
   const description = o.about
     ? o.about.replace(/\s+/g, ' ').slice(0, 155)
     : `${o.name}${L.city ? `, ${L.city}` : ''}: ${sportsText ? `${sportsText} ` : ''}${o.kindName.toLowerCase()} — courts, coaching and tournaments with live scores.`;
-  return sitePage({ base, path, title: `${o.name}${L.city ? ` — ${o.kindName} in ${L.city}` : ''} | Tonament`, description, ld, body });
+  return sitePage({ base, path, title: `${o.name}${L.city ? ` — ${o.kindName} in ${L.city}` : ''} | Tonament`, description, ld, body, image: `/img/club/${o.slug}.png` });
 }
 
 // ---------- players and rankings
@@ -653,8 +678,11 @@ function playerHtml({ base, p }) {
         ${titles.length ? `<p class="player-titles">🏆 ${titles.length} title${titles.length === 1 ? '' : 's'}</p>` : ''}
         ${dupr}
         ${(p.clubs || []).length ? `<p class="plays-for">Plays for ${p.clubs.map((c) => `<a href="/club/${esc(c.slug)}">${esc(c.name)}</a>`).join(', ')}</p>` : ''}
-        ${p.own ? '<p class="actions"><a class="btn btn-small" href="/me/profile">Edit profile</a></p>'
-          : `<p class="actions"><button class="btn btn-small btn-primary" type="button" data-follow="user" data-id="${p.id}" hidden>Follow</button> <span class="muted small" data-followers="user:${p.id}"></span></p>`}
+        <p class="actions">${p.own ? '<a class="btn btn-small" href="/me/profile">Edit profile</a>'
+          : `<button class="btn btn-small btn-primary" type="button" data-follow="user" data-id="${p.id}" hidden>Follow</button>`}
+          <button class="btn btn-small btn-ghost" type="button" data-share="${esc(base + path)}" data-title="${esc(p.name)} on Tonament">Share</button>
+          ${p.public ? `<a class="btn btn-small btn-ghost" href="/img/p/${esc(p.handle)}.png?size=story" download="${esc(p.handle)}-tonament.png">Story image</a>` : ''}
+          ${p.own ? '' : `<span class="muted small" data-followers="user:${p.id}"></span>`}</p>
       </div>
     </section>
     ${setup}
@@ -683,7 +711,7 @@ function playerHtml({ base, p }) {
   ];
   const sportsText = p.sports.map((x) => x.name.toLowerCase()).join(', ');
   const description = `${p.name}${p.city ? ` from ${p.city}` : ''}${sportsText ? ` — ${sportsText} player` : ''}: tournament results${p.rankings.length ? ', rankings' : ''} and match scores on Tonament.`;
-  return sitePage({ base, path, title: `${p.name}${p.city ? ` — ${p.city}` : ''} | Tonament player`, description, ld, body });
+  return sitePage({ base, path, title: `${p.name}${p.city ? ` — ${p.city}` : ''} | Tonament player`, description, ld, body, image: `/img/p/${p.handle}.png` });
 }
 
 const rankRow = (r) => `<li class="rank-row"><span class="rank-no">${r.rank}</span>${avatar(r, 'rank-avatar')}<span class="rank-name"><a href="/p/${esc(r.handle)}">${esc(r.name)}</a><small class="muted">${esc([r.city, r.region].filter(Boolean).join(', '))}</small></span><span class="rank-pts"><strong>${r.points}</strong><small>pts</small></span></li>`;
@@ -868,6 +896,7 @@ ${newest.map(item).join('\n')}
 }
 
 module.exports = {
+  appShareHtml,
   dateRange, clock, when, summary, eventData, tournamentHtml, groupHtml, sitemap, esc, sportHtml, sportsHubHtml, orgHtml, playerHtml, rankingsHubHtml, rankingsSportHtml, rankingsTableHtml,
   toolHtml: toolPages.toolHtml, toolsHubHtml: toolPages.toolsHubHtml, toolPaths: toolPages.paths, citySlug, cityHtml, blogIndexHtml, blogPostHtml, blogRss,
 };

@@ -32,7 +32,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -388,6 +388,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['GET', '/api/follow', (c) => svc.social.followStatus(c.actor, c.query.get('kind'), c.query.get('id'))],
     ['GET', '/api/feed', (c) => svc.social.feed(c.actor, { before: c.query.get('before') })],
     ['GET', '/api/feed/user/(\\d+)', (c, id) => svc.social.userFeed(id, c.actor, { before: c.query.get('before') })],
+    ['GET', `/api/activity/${N}`, (c, id) => svc.social.item(id, c.actor)],
     ['POST', `/api/activity/${N}/kudos`, (c, id) => svc.social.kudos(c.actor, id, c.body.on !== false)],
     ['GET', `/api/activity/${N}/comments`, (c, id) => svc.social.commentsOf(id, c.actor)],
     ['POST', `/api/activity/${N}/comments`, (c, id) => svc.social.comment(c.actor, id, c.body)],
@@ -473,6 +474,44 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
 
   // /g/<slug> (on Vercel, rewritten to /api/group/<slug>): the app page with a
   // link preview for joining the group, or with ?s=<session> for coming to play.
+  async function shareImage(req, res, kind, id, size) {
+    const png = await svc.cards.image(kind, id, size);
+    if (!png) return send(res, 404, { error: 'Not found' });
+    res.writeHead(200, {
+      'Content-Type': 'image/png',
+      'Cache-Control': 'public, max-age=300, s-maxage=3600',
+      'Vercel-CDN-Cache-Control': 'max-age=3600, stale-while-revalidate=86400',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return res.end(req.method === 'HEAD' ? undefined : png);
+  }
+  // The app, with a preview that says what the link is (cached briefly at the CDN).
+  async function sharedAppPage(req, res, meta) {
+    const base = baseUrl(req) || SITE;
+    const html = pages.appShareHtml(await readShell(), { base, ...meta });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'public, max-age=0, s-maxage=300',
+      'Vercel-CDN-Cache-Control': 'max-age=300, stale-while-revalidate=3600',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(req.method === 'HEAD' ? undefined : html);
+  }
+  async function clubPage(req, res, slug) {
+    const card = await svc.cards.club(slug);
+    if (!card) return notFound(req, res);
+    return sharedAppPage(req, res, {
+      path: `/club/${slug}`, title: `Join ${card.title} on Tonament`, image: `/img/club/${slug}.png`,
+      description: `${card.eyebrow} · ${card.big} ${card.bigLabel}. Results, the club leaderboard and challenges.`,
+    });
+  }
+  async function itemPage(req, res, id) {
+    const card = await svc.cards.activity(id);
+    return sharedAppPage(req, res, card
+      ? { path: `/a/${id}`, title: `${card.title} — ${card.eyebrow}`, description: `${card.subtitle}${card.big ? ` · ${card.big}` : ''}`, image: `/img/a/${id}.png` }
+      : { path: `/a/${id}`, title: 'Tonament', description: 'Tournaments, clubs and live scores.', image: '/brand/og.png' });
+  }
+
   async function groupPage(req, res, slug, params) {
     const base = baseUrl(req) || SITE;
     const g = await svc.groups.shareInfo(slug, params.get('s'), { claim: params.get('claim'), join: params.get('join') });
@@ -777,6 +816,14 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         });
         return res.end(req.method === 'HEAD' ? undefined : html);
       }
+      // Share cards: /img/<kind>/<id>.png (?size=story for 1080×1920).
+      const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t)\/([A-Za-z0-9-]{1,100})\.png$/);
+      if (imgPath && read) return await shareImage(req, res, imgPath[1], imgPath[2], url.searchParams.get('size'));
+      // A club's app page, and one feed item, with link previews for WhatsApp.
+      const clubPath = pathname.match(/^\/(?:club|api\/clubpage)\/([a-z0-9-]{3,30})\/?$/);
+      if (clubPath && read) return await clubPage(req, res, clubPath[1]);
+      const itemPath = pathname.match(/^\/(?:a|api\/item)\/(\d{1,12})\/?$/);
+      if (itemPath && read) return await itemPage(req, res, itemPath[1]);
       // Group pages: /g/<slug> (on Vercel, /api/group/<slug>); its games stay plain app pages.
       const groupPath = pathname.match(/^\/(?:g|api\/group)\/([a-z0-9-]{3,40})\/?$/);
       if (groupPath && read) return await groupPage(req, res, groupPath[1], url.searchParams);

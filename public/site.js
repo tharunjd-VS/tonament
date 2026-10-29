@@ -37,6 +37,15 @@
         .then(function (s) { if (s) { state = s; show(s); } });
     });
   });
+  // Share buttons: the phone's share menu, else copy the link.
+  document.querySelectorAll('[data-share]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var url = btn.getAttribute('data-share');
+      if (navigator.share) { navigator.share({ title: btn.getAttribute('data-title') || document.title, url: url }).catch(function () {}); return; }
+      if (navigator.clipboard) navigator.clipboard.writeText(url).then(function () { btn.textContent = 'Link copied ✓'; });
+      else window.prompt('Copy this link:', url);
+    });
+  });
   var year = document.querySelector('[data-year]');
   if (year) year.textContent = String(new Date().getFullYear());
   fetch('/api/billing/config')

@@ -155,6 +155,7 @@ function createSocial({ db, fail, text, mediaUrl }) {
         object: r.object_kind ? { kind: r.object_kind, id: r.object_id } : null,
         data: r.data,
         people: r.people.map((id) => byId.get(id)).filter(Boolean).map((u) => ({ id: u.id, name: u.name, handle: u.handle, photo: u.photo_id ? mediaUrl(u.photo_id) : null })),
+        public: r.visibility === 'public',
         kudos: k.get(r.id) || 0,
         kudoed: liked.has(r.id),
         comments: n.get(r.id) || 0,
@@ -233,8 +234,16 @@ function createSocial({ db, fail, text, mediaUrl }) {
   }
 
   const followStatus = (actor, kind, id) => followState(db.query, actor, kind, id);
+  // One item (a shared link), for whoever may see it.
+  async function item(id, actor) {
+    const a = await seeable(db.query, actor, id);
+    const c = await circle(db.query, actor?.user?.id);
+    const { items } = await page(db.query, [a], actor?.user?.id, c);
+    if (!items.length) fail(404, 'Not found');
+    return items[0];
+  }
 
-  return { record, forget, follow, followState, followStatus, feed, userFeed, clubFeed, kudos, commentsOf, comment, deleteComment, block, report, FOLLOW_KINDS };
+  return { record, forget, item, follow, followState, followStatus, feed, userFeed, clubFeed, kudos, commentsOf, comment, deleteComment, block, report, FOLLOW_KINDS };
 }
 
 module.exports = { createSocial };
