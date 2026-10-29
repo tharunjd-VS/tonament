@@ -490,9 +490,25 @@ function createGroups({ db, fail, text, orgs }) {
       const a = (input.a || []).map(Number);
       const b = (input.b || []).map(Number);
       const all = [...a, ...b];
-      const ok = (a.length === 2 && b.length === 2) || (a.length === 1 && b.length === 1 && g.settings.singles);
-      if (!ok || new Set(all).size !== all.length) fail(400, g.settings.singles ? 'Pick 2 or 4 different players' : 'Pick 4 different players');
-      const free = new Set((await freePlayers(q, g, s)).map((p) => p.id));
+      // Singles or doubles, whatever the group usually plays (its setting only steers suggestions).
+      const ok = (a.length === 2 && b.length === 2) || (a.length === 1 && b.length === 1);
+      if (!ok || new Set(all).size !== all.length) fail(400, 'Pick 2 or 4 different players');
+      let free = new Set((await freePlayers(q, g, s)).map((p) => p.id));
+      // An admin's picks can include people who turned up without checking in: they're checked in now.
+      if (isAdmin(m, actor) && all.some((id) => !free.has(id))) {
+        const members = await q(`SELECT user_id FROM group_members WHERE group_id = $1 AND status = 'active' AND user_id = ANY($2::int[])`, [g.id, all]);
+        if (members.length !== all.length) fail(400, 'Everyone in the game has to be in the group');
+        const busy = await q(`SELECT a1, a2, b1, b2 FROM group_games WHERE session_id = $1 AND status = 'live'`, [s.id]);
+        const playing = new Set(busy.flatMap((x) => [x.a1, x.a2, x.b1, x.b2]));
+        for (const id of all.filter((x) => !free.has(x) && !playing.has(x))) {
+          await q(
+            `INSERT INTO session_players (session_id, user_id, status, checked_in_at) VALUES ($1, $2, 'in', now())
+             ON CONFLICT (session_id, user_id) DO UPDATE SET status = 'in', checked_in_at = COALESCE(session_players.checked_in_at, now())`,
+            [s.id, id],
+          );
+        }
+        free = new Set((await freePlayers(q, g, s)).map((p) => p.id));
+      }
       const notFree = all.filter((id) => !free.has(id));
       if (notFree.length) fail(409, 'Someone picked isn\'t checked in or is already on a court');
       const [row] = await q(
@@ -764,6 +780,17 @@ function createGroups({ db, fail, text, orgs }) {
     };
   }
 
+  // The singles and doubles-pair leaderboards (group-logic formatTables), with names.
+  function boardsOf(confirmed, info) {
+    const t = L.formatTables(confirmed.map((x) => ({ ...x, margin: x.final ? Math.abs(x.final.a - x.final.b) : 0 })));
+    const who = (id) => info.get(id);
+    const row = (r) => ({ rating: r.rating, games: r.games, wins: r.wins, winPct: Math.round((r.wins / r.games) * 100), provisional: r.games < L.PROVISIONAL });
+    return {
+      singles: t.singles.filter((r) => who(r.id)).map((r) => ({ id: r.id, name: who(r.id).name, handle: who(r.id).handle, ...row(r) })),
+      pairs: t.pairs.filter((r) => r.ids.every(who)).map((r) => ({ ids: r.ids, names: r.ids.map((id) => who(id).name), ...row(r) })),
+    };
+  }
+
   function leaderboardOf(members, week) {
     const w = new Map();
     for (const x of week) {
@@ -919,14 +946,16 @@ function createGroups({ db, fail, text, orgs }) {
       await autoConfirm(q, g);
       const sessions = await sessionsOf(q, g);
       const ids = sessions.map((x) => x.id);
-      const [players, games, members, week] = await Promise.all([
+      const [players, games, members, confirmed] = await Promise.all([
         q('SELECT sp.*, u.name, u.handle FROM session_players sp JOIN users u ON u.id = sp.user_id WHERE sp.session_id = ANY($1::int[])', [ids]),
         q(`SELECT * FROM group_games WHERE session_id = ANY($1::int[]) AND status <> 'void' ORDER BY started_at DESC`, [ids]),
         q(`SELECT m.user_id AS id, m.role, m.status, m.rating, m.games, m.wins, m.joined_at, u.name, u.handle, u.email, u.guest
            FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = $1`, [g.id]),
-        q(`SELECT a1, a2, b1, b2, winner FROM group_games WHERE group_id = $1 AND status = 'confirmed' AND ended_at > now() - interval '7 days'`, [g.id]),
+        q(`SELECT a1, a2, b1, b2, winner, final, ended_at FROM group_games WHERE group_id = $1 AND status = 'confirmed' ORDER BY ended_at, id`, [g.id]),
       ]);
       const info = new Map(members.map((r) => [r.id, r]));
+      const week = confirmed.filter((x) => Date.parse(x.ended_at) > Date.now() - 7 * 86400000);
+      const boards = boardsOf(confirmed, info);
       const one = (s, opts) => sessionViewOf(g, s, players.filter((p) => p.session_id === s.id), games.filter((x) => x.session_id === s.id), info, m, actor, opts);
       const admin = isAdmin(m, actor);
       return {
@@ -937,6 +966,8 @@ function createGroups({ db, fail, text, orgs }) {
         session: sessions[0] ? one(sessions[0], { skip }) : null,
         nextSession: sessions[1] ? one(sessions[1]) : null,
         leaderboard: leaderboardOf(members, week),
+        singlesBoard: boards.singles,
+        pairsBoard: boards.pairs,
         requests: admin ? members.filter((r) => r.status === 'requested').sort((a, b) => Date.parse(a.joined_at) - Date.parse(b.joined_at))
           .map((r) => ({ id: r.id, name: r.name, email: r.email, requestedAt: r.joined_at })) : [],
       };

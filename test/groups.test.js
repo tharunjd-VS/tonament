@@ -662,3 +662,53 @@ test('admins mark anyone present (or not), whether or not they said they\'re in'
   // Only admins can do it for someone else.
   await assert.rejects(svc.groups.checkIn(slug, other, sid, true, regular.user.id), /Only group admins/);
 });
+
+test('leaderboards by format: doubles pairs and singles, from confirmed games', () => {
+  const G = (a, b, winner, margin = 0) => ({ a1: a[0], a2: a[1] ?? null, b1: b[0], b2: b[1] ?? null, winner, margin });
+  // Pair 1+2 beats strong pair 5+6 three times; pair 3+4 beats weak pair 7+8 four times, but 5+6 beat 7+8 a lot first.
+  const games = [
+    ...Array.from({ length: 6 }, () => G([5, 6], [7, 8], 'a', 10)),
+    G([2, 1], [5, 6], 'a'), G([1, 2], [6, 5], 'a'), G([1, 2], [5, 6], 'a'),
+    ...Array.from({ length: 4 }, () => G([3, 4], [7, 8], 'a')),
+    G([9], [10], 'a'), G([10], [9], 'b'), G([9], [11], 'b'),
+    { ...G([1, 2], [3, 4], null) }, // no winner: ignored
+  ];
+  const { pairs, singles } = L.formatTables(games);
+  const key = (p) => p.ids.join('-');
+  assert.equal(pairs.find((p) => key(p) === '1-2').games, 3); // partners in either order are one pair
+  const r12 = pairs.find((p) => key(p) === '1-2').rating;
+  const r34 = pairs.find((p) => key(p) === '3-4').rating;
+  assert.ok(r12 > r34, `${r12} v ${r34}`); // beating a strong pair counts for more
+  assert.deepEqual(singles.map((p) => [p.id, p.games, p.wins]).sort((x, y) => x[0] - y[0]), [[9, 3, 2], [10, 2, 0], [11, 1, 1]]);
+  assert.ok(!singles.some((p) => [1, 2, 3, 4].includes(p.id))); // doubles never count for singles
+});
+
+test('pick players yourself: admins can include people not checked in; singles any time', async () => {
+  const admin = await user('Pick Admin');
+  const { slug } = await svc.groups.createGroup(admin, { name: 'Pick Club', sport: 'badminton', courts: 2, ...nowSchedule() });
+  let g = (await svc.groups.addGuests(slug, admin, { names: 'Anu\nBharat\nChitra\nDeepak\nEsha' })).group;
+  const id = (n) => g.leaderboard.find((r) => r.name === n).id;
+  const member = await user('Pick Member');
+  await svc.groups.join(slug, member, { token: g.invite });
+  const sid = g.session.id;
+  // Nobody checked in: the admin picks four anyway; they're checked in and on court.
+  const { id: gid } = await svc.groups.startGame(slug, admin, sid, { court: 1, a: [id('Anu'), id('Bharat')], b: [id('Chitra'), id('Deepak')] });
+  g = await svc.groups.view(slug, admin);
+  assert.ok(['Anu', 'Bharat', 'Chitra', 'Deepak'].every((n) => g.session.players.find((p) => p.id === id(n)).checkedIn));
+  // Someone already on court can't be picked again.
+  await assert.rejects(svc.groups.startGame(slug, admin, sid, { court: 2, a: [id('Anu')], b: [id('Esha')] }), /already on a court/);
+  // A member (checked in) can't pick someone who isn't.
+  await svc.groups.checkIn(slug, member, sid, true);
+  await assert.rejects(svc.groups.startGame(slug, member, sid, { court: 2, a: [member.user.id], b: [id('Esha')] }), /isn't checked in/);
+  // Singles, though the group's suggestions are doubles.
+  const { id: sg } = await svc.groups.startGame(slug, admin, sid, { court: 2, a: [member.user.id], b: [id('Esha')] });
+  await svc.groups.setResult(slug, admin, sg, { a: 21, b: 18 });
+  await svc.groups.confirm(slug, admin, sg);
+  await svc.groups.setResult(slug, admin, gid, { a: 21, b: 12 });
+  await svc.groups.confirm(slug, admin, gid);
+  g = await svc.groups.view(slug, admin);
+  assert.deepEqual(g.pairsBoard.map((p) => [p.names.join(' & '), p.wins, p.games]), [['Anu & Bharat', 1, 1], ['Chitra & Deepak', 0, 1]]);
+  assert.deepEqual(g.singlesBoard.map((p) => [p.name, p.wins]), [['Pick Member', 1], ['Esha', 0]]);
+  const outsider = await svc.groups.view(slug, await user('Outsider'));
+  assert.equal(outsider.pairsBoard, undefined);
+});

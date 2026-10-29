@@ -52,6 +52,42 @@ function rate(a, b, winner, margin = 0) {
   return deltas;
 }
 
+// Leaderboards by format, replayed from confirmed games in the order they
+// ended: a singles rating per player (1 v 1 only), and a rating per doubles
+// pair (the pair as one side, partners in either order). Same formula as the
+// overall rating, so beating stronger pairs counts for more than many easy wins.
+// games: [{ a1, a2, b1, b2, winner, margin }] oldest first.
+function formatTables(games) {
+  const singles = new Map();
+  const pairs = new Map();
+  const get = (map, key, extra) => {
+    if (!map.has(key)) map.set(key, { ...extra, rating: START, games: 0, wins: 0 });
+    return map.get(key);
+  };
+  for (const x of games) {
+    if (x.winner !== 'a' && x.winner !== 'b') continue;
+    const doubles = x.a2 != null && x.b2 != null;
+    let a;
+    let b;
+    if (doubles) {
+      const key = (p, q) => [p, q].sort((m, n) => m - n).join('-');
+      a = get(pairs, key(x.a1, x.a2), { ids: [x.a1, x.a2].sort((m, n) => m - n) });
+      b = get(pairs, key(x.b1, x.b2), { ids: [x.b1, x.b2].sort((m, n) => m - n) });
+    } else if (x.a2 == null && x.b2 == null) {
+      a = get(singles, x.a1, { id: x.a1 });
+      b = get(singles, x.b1, { id: x.b1 });
+    } else continue;
+    const d = rate([{ id: 'a', rating: a.rating, games: a.games }], [{ id: 'b', rating: b.rating, games: b.games }], x.winner, x.margin || 0);
+    a.rating += d.a;
+    b.rating += d.b;
+    a.games += 1;
+    b.games += 1;
+    (x.winner === 'a' ? a : b).wins += 1;
+  }
+  const order = (list) => list.sort((p, q) => Number(q.games >= PROVISIONAL) - Number(p.games >= PROVISIONAL) || q.rating - p.rating || q.wins - p.wins);
+  return { singles: order([...singles.values()]), pairs: order([...pairs.values()]) };
+}
+
 // ---------- schedule
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -90,4 +126,4 @@ function upcomingStarts({ days = [], time = '06:00', timeZone = 'Asia/Kolkata' }
   return out;
 }
 
-module.exports = { suggest, rate, START, PROVISIONAL, DAY_NAMES, tzOffset, localDay, upcomingStarts };
+module.exports = { suggest, rate, formatTables, START, PROVISIONAL, DAY_NAMES, tzOffset, localDay, upcomingStarts };

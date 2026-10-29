@@ -5073,6 +5073,8 @@
     } else if (here) {
       out.push(h('p', { class: 'muted small center' }, s.players.filter((p) => p.checkedIn).length < 4 ? 'Waiting for more players to check in (4 for a game).' : 'Everyone free is on court.'));
     }
+    // Or pick the players yourself (what actually happens at the court doesn't always match the suggestion).
+    if (free.length && (here || g.admin)) out.push(pickPlayersCard(g, s, free));
     // 4. Waiting + admin check-ins.
     if (s.waiting.length) {
       out.push(h('div', { class: 'card' }, h('h3', { style: 'margin:0 0 6px' }, `Waiting (${s.waiting.length})`),
@@ -5087,6 +5089,59 @@
     if (s.started) out.push(addResultCard(g, s));
     if (g.nextSession) out.push(rsvpCard(g, g.nextSession, true));
     return out;
+  }
+
+  // A game with the players you choose: 2 v 2, or 1 v 1 (leave the partners
+  // empty). Free checked-in players first; admins can also pick anyone in the
+  // group, who is checked in as the game starts.
+  function pickPlayersCard(g, s, free) {
+    const word = CAT.courtWord(g.sport.id);
+    const ready = s.waiting;
+    const onCourt = new Set(s.live.flatMap((x) => [...x.a, ...x.b].map((p) => p.id)));
+    const others = g.admin ? g.leaderboard.filter((r) => !ready.some((p) => p.id === r.id) && !onCourt.has(r.id)) : [];
+    const draft = S.pickDraft && S.pickDraft.session === s.id ? S.pickDraft : { session: s.id };
+    const options = (optional, chosen) => [
+      h('option', { value: '', selected: !chosen }, optional ? 'No partner (singles)' : 'Pick a player'),
+      ready.length ? h('optgroup', { label: 'Here and free' }, ready.map((p) => h('option', { value: p.id, selected: String(p.id) === chosen }, p.name))) : null,
+      others.length ? h('optgroup', { label: 'Not checked in' }, others.map((p) => h('option', { value: p.id, selected: String(p.id) === chosen }, p.name))) : null,
+    ];
+    const pick = (name, optional) => h('select', { name, 'aria-label': name, required: !optional }, options(optional, draft[name] || ''));
+    const keep = (e) => {
+      if (!e.target.name) return;
+      S.pickDraft = { ...draft, [e.target.name]: e.target.value };
+      Object.assign(draft, S.pickDraft);
+      form.setAttribute('data-dirty', '');
+    };
+    const form = h('form', {
+      class: 'add-result pick-players',
+      onchange: keep,
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const team = (k) => [fd.get(`${k}1`), fd.get(`${k}2`)].filter(Boolean).map(Number);
+        const a = team('a');
+        const b = team('b');
+        if (a.length !== b.length) { toast('Both sides need the same number of players — 1 each, or 2 each', true); return; }
+        act(async () => {
+          const { id } = await api('POST', `${gPath(g.slug)}/sessions/${s.id}/games`, { court: Number(fd.get('court')), a, b });
+          form.removeAttribute('data-dirty');
+          S.pickDraft = null;
+          S.pickOpen = false;
+          S.route.skip = 0;
+          navigate(`/g/${g.slug}/game/${id}`);
+        });
+      },
+    },
+    h('div', { class: 'add-result-sides' },
+      h('fieldset', {}, h('legend', {}, 'Side 1'), pick('a1', false), pick('a2', true)),
+      h('fieldset', {}, h('legend', {}, 'Side 2'), pick('b1', false), pick('b2', true))),
+    h('div', { class: 'actions' },
+      h('select', { name: 'court', 'aria-label': word }, free.map((c) => h('option', { value: c.no, selected: String(c.no) === (draft.court || '') }, `${word} ${c.no}`))),
+      h('button', { class: 'btn btn-primary', type: 'submit' }, 'Start game')),
+    g.admin && others.length ? h('p', { class: 'muted small', style: 'margin:8px 0 0' }, 'Anyone not checked in yet is checked in when the game starts.') : null);
+    return h('details', { class: 'card pick-card', open: Boolean(S.pickOpen), ontoggle: (e) => { S.pickOpen = e.target.open; } },
+      h('summary', {}, h('strong', {}, 'Pick players yourself'), h('small', { class: 'muted' }, ' · not the suggested game? choose who plays')),
+      form);
   }
 
   // Admins mark anyone present (or not): everyone in the group, not just
@@ -5306,17 +5361,54 @@
   function groupLeaderboard(g) {
     const rows = g.leaderboard.filter((r) => r.games);
     const fresh = g.leaderboard.filter((r) => !r.games);
+    const pairs = g.pairsBoard || [];
+    const singles = g.singlesBoard || [];
+    const meId = S.me && S.me.id;
+    const tabs = [['players', 'Players'], ...(pairs.length ? [['pairs', 'Doubles pairs']] : []), ...(singles.length ? [['singles', 'Singles']] : [])];
+    const tab = tabs.some(([k]) => k === S.boardTab) ? S.boardTab : 'players';
+    const record = (r) => `${r.wins}–${r.games - r.wins} · ${r.winPct}% wins`;
+    const pts = (r) => h('span', { class: 'rank-pts' }, h('strong', {}, r.rating), h('small', {}, r.provisional ? 'new' : 'rating'));
+    // Settled ratings come first (the server orders them); "new" ones follow, marked as such.
+    const ranks = (list) => list.map((_, i) => i + 1);
+    let body;
+    if (tab === 'pairs') {
+      const no = ranks(pairs);
+      body = [
+        h('ol', { class: 'rank-list' }, pairs.map((r, i) => h('li', { class: `rank-row${r.ids.includes(meId) ? ' me' : ''}` },
+          h('span', { class: 'rank-no' }, no[i]),
+          h('span', { class: 'rank-name' }, h('strong', {}, r.names.join(' & ')), h('small', { class: 'muted' }, `${record(r)} · ${r.games} game${r.games === 1 ? '' : 's'} together`)),
+          pts(r)))),
+        h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Each pair has its own rating, from the doubles games they\'ve played together: beating stronger pairs counts for more than lots of easy wins. "new" = fewer than 5 games together.'),
+      ];
+    } else if (tab === 'singles') {
+      const no = ranks(singles);
+      body = [
+        h('ol', { class: 'rank-list' }, singles.map((r, i) => h('li', { class: `rank-row${r.id === meId ? ' me' : ''}` },
+          h('span', { class: 'rank-no' }, no[i]),
+          h('span', { class: 'rank-name' }, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : h('strong', {}, r.name), h('small', { class: 'muted' }, record(r))),
+          pts(r)))),
+        h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'A singles rating from 1 v 1 games only. "new" = fewer than 5 singles games.'),
+      ];
+    } else {
+      body = [
+        rows.length ? h('ol', { class: 'rank-list' }, rows.map((r) => h('li', { class: `rank-row${r.id === meId ? ' me' : ''}` },
+          h('span', { class: 'rank-no' }, r.rank),
+          h('span', { class: 'rank-name' }, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : h('strong', {}, r.name),
+            h('small', { class: 'muted' }, `${record(r)}${r.week.games ? ` · this week ${r.week.wins}–${r.week.games - r.week.wins}` : ''}${r.guest ? ' · not claimed yet' : ''}`)),
+          pts(r))))
+          : empty('No confirmed games yet. Ratings start at 1000 and move after every confirmed game.'),
+        h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Ratings move after every confirmed game, singles and doubles: beat stronger players to climb faster. "new" = fewer than 5 games.'),
+      ];
+    }
     return [
       h('div', { class: 'card' },
         h('h2', {}, 'Leaderboard'),
-        rows.length ? h('ol', { class: 'rank-list' }, rows.map((r) => h('li', { class: `rank-row${r.id === (S.me && S.me.id) ? ' me' : ''}` },
-          h('span', { class: 'rank-no' }, r.rank),
-          h('span', { class: 'rank-name' }, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : h('strong', {}, r.name),
-            h('small', { class: 'muted' }, `${r.wins}–${r.games - r.wins} · ${r.winPct}% wins${r.week.games ? ` · this week ${r.week.wins}–${r.week.games - r.week.wins}` : ''}${r.guest ? ' · not claimed yet' : ''}`)),
-          h('span', { class: 'rank-pts' }, h('strong', {}, r.rating), h('small', {}, r.provisional ? 'new' : 'rating')))))
-          : empty('No confirmed games yet. Ratings start at 1000 and move after every confirmed game.'),
-        h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Ratings move after every confirmed game: beat stronger players to climb faster. "new" = fewer than 5 games.')),
-      fresh.length ? h('p', { class: 'muted small' }, `Yet to play: ${fresh.map((r) => r.name).join(', ')}`) : null,
+        tabs.length > 1 ? h('div', { class: 'board-tabs', role: 'tablist', 'aria-label': 'Leaderboard' }, tabs.map(([k, label]) => h('button', {
+          type: 'button', role: 'tab', 'aria-selected': String(k === tab), class: k === tab ? 'on' : '',
+          onclick: () => { S.boardTab = k; render(); },
+        }, label))) : null,
+        body),
+      tab === 'players' && fresh.length ? h('p', { class: 'muted small' }, `Yet to play: ${fresh.map((r) => r.name).join(', ')}`) : null,
     ];
   }
 
