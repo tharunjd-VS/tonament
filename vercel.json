@@ -92,7 +92,7 @@
       "destination": "/api/index?__path=item/:id"
     },
     {
-      "source": "/img/:kind(a|club|p|t)/:file",
+      "source": "/img/:kind(a|club|p|t|ladder)/:file",
       "destination": "/api/index?__path=img/:kind/:file"
     },
     {

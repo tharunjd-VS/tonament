@@ -663,11 +663,37 @@ CREATE TABLE IF NOT EXISTS ratings (
 CREATE INDEX IF NOT EXISTS ratings_sport ON ratings(sport, rating DESC);
 -- A group game's change to the Tonament rating (to undo it if the game's voided).
 ALTER TABLE group_games ADD COLUMN IF NOT EXISTS rating_deltas JSONB;
+-- v37: club ladders. Members join at the bottom and challenge up to "reach"
+-- places above; a challenger who wins takes the place (everyone between moves
+-- down one). A ladder challenge left unanswered for a week is a forfeit.
+CREATE TABLE IF NOT EXISTS ladders (
+  id         SERIAL PRIMARY KEY,
+  org_id     INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  sport      TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  reach      INTEGER NOT NULL DEFAULT 3,
+  scoring    JSONB NOT NULL DEFAULT '{}',
+  status     TEXT NOT NULL DEFAULT 'active',      -- active | closed
+  created_by INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ladders_org ON ladders(org_id);
+CREATE TABLE IF NOT EXISTS ladder_rungs (
+  ladder_id      INTEGER NOT NULL REFERENCES ladders(id) ON DELETE CASCADE,
+  user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  position       INTEGER NOT NULL,
+  joined_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_change_at TIMESTAMPTZ,
+  PRIMARY KEY (ladder_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS ladder_rungs_position ON ladder_rungs(ladder_id, position);
+ALTER TABLE challenges ADD COLUMN IF NOT EXISTS ladder_id INTEGER;
+ALTER TABLE challenges ADD COLUMN IF NOT EXISTS ladder_at JSONB;   -- { a, b }: their places when it was sent
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 36;
+const SCHEMA_VERSION = 37;
 
 async function migrate(db) {
   try {

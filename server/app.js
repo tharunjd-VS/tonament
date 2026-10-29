@@ -415,6 +415,12 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `/api/challenges/${N}/result`, (c, id) => svc.challenges.result(id, c.actor, c.body)],
     ['POST', `/api/challenges/${N}/confirm`, (c, id) => svc.challenges.confirm(id, c.actor)],
     ['POST', `/api/challenges/${N}/dispute`, (c, id) => svc.challenges.dispute(id, c.actor)],
+    // Club ladders
+    ['GET', `${C}/ladders`, (c, slug) => svc.ladders.forClub(slug, c.actor)],
+    ['POST', `${C}/ladders`, (c, slug) => svc.ladders.create(slug, c.actor, c.body)],
+    ['POST', `/api/ladders/${N}/join`, (c, id) => svc.ladders.join(id, c.actor)],
+    ['POST', `/api/ladders/${N}/leave`, (c, id) => svc.ladders.leave(id, c.actor)],
+    ['POST', `/api/ladders/${N}/challenge`, (c, id) => svc.ladders.challenge(id, c.actor, c.body)],
     // Clubs (free; every page is one)
     ['POST', '/api/clubs', (c) => svc.clubs.create(c.actor, c.body)],
     ['GET', '/api/clubs', (c) => svc.clubs.discover(Object.fromEntries(c.query))],
@@ -844,7 +850,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         return res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Emails · Tonament</title><link rel="stylesheet" href="/styles.css"><main class="doc" style="padding:48px 16px"><h1>${done ? 'Done' : 'Hmm'}</h1><p>${msg}</p><p><a href="/">Open Tonament</a></p></main>`);
       }
       // Share cards: /img/<kind>/<id>.png (?size=story for 1080×1920).
-      const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t)\/([A-Za-z0-9-]{1,100})\.png$/);
+      const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t|ladder)\/([A-Za-z0-9-]{1,100})\.png$/);
       if (imgPath && read) return await shareImage(req, res, imgPath[1], imgPath[2], url.searchParams.get('size'));
       // A club's app page, and one feed item, with link previews for WhatsApp.
       const clubPath = pathname.match(/^\/(?:club|api\/clubpage)\/([a-z0-9-]{3,30})\/?$/);

@@ -19,6 +19,7 @@ const KINDS = {
   confirm_game: { label: 'Results to confirm', email: false },
   challenge: { label: 'Challenges for you', email: true },
   challenge_reply: { label: 'Replies to your challenges', email: false },
+  ladder: { label: 'Ladder moves', email: false },
 };
 const PAGE = 40;
 const DELIVERY_MS = 4000;

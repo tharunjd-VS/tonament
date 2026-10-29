@@ -6650,6 +6650,7 @@
 
   async function loadClub() {
     const { slug, join } = S.route;
+    S.clubLadders = null; // positions move: fetch them fresh
     try {
       S.club = await api('GET', `${clubPath(slug)}${join ? `?join=${encodeURIComponent(join)}` : ''}`);
       S.error = null;
@@ -6701,7 +6702,7 @@
     }, c.open || c.inviteOk ? `Welcome to ${c.name}!` : 'Request sent to the club\'s admins');
     const follow = () => act(async () => { c.follow = await api('POST', '/follow', { kind: 'club', id: c.id, on: !c.follow.following }); });
     const invite = () => shareSheet({ title: `Invite to ${c.name}`, text: `Join ${c.name} on Tonament — results, the club leaderboard and challenges:`, url: clubUrl(c), image: `/img/club/${c.slug}.png` });
-    const tabs = [['feed', 'Feed', 'tab-live'], ['members', 'Members', 'tab-players'], ['leaderboard', 'Leaderboard', 'tab-board'], ['challenges', 'Challenges', 'tab-draw'],
+    const tabs = [['feed', 'Feed', 'tab-live'], ['members', 'Members', 'tab-players'], ['leaderboard', 'Leaderboard', 'tab-board'], ['ladder', 'Ladder', 'tab-draw'],
       ...(c.can.admin ? [['page', 'Page', 'tab-setup']] : [])];
     const tab = tabs.some(([id]) => id === S.route.tab) ? S.route.tab : 'feed';
     const head = h('header', { class: 'club-head' },
@@ -6726,8 +6727,7 @@
       feed: () => feedList(S.clubFeed, member ? 'Nothing here yet. Results, titles and new members show up here.' : 'Nothing public here yet.'),
       members: () => clubMembers(c),
       leaderboard: () => clubLeaderboard(c),
-      challenges: () => h('div', { class: 'card' }, h('h2', {}, 'Challenges are coming'),
-        h('p', { class: 'muted' }, `Soon ${c.name} can take on other clubs — a team tie, a friendly match or a distance battle — and members can challenge each other. Results go on the club's record and everyone's feed.`)),
+      ladder: () => clubLadders(c),
       page: () => clubPageCard(c),
     }[tab]();
     return [head,
@@ -6764,6 +6764,58 @@
         h('div', { class: 'actions' },
           h('button', { class: 'btn btn-small', onclick: () => copy(clubUrl(c), 'Invite link copied') }, 'Copy invite link'),
           h('button', { class: 'btn btn-small btn-ghost', onclick: () => confirm('Make a new invite link? The old one stops working.') && clubAct(() => api('PATCH', clubPath(c.slug), { newInvite: true }), 'New invite link made') }, 'New link'))) : null,
+    ];
+  }
+
+  // The club's ladders: ranked members, who you can challenge, open challenges.
+  function clubLadders(c) {
+    const L = S.clubLadders;
+    if (!L || L.slug !== c.slug) {
+      S.clubLadders = { slug: c.slug, loading: true };
+      api('GET', `${clubPath(c.slug)}/ladders`).then((r) => { S.clubLadders = { slug: c.slug, ...r }; render(); }, () => { S.clubLadders = { slug: c.slug, ladders: [] }; render(); });
+      return loading();
+    }
+    if (L.loading) return loading();
+    const setL = (r) => { S.clubLadders = { slug: c.slug, ...r }; };
+    const start = () => {
+      const options = challengeable().filter((x) => !c.sports.length || c.sports.some((y) => y.id === x.id));
+      const pick = h('select', { 'aria-label': 'Sport' }, (options.length ? options : challengeable()).map((x) => h('option', { value: x.id }, x.name)));
+      const reach = h('select', { 'aria-label': 'Reach' }, [1, 2, 3, 4, 5].map((v) => h('option', { value: v, selected: v === 3 }, `${v} place${v === 1 ? '' : 's'} up`)));
+      S.ladderForm = h('form', {
+        class: 'card form',
+        onsubmit: (e) => { e.preventDefault(); act(async () => { setL(await api('POST', `${clubPath(c.slug)}/ladders`, { sport: pick.value, reach: Number(reach.value) })); S.ladderForm = null; }, 'Ladder started — members can join'); },
+      }, h('h2', {}, 'Start a ladder'), field('Sport', pick), field('Members can challenge', reach, null, 'How far up the ladder you can challenge. Win, and you take their place.'),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Start'), h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { S.ladderForm = null; render(); } }, 'Cancel')));
+      render();
+    };
+    const challengeOn = (l, r) => {
+      const place = prompt(`Challenge ${r.name} (#${r.position})? Where will you play? (optional)`, '');
+      if (place === null) return;
+      act(async () => { const x = await api('POST', `/ladders/${l.id}/challenge`, { to: r.id, place }); S.challenge = x; navigate(`/c/${x.id}`); }, `Challenge sent to ${r.name} 🔥`);
+    };
+    const one = (l) => h('div', { class: 'card ladder' },
+      h('div', { class: 'card-head' }, h('h2', {}, l.name),
+        moreButton(l.name, [
+          { label: 'Share the ladder', onClick: () => shareSheet({ title: l.name, text: `${l.name} on Tonament — climb it:`, url: `${location.origin}/club/${c.slug}?tab=ladder`, image: `/img/ladder/${l.id}.png` }) },
+          l.me ? { label: 'Leave the ladder', danger: true, onClick: () => confirm('Leave the ladder? Everyone below you moves up.') && act(async () => { setL(await api('POST', `/ladders/${l.id}/leave`)); }, 'You left the ladder') } : null,
+        ])),
+      h('p', { class: 'muted small', style: 'margin-top:0' }, `${l.sport.name} · challenge up to ${l.reach} place${l.reach === 1 ? '' : 's'} above you. Win and take their place; a challenge unanswered for a week goes to the challenger.`),
+      l.rungs.length ? h('ol', { class: 'entries ladder-rungs' }, l.rungs.map((r) => h('li', { class: r.position === l.me ? 'me' : '' },
+        h('span', { class: 'seed' }, r.position),
+        h('span', { class: 'name' }, r.handle ? h('a', { href: `/p/${r.handle}` }, r.name) : r.name, r.climbed ? [' ', pill('done', '↑ climbed')] : null,
+          r.rating ? h('small', { class: 'contact' }, `Rating ${r.rating}`) : null),
+        r.canChallenge ? h('button', { class: 'btn btn-small btn-primary', onclick: () => challengeOn(l, r) }, 'Challenge') : null))) : empty('Nobody on it yet — be the first.'),
+      !l.me && L.member ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => act(async () => { setL(await api('POST', `/ladders/${l.id}/join`)); }, 'You\'re on the ladder — challenge your way up') }, 'Join the ladder')) : null,
+      l.busy ? h('p', { class: 'muted small' }, 'You have a ladder challenge open — finish it to challenge again.') : null,
+      l.open.length ? h('div', { class: 'ladder-open' }, h('h3', {}, 'Challenges on now'),
+        h('ul', { class: 'org-t-list' }, l.open.map((x) => h('li', {}, h('a', { href: `/c/${x.id}` }, `#${x.a ? x.a.position : '?'} ${x.a ? x.a.name : ''} v #${x.b ? x.b.position : '?'} ${x.b ? x.b.name : ''}`), pill((CH_STATUS[x.status] || [''])[0], (CH_STATUS[x.status] || ['', x.status])[1]))))) : null);
+    return [
+      L.ladders.map(one),
+      !L.ladders.length ? h('div', { class: 'card' }, h('h2', {}, 'Club ladder'),
+        h('p', { class: 'muted' }, 'A ladder ranks the club: challenge anyone a few places above you, win and take their place. Every climb goes on the feed.'),
+        L.admin ? null : h('p', { class: 'muted small' }, 'A club admin can start one.')) : null,
+      L.admin ? (S.ladderForm || h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: start }, L.ladders.length ? 'Start another ladder' : 'Start a ladder'))) : null,
+      !L.member && S.me ? h('p', { class: 'muted small' }, 'Join the club to get on its ladder.') : null,
     ];
   }
 
@@ -6937,7 +6989,7 @@
     return [
       h('p', {}, h('a', { class: 'back-link', href: '/challenges' }, '← Challenges')),
       h('div', { class: 'card challenge-head' },
-        h('p', { class: 'eyebrow' }, `${x.parent ? 'Rematch' : 'Challenge'} · ${x.sport.name} · ${x.format}`),
+        h('p', { class: 'eyebrow' }, x.ladder ? `Ladder · #${x.ladder.a} v #${x.ladder.b} · ${x.sport.name}` : `${x.parent ? 'Rematch' : 'Challenge'} · ${x.sport.name} · ${x.format}`),
         h('h1', {}, withRating(x.a), h('span', { class: 'muted' }, ' v '), withRating(x.b)),
         h('p', { class: 'muted small' }, [x.playAt ? fmtWhen(x.playAt) : null, x.place].filter(Boolean).join(' · ') || null),
         x.message ? h('p', { class: 'challenge-message' }, `“${x.message}”`) : null,
@@ -6945,7 +6997,8 @@
       x.status === 'sent' ? h('div', { class: 'card' },
         x.can.respond ? [h('h2', {}, 'You\'re challenged'), h('div', { class: 'actions' },
           h('button', { class: 'btn btn-primary btn-lg', onclick: () => post('respond', { accept: true }, 'Challenge accepted 🔥') }, 'Accept'),
-          h('button', { class: 'btn btn-lg', onclick: () => post('respond', { accept: false }, 'Declined') }, 'Not this time'))]
+          x.can.decline ? h('button', { class: 'btn btn-lg', onclick: () => post('respond', { accept: false }, 'Declined') }, 'Not this time') : null),
+          x.ladder ? h('p', { class: 'muted small' }, `A ladder challenge: play it within a week, or ${sideNames(x.a)} takes your place.`) : null]
           : [h('p', { style: 'margin:0' }, `Waiting for ${sideNames(x.b)} to answer.`), x.can.cancel ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-ghost', onclick: () => confirm('Cancel this challenge?') && post('cancel', {}, 'Cancelled') }, 'Cancel it')) : null]) : null,
       x.score && x.rallies ? scoreboard(m) : x.final ? h('div', { class: 'card final-score' }, h('strong', {}, `${m.a.name} ${x.final.a} – ${x.final.b} ${m.b.name}`)) : null,
       playing ? h('div', { class: 'seg score-mode', role: 'group', 'aria-label': 'How to score' },
@@ -7071,6 +7124,9 @@
       const won = d.winner === 'a' ? d.a : d.b;
       const lost = d.winner === 'a' ? d.b : d.a;
       return ['⚔️ ', h('strong', {}, won.join(' & ')), ' beat ', lost.join(' & '), ' ', h('span', { class: 'feed-score' }, d.score), ` in a ${d.back ? 'rematch' : 'challenge'}`];
+    }
+    if (x.verb === 'ladder') {
+      return ['🪜 ', who, ` climbed to #${d.to} on the `, h('a', { href: `/club/${d.slug}?tab=ladder` }, d.ladder), d.forfeit ? ` — ${d.beat} didn't answer in time` : [` — beat ${d.beat} `, h('span', { class: 'feed-score' }, d.score)]];
     }
     if (x.verb === 'joined') return [who, ' joined ', h('a', { href: `/club/${d.slug}` }, d.club)];
     if (x.verb === 'club') return [who, ' started ', h('a', { href: `/club/${d.slug}` }, d.club), d.city ? ` in ${d.city}` : ''];

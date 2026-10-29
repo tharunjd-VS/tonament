@@ -62,7 +62,7 @@ function svgFor(card, size = 'og') {
   const width = W - pad * 2 - (story ? 60 : 200);
   const long = (card.title || '').length;
   const titleSize = story ? (long > 22 ? 84 : 104) : long > 30 ? 52 : long > 20 ? 60 : 72;
-  const titleLines = wrap(card.title, width, titleSize, story ? 4 : 2);
+  const titleLines = wrap(card.title, width, card.lines && !story ? Math.min(titleSize, 56) : titleSize, story ? 4 : card.lines ? 1 : 2);
   const subSize = story ? 44 : 30;
   const subLines = wrap(card.subtitle, width, subSize, story ? 3 : 1);
   const out = [];
@@ -71,16 +71,28 @@ function svgFor(card, size = 'og') {
     out.push(`<text x="${pad}" y="${y}" font-size="${story ? 34 : 24}" font-weight="600" letter-spacing="${story ? 7 : 5}" fill="${LIME}">${esc(card.eyebrow.toUpperCase())}</text>`);
     y += story ? 120 : 72;
   }
+  const tSize = card.lines && !story ? Math.min(titleSize, 56) : titleSize;
   for (const l of titleLines) {
-    out.push(`<text x="${pad}" y="${y}" font-size="${titleSize}" font-weight="800" fill="${MIST}">${esc(l)}</text>`);
-    y += titleSize * 1.08;
+    out.push(`<text x="${pad}" y="${y}" font-size="${tSize}" font-weight="800" fill="${MIST}">${esc(l)}</text>`);
+    y += tSize * 1.08;
   }
   y += story ? 24 : 4;
   for (const l of subLines) {
     out.push(`<text x="${pad}" y="${y}" font-size="${subSize}" font-weight="400" fill="${MUTED}">${esc(l)}</text>`);
     y += subSize * 1.3;
   }
-  if (card.big) {
+  if (card.lines && card.lines.length) {
+    // A short table: "1  Arjun Mehta  1240", up to five rows.
+    const rowH = story ? 104 : 46;
+    let ly = story ? y + 60 : y + 8;
+    for (const [i, line] of card.lines.slice(0, 5).entries()) {
+      const size = story ? 48 : 28;
+      out.push(`<text x="${pad}" y="${ly}" font-size="${size}" font-weight="800" fill="${i ? MUTED : LIME}">${i + 1}</text>`,
+        `<text x="${pad + size * 1.6}" y="${ly}" font-size="${size}" font-weight="${i ? 600 : 800}" fill="${MIST}">${esc(wrap(line.name, width - size * 5, size, 1)[0] || '')}</text>`,
+        line.value != null ? `<text x="${pad + width}" y="${ly}" font-size="${size}" font-weight="600" fill="${MUTED}" text-anchor="end">${esc(line.value)}</text>` : '');
+      ly += rowH;
+    }
+  } else if (card.big) {
     // Bottom zone: the number, with its label beside it (og) or below it (story).
     const bigSize = story ? 190 : 92;
     const base = story ? H - 470 : H - 104;
@@ -142,10 +154,29 @@ function createCards({ db }) {
       const lost = d.winner === 'a' ? d.b : d.a;
       return { eyebrow: `${d.back ? 'Rematch' : 'Challenge'} won · ${sportName(a.sport)}`, title: (won || []).join(' & '), subtitle: `beat ${(lost || []).join(' & ')}`, big: d.score, bigLabel: 'Your move?' };
     }
+    if (a.verb === 'ladder') {
+      return { eyebrow: `${d.ladder} · ${sportName(a.sport)}`, title: who ? who.name : 'A climber', subtitle: d.forfeit ? `took #${d.to} from ${d.beat} by default` : `beat ${d.beat} to climb from #${d.from}`, big: `#${d.to}`, bigLabel: d.score || null };
+    }
     if (a.verb === 'joined' || a.verb === 'club') {
       return { eyebrow: a.verb === 'club' ? 'New club' : 'Joined the club', title: d.club, subtitle: `${who ? who.name : 'Someone'} ${a.verb === 'club' ? 'started it' : 'is in'} — join them on Tonament` };
     }
     return null;
+  }
+
+  // A ladder's top five (members' names: not when a profile is private or under 18).
+  async function ladder(id) {
+    const [l] = await db.query(`SELECT l.*, o.name AS club FROM ladders l JOIN orgs o ON o.id = l.org_id WHERE l.id = $1 AND l.status = 'active'`, [Number(id) || 0]);
+    if (!l) return null;
+    const rows = await db.query(
+      `SELECT r.position, u.name, u.profile_public, u.birth_year, rt.rating FROM ladder_rungs r JOIN users u ON u.id = r.user_id
+       LEFT JOIN ratings rt ON rt.user_id = r.user_id AND rt.sport = $2 WHERE r.ladder_id = $1 ORDER BY r.position LIMIT 5`,
+      [l.id, l.sport],
+    );
+    const shown = (u) => u.profile_public && !(u.birth_year && u.birth_year > minorYear());
+    return {
+      eyebrow: `Ladder · ${sportName(l.sport)}`, title: l.name, subtitle: rows.length ? `${l.club} · challenge your way up` : 'Join and climb',
+      lines: rows.map((r) => ({ name: shown(r) ? r.name : 'A member', value: r.rating ? String(r.rating) : null })),
+    };
   }
 
   async function club(slug) {
@@ -198,7 +229,7 @@ function createCards({ db }) {
     };
   }
 
-  const KINDS = { a: activity, club, p: player, t: tournament };
+  const KINDS = { a: activity, club, p: player, t: tournament, ladder };
   // The PNG for /img/<kind>/<id>.png, or null.
   async function image(kind, id, size) {
     const make = KINDS[kind];

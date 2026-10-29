@@ -15,6 +15,7 @@ const L = require('./group-logic');
 
 const AUTO_CONFIRM_HOURS = 24;
 const EXPIRE_DAYS = 14;
+const LADDER_DAYS = 7; // a ladder challenge unanswered this long is a forfeit
 const MAX_OPEN = 10;
 const OPEN = ['sent', 'accepted', 'live'];
 
@@ -71,16 +72,20 @@ function createChallenges({ db, fail, text, social, notify }) {
     return x;
   }
   // Unanswered for two weeks: expired. Unconfirmed for a day: confirmed.
+  // Ladders (ladders.js) hear about results: confirmed(q, row), forfeit(q, row).
+  const hooks = { confirmed: null, forfeit: null };
+
   async function settle(q, x) {
-    if (x.status === 'sent' && Date.parse(x.created_at) < Date.now() - EXPIRE_DAYS * 86400000) {
-      await q(`UPDATE challenges SET status = 'expired' WHERE id = $1`, [x.id]);
-      return { ...x, status: 'expired' };
+    if (x.status === 'sent' && Date.parse(x.created_at) < Date.now() - (x.ladder_id ? LADDER_DAYS : EXPIRE_DAYS) * 86400000) {
+      const [row] = await q(`UPDATE challenges SET status = 'expired' WHERE id = $1 RETURNING *`, [x.id]);
+      if (row.ladder_id && hooks.forfeit) await hooks.forfeit(q, row);
+      return row;
     }
     if (x.status === 'done' && Date.parse(x.ended_at) < Date.now() - AUTO_CONFIRM_HOURS * 3600000) return confirmIn(q, x, null);
     return x;
   }
 
-  function viewOf(x, actor, people, ratings) {
+  function viewOf(x, actor, people, ratings, ladders = new Map()) {
     const me = actor?.user?.id;
     const side = me ? sideOf(x, me) : null;
     const person = (id) => (id ? { id, name: people.get(id)?.name || 'Player', handle: people.get(id)?.handle || null, rating: ratings.get(id) ?? null } : null);
@@ -107,10 +112,12 @@ function createChallenges({ db, fail, text, social, notify }) {
       summary: x.final ? `${x.final.a}–${x.final.b}` : sc ? s.summary(sc) : null,
       deltas: x.deltas,
       parent: x.parent_id,
+      ladder: ladders.get(x.ladder_id) || null,
       confirmBy: x.status === 'done' && x.ended_at ? new Date(Date.parse(x.ended_at) + AUTO_CONFIRM_HOURS * 3600000).toISOString() : null,
       me: side,
       can: {
         respond: x.status === 'sent' && [x.b1, x.b2].includes(me),
+        decline: x.status === 'sent' && [x.b1, x.b2].includes(me) && !x.ladder_id,
         cancel: OPEN.includes(x.status) && x.status !== 'live' && x.created_by === me,
         score: live && Boolean(side),
         confirm: ['done', 'disputed'].includes(x.status) && side === loser,
@@ -127,7 +134,20 @@ function createChallenges({ db, fail, text, social, notify }) {
     const all = [...new Set(rows.flatMap(ids))];
     const people = new Map((await q('SELECT id, name, handle FROM users WHERE id = ANY($1::int[])', [all])).map((u) => [u.id, u]));
     const rated = await q('SELECT user_id, sport, rating FROM ratings WHERE user_id = ANY($1::int[])', [all]);
-    return rows.map((x) => viewOf(x, actor, people, new Map(rated.filter((r) => r.sport === x.sport).map((r) => [r.user_id, r.rating]))));
+    // Ladder challenges: the ladder, and each side's place on it.
+    const ladderIds = [...new Set(rows.map((x) => x.ladder_id).filter(Boolean))];
+    const ladders = new Map();
+    if (ladderIds.length) {
+      const ls = await q('SELECT id, name FROM ladders WHERE id = ANY($1::int[])', [ladderIds]);
+      const rungs = await q('SELECT ladder_id, user_id, position FROM ladder_rungs WHERE ladder_id = ANY($1::int[]) AND user_id = ANY($2::int[])', [ladderIds, all]);
+      for (const x of rows.filter((r) => r.ladder_id)) {
+        const l = ls.find((y) => y.id === x.ladder_id);
+        // Their places when it was sent (they move once it's played).
+        const at = (id) => (rungs.find((r) => r.ladder_id === x.ladder_id && r.user_id === id) || {}).position || null;
+        if (l) ladders.set(x.ladder_id, { id: l.id, name: l.name, a: x.ladder_at ? x.ladder_at.a : at(x.a1), b: x.ladder_at ? x.ladder_at.b : at(x.b1) });
+      }
+    }
+    return rows.map((x) => viewOf(x, actor, people, new Map(rated.filter((r) => r.sport === x.sport).map((r) => [r.user_id, r.rating])), ladders));
   }
 
   async function get(id, actor) {
@@ -205,9 +225,9 @@ function createChallenges({ db, fail, text, social, notify }) {
     const message = text(input.message, 'Message', { max: 200, optional: true });
     const playAt = input.playAt && !Number.isNaN(Date.parse(input.playAt)) ? new Date(input.playAt).toISOString() : null;
     const [x] = await db.query(
-      `INSERT INTO challenges (sport, scoring, a1, a2, b1, b2, created_by, org_id, parent_id, message, place, play_at)
-       VALUES ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [sport, JSON.stringify(scoring), side[0], side[1], other[0], other[1], me.id, Number(input.club) || null, Number(input.back) || null, message, place, playAt],
+      `INSERT INTO challenges (sport, scoring, a1, a2, b1, b2, created_by, org_id, parent_id, message, place, play_at, ladder_id, ladder_at)
+       VALUES ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb) RETURNING *`,
+      [sport, JSON.stringify(scoring), side[0], side[1], other[0], other[1], me.id, Number(input.club) || null, Number(input.back) || null, message, place, playAt, Number(input.ladder) || null, input.ladderAt ? JSON.stringify(input.ladderAt) : null],
     );
     const name = new Map(users.map((u) => [u.id, u.name]));
     await notify.send(db.query, {
@@ -225,6 +245,7 @@ function createChallenges({ db, fail, text, social, notify }) {
       const x = await settle(q, await load(q, id, { lock: true }));
       if (x.status !== 'sent') fail(409, x.status === 'expired' ? 'This challenge expired' : 'Already answered');
       if (![x.b1, x.b2].includes(me.id)) fail(403, 'Only the challenged side can answer');
+      if (!accept && x.ladder_id) fail(409, 'Ladder challenges are played (or the place goes to the challenger after a week)');
       await q('UPDATE challenges SET status = $1, responded_at = now() WHERE id = $2', [accept ? 'accepted' : 'declined', x.id]);
       await notify.send(q, {
         users: [x.a1, x.a2].filter(Boolean), kind: 'challenge_reply', actor: me.id, dedupe: `reply:${x.id}`,
@@ -318,6 +339,7 @@ function createChallenges({ db, fail, text, social, notify }) {
       data: { a: sides.a.map((id) => name.get(id)), b: sides.b.map((id) => name.get(id)), winner: x.winner, winners: sides[x.winner], score, back: Boolean(x.parent_id), challenge: x.id },
       visibility: people.every((p) => p.profile_public) ? 'public' : 'followers',
     });
+    if (row.ladder_id && hooks.confirmed) await hooks.confirmed(q, row);
     return row;
   }
   async function confirm(id, actor) {
@@ -341,7 +363,7 @@ function createChallenges({ db, fail, text, social, notify }) {
     return get(id, actor);
   }
 
-  return { create, respond, cancel, rally, undo, result, confirm, dispute, get, mine, people, rate, unrate, ratingsOf, challengeable };
+  return { hooks, settle, load, create, respond, cancel, rally, undo, result, confirm, dispute, get, mine, people, rate, unrate, ratingsOf, challengeable };
 }
 
 module.exports = { createChallenges };
