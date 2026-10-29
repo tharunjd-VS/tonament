@@ -68,6 +68,18 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/goals",
+      "destination": "/api/index?__path=app"
+    },
+    {
+      "source": "/goals/:id(\\d{1,12})",
+      "destination": "/api/index?__path=goalpage/:id"
+    },
+    {
+      "source": "/goals/:path*",
+      "destination": "/api/index?__path=app"
+    },
+    {
       "source": "/challenges",
       "destination": "/api/index?__path=app"
     },
@@ -92,7 +104,7 @@
       "destination": "/api/index?__path=item/:id"
     },
     {
-      "source": "/img/:kind(a|club|p|t|ladder)/:file",
+      "source": "/img/:kind(a|club|p|t|ladder|goal)/:file",
       "destination": "/api/index?__path=img/:kind/:file"
     },
     {

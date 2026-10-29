@@ -1487,6 +1487,21 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .ladder { margin-bottom: 16px; }
 .ladder-rungs li.me { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 8px; }
 .ladder-open h3 { margin: 14px 0 4px; font-size: 1rem; }
+/* Goals */
+.goal-card { display: grid; gap: 6px; text-decoration: none; color: var(--text); }
+.goal-card .eyebrow, .goal-head .eyebrow { margin: 0; }
+.goal-title { font-size: 1.05rem; overflow-wrap: anywhere; }
+.goal-versus { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.goal-side { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); color: var(--text); text-decoration: none; }
+.goal-side strong { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.goal-versus.big .goal-side strong { font-size: 2rem; }
+.goal-head h1 { margin: 4px 0 10px; font-size: 1.4rem; overflow-wrap: anywhere; }
+.goal-big { margin: 0 0 6px; font-size: 2.2rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.goal-big small { font-size: 1rem; font-weight: 600; color: var(--muted); }
+.goal-board .progress { display: block; margin-top: 4px; max-width: 220px; }
+.goal-board li.me { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 8px; }
+.goal-value { font-variant-numeric: tabular-nums; }
+.club-goals { display: grid; gap: 12px; margin-bottom: 16px; }
 /* Notifications */
 .bell { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 50%; text-decoration: none; font-size: 1.15rem; }
 .bell:hover { background: rgba(255, 255, 255, 0.08); }

@@ -21,6 +21,7 @@ const { createCards } = require('./cards');
 const { createNotify } = require('./notify');
 const { createChallenges } = require('./challenges');
 const { createLadders } = require('./ladders');
+const { createGoals } = require('./goals');
 const dupr = require('./dupr');
 const { inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
 const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
@@ -220,6 +221,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   let orgs;
   let profiles;
   let social;
+  let goalsRef = null;
   let referrals;
 
   // ---------- queries (q is db.query or a transaction's query)
@@ -3649,7 +3651,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const groups = createGroups({ db, fail, text, orgs, social, notify, ratings: challenges });
   const clubs = createClubs({ db, fail, orgs, social, mediaUrl, notify });
   const ladders = createLadders({ db, fail, text, social, notify, challenges });
-  const cards = createCards({ db });
+  const goals = createGoals({ db, fail, text, social, notify });
+  goalsRef = goals;
+  // (the goal card asks the goals module for a goal when it's drawn)
+  const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null) });
 
   referrals = createReferrals({ db, fail, mailer: mailer?.enabled ? mailer : null, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, ''), confirmWaiting });
 
@@ -3672,6 +3677,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     notify,
     challenges,
     ladders,
+    goals,
     referrals,
     useCredit,
     takeOverScoring,

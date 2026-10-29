@@ -20,6 +20,7 @@ const KINDS = {
   challenge: { label: 'Challenges for you', email: true },
   challenge_reply: { label: 'Replies to your challenges', email: false },
   ladder: { label: 'Ladder moves', email: false },
+  goal: { label: 'Goals reached', email: false },
 };
 const PAGE = 40;
 const DELIVERY_MS = 4000;

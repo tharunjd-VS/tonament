@@ -128,7 +128,7 @@ function render(card, size = 'og') {
   return r.render().asPng();
 }
 
-function createCards({ db }) {
+function createCards({ db, goalsView = null }) {
   const minorYear = () => new Date().getFullYear() - MINOR_AGE;
   const sportName = (id) => (sports.get(id) || sports.info(id) || {}).name || '';
   const FINISH = { W: 'Champion', F: 'Finalist' };
@@ -154,6 +154,11 @@ function createCards({ db }) {
       const lost = d.winner === 'a' ? d.b : d.a;
       return { eyebrow: `${d.back ? 'Rematch' : 'Challenge'} won · ${sportName(a.sport)}`, title: (won || []).join(' & '), subtitle: `beat ${(lost || []).join(' & ')}`, big: d.score, bigLabel: 'Your move?' };
     }
+    if (a.verb === 'goal') {
+      return d.rival
+        ? { eyebrow: `Club v club · ${sportName(a.sport) || 'Any sport'}`, title: `${d.club} won`, subtitle: `${d.title}`, big: `${d.value}–${d.against}`, bigLabel: d.metric }
+        : { eyebrow: `Goal reached · ${sportName(a.sport) || 'Any sport'}`, title: d.club || (who ? who.name : 'Goal reached'), subtitle: d.title, big: String(d.value), bigLabel: d.metric };
+    }
     if (a.verb === 'ladder') {
       return { eyebrow: `${d.ladder} · ${sportName(a.sport)}`, title: who ? who.name : 'A climber', subtitle: d.forfeit ? `took #${d.to} from ${d.beat} by default` : `beat ${d.beat} to climb from #${d.from}`, big: `#${d.to}`, bigLabel: d.score || null };
     }
@@ -177,6 +182,20 @@ function createCards({ db }) {
       eyebrow: `Ladder · ${sportName(l.sport)}`, title: l.name, subtitle: rows.length ? `${l.club} · challenge your way up` : 'Join and climb',
       lines: rows.map((r) => ({ name: shown(r) ? r.name : 'A member', value: r.rating ? String(r.rating) : null })),
     };
+  }
+
+  // A goal's progress (a club's total, the two clubs, or the people chasing it).
+  async function goal(id) {
+    const [g] = await db.query('SELECT id FROM goals WHERE id = $1', [Number(id) || 0]);
+    if (!g || !goalsView) return null;
+    const v = await goalsView(g.id);
+    const left = v.ended ? 'Final' : `${v.daysLeft} day${v.daysLeft === 1 ? '' : 's'} left`;
+    const eyebrow = `Goal · ${v.sport ? v.sport.name : 'Any sport'} · ${left}`;
+    if (v.scope === 'versus') return { eyebrow, title: v.title, subtitle: `${v.metric} by members of each club`, lines: [v.club, v.rival].sort((a, b) => b.total - a.total).map((o) => ({ name: o.name, value: String(o.total) })) };
+    if (v.scope === 'club') return { eyebrow, title: v.title, subtitle: v.club.name, big: `${v.total}/${v.target}`, bigLabel: `${v.metric} together` };
+    const shown = await db.query(`SELECT id FROM users WHERE id = ANY($1::int[]) AND profile_public AND NOT (birth_year IS NOT NULL AND birth_year > $2)`, [v.board.map((p) => p.id), minorYear()]);
+    const ok = new Set(shown.map((u) => u.id));
+    return { eyebrow, title: v.title, subtitle: `${v.people} chasing it`, lines: v.board.slice(0, 5).map((p) => ({ name: ok.has(p.id) ? p.name : 'A player', value: `${p.value}/${v.target}` })) };
   }
 
   async function club(slug) {
@@ -229,7 +248,7 @@ function createCards({ db }) {
     };
   }
 
-  const KINDS = { a: activity, club, p: player, t: tournament, ladder };
+  const KINDS = { a: activity, club, p: player, t: tournament, ladder, goal };
   // The PNG for /img/<kind>/<id>.png, or null.
   async function image(kind, id, size) {
     const make = KINDS[kind];

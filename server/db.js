@@ -689,11 +689,37 @@ CREATE TABLE IF NOT EXISTS ladder_rungs (
 CREATE INDEX IF NOT EXISTS ladder_rungs_position ON ladder_rungs(ladder_id, position);
 ALTER TABLE challenges ADD COLUMN IF NOT EXISTS ladder_id INTEGER;
 ALTER TABLE challenges ADD COLUMN IF NOT EXISTS ladder_at JSONB;   -- { a, b }: their places when it was sent
+-- v38: goals. "30 games this month": personal (each person who joins chases
+-- the target), a club's total, or club v club. Progress counts confirmed group
+-- games, challenges and tournament matches between starts_at and ends_at.
+CREATE TABLE IF NOT EXISTS goals (
+  id          SERIAL PRIMARY KEY,
+  scope       TEXT NOT NULL,                      -- personal | club | versus
+  title       TEXT NOT NULL,
+  metric      TEXT NOT NULL,                      -- games | wins
+  sport       TEXT,                               -- null: any sport
+  target      INTEGER,                            -- per person (personal), the total (club); optional for versus
+  org_id      INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+  rival_id    INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+  starts_at   TIMESTAMPTZ NOT NULL,
+  ends_at     TIMESTAMPTZ NOT NULL,
+  created_by  INTEGER NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS goals_org ON goals(org_id);
+CREATE TABLE IF NOT EXISTS goal_members (
+  goal_id   INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+  user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  org_id    INTEGER,                              -- their side, in club v club
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (goal_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS goal_members_user ON goal_members(user_id);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 37;
+const SCHEMA_VERSION = 38;
 
 async function migrate(db) {
   try {

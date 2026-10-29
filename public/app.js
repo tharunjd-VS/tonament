@@ -647,6 +647,26 @@
         // Seen: the count goes, the dots stay until the next visit.
         if (S.inbox.items.some((n) => !n.read)) api('POST', '/notifications/read', {}).then(() => refreshBell(true)).catch(() => {});
         return;
+      } else if (parts[0] === 'goals') {
+        if (/^\d+$/.test(parts[1] || '')) {
+          S.route = { name: 'goal', id: Number(parts[1]) };
+          if (!S.goal || S.goal.id !== S.route.id) S.goal = null;
+          render();
+          S.goal = await api('GET', `/goals/${S.route.id}`).catch((e) => { S.error = e.message; return null; });
+        } else if (!S.me) {
+          navigate(`/signin?next=${encodeURIComponent(location.pathname)}`, { replace: true });
+          return;
+        } else if (parts[1] === 'new') {
+          S.route = { name: 'goalNew' };
+          S.goalDraft = null;
+          render();
+          S.goalClubs = await api('GET', '/clubs/mine').catch(() => []);
+        } else {
+          S.route = { name: 'goals' };
+          S.goals = null;
+          render();
+          S.goals = await api('GET', '/goals').catch(() => ({ active: [], past: [] }));
+        }
       } else if (parts[0] === 'challenges') {
         if (!S.me) {
           navigate(`/signin?next=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
@@ -879,6 +899,9 @@
     else if (S.route.name === 'item') view = viewItem();
     else if (S.route.name === 'notifications') view = viewNotifications();
     else if (S.route.name === 'challenges') view = viewChallenges();
+    else if (S.route.name === 'goals') view = viewGoals();
+    else if (S.route.name === 'goalNew') view = viewGoalNew();
+    else if (S.route.name === 'goal') view = viewGoal();
     else if (S.route.name === 'challengeNew') view = viewChallengeNew();
     else if (S.route.name === 'challenge') view = viewChallenge();
     else if (S.route.name === 'profile') view = viewProfile();
@@ -4921,6 +4944,7 @@
             h('a', { href: '/groups', onclick: closeMenu }, 'Your groups'),
             h('a', { href: '/clubs', onclick: closeMenu }, 'Clubs'),
             h('a', { href: '/challenges', onclick: closeMenu }, 'Challenges'),
+            h('a', { href: '/goals', onclick: closeMenu }, 'Goals'),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
@@ -6651,6 +6675,7 @@
   async function loadClub() {
     const { slug, join } = S.route;
     S.clubLadders = null; // positions move: fetch them fresh
+    S.clubGoalsList = null;
     try {
       S.club = await api('GET', `${clubPath(slug)}${join ? `?join=${encodeURIComponent(join)}` : ''}`);
       S.error = null;
@@ -6724,7 +6749,7 @@
             S.me && !member ? { label: 'Report this club', onClick: () => report('club', c.id) } : null,
           ]))));
     const body = {
-      feed: () => feedList(S.clubFeed, member ? 'Nothing here yet. Results, titles and new members show up here.' : 'Nothing public here yet.'),
+      feed: () => [clubGoals(c), feedList(S.clubFeed, member ? 'Nothing here yet. Results, titles and new members show up here.' : 'Nothing public here yet.')],
       members: () => clubMembers(c),
       leaderboard: () => clubLeaderboard(c),
       ladder: () => clubLadders(c),
@@ -6765,6 +6790,20 @@
           h('button', { class: 'btn btn-small', onclick: () => copy(clubUrl(c), 'Invite link copied') }, 'Copy invite link'),
           h('button', { class: 'btn btn-small btn-ghost', onclick: () => confirm('Make a new invite link? The old one stops working.') && clubAct(() => api('PATCH', clubPath(c.slug), { newInvite: true }), 'New invite link made') }, 'New link'))) : null,
     ];
+  }
+
+  // The club's goals on now, above its feed (and, for admins, a way to set one).
+  function clubGoals(c) {
+    const G = S.clubGoalsList;
+    if (!G || G.slug !== c.slug) {
+      S.clubGoalsList = { slug: c.slug, list: null };
+      api('GET', `${clubPath(c.slug)}/goals`).then((list) => { S.clubGoalsList = { slug: c.slug, list }; render(); }, () => { S.clubGoalsList = { slug: c.slug, list: [] }; });
+      return null;
+    }
+    const list = (G.list || []).filter((g) => !g.ended || g.scope === 'versus');
+    if (!list.length && !c.can.admin) return null;
+    return h('div', { class: 'club-goals' }, list.map(goalCard),
+      c.can.admin ? h('p', {}, h('a', { class: 'btn btn-small', href: `/goals/new?club=${c.slug}` }, '🎯 Set a club goal')) : null);
   }
 
   // The club's ladders: ranked members, who you can challenge, open challenges.
@@ -7025,6 +7064,108 @@
     ];
   }
 
+  // ---------- goals: personal, a club's total, or club v club
+  const goalLeft = (g) => (g.ended ? 'Finished' : `${g.daysLeft} day${g.daysLeft === 1 ? '' : 's'} left`);
+  const goalWhat = (g) => `${g.metric}${g.sport ? ` · ${g.sport.name}` : ''}`;
+  // A goal as a card: progress bar (or the two clubs' totals), and a link.
+  function goalCard(g) {
+    const pct = (v, t) => `width:${Math.min(100, t ? (v / t) * 100 : 0)}%`;
+    return h('a', { class: 'card goal-card', href: `/goals/${g.id}` },
+      h('p', { class: 'eyebrow' }, [g.scope === 'versus' ? 'Club v club' : g.scope === 'club' ? 'Club goal' : 'Goal', goalWhat(g), goalLeft(g)].join(' · ')),
+      h('strong', { class: 'goal-title' }, g.title),
+      g.scope === 'versus'
+        ? h('div', { class: 'goal-versus' }, [g.club, g.rival].map((o) => h('span', { class: 'goal-side' }, h('span', {}, o.name), h('strong', {}, o.total))))
+        : [h('span', { class: 'progress' }, h('span', { style: g.scope === 'club' ? pct(g.total, g.target) : pct(g.me ? g.me.value : 0, g.target) })),
+          h('small', { class: 'muted' }, g.scope === 'club' ? `${g.total} of ${g.target} together` : g.me ? `You: ${g.me.value} of ${g.target}` : `${g.people} chasing it`)]);
+  }
+
+  function viewGoals() {
+    document.title = 'Goals · Tonament';
+    const G = S.goals;
+    return [
+      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Goals'), h('a', { class: 'btn btn-primary', href: '/goals/new' }, 'New goal')),
+      h('p', { class: 'muted' }, '“30 games this month”, a club target, or your club against another. Every confirmed game counts — groups, challenges and tournaments.'),
+      G == null ? loading() : [
+        G.active.length ? h('section', { class: 'section' }, h('h2', {}, 'On now'), h('div', { class: 'card-list' }, G.active.map(goalCard))) : empty('No goals yet — set one, and invite friends to chase it with you.'),
+        G.past.length ? h('section', { class: 'section' }, h('h2', {}, 'Finished'), h('div', { class: 'card-list' }, G.past.map(goalCard))) : null,
+      ],
+    ];
+  }
+
+  function viewGoalNew() {
+    document.title = 'New goal · Tonament';
+    const d = (S.goalDraft ||= { scope: 'personal', metric: 'games', sport: '', period: 'month', target: 30, club: new URLSearchParams(location.search).get('club') || '' });
+    const mine = (S.goalClubs || []).filter((c) => c.role === 'admin' && c.status === 'active');
+    const now = new Date();
+    const periods = {
+      week: [now, new Date(now.getFullYear(), now.getMonth(), now.getDate() + (7 - now.getDay()) % 7 + 1)],
+      month: [now, new Date(now.getFullYear(), now.getMonth() + 1, 1)],
+      days30: [now, new Date(Date.now() + 30 * 86400000)],
+    };
+    const form = h('form', {
+      class: 'card form new-flow',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const [startsAt, endsAt] = periods[d.period];
+        act(async () => {
+          const g = await api('POST', '/goals', {
+            scope: d.scope, metric: d.metric, sport: d.sport || null, target: fd.get('target') ? Number(fd.get('target')) : null,
+            club: fd.get('club') || null, rival: fd.get('rival') || null, title: fd.get('title') || null, startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString(),
+          });
+          S.goalDraft = null;
+          navigate(`/goals/${g.id}`);
+        }, 'Goal set — share it so others join in');
+      },
+    },
+    h('h1', {}, 'New goal'),
+    groupField('Who', choiceGroup({ name: 'scope', label: 'Who', value: d.scope, options: [
+      { value: 'personal', label: 'Me (and friends)', hint: 'Everyone who joins chases the target' },
+      { value: 'club', label: 'Our club', hint: 'Members add up to one total', disabled: !mine.length },
+      { value: 'versus', label: 'Club v club', hint: 'Whose members play more', disabled: !mine.length },
+    ], onchange: (e) => { d.scope = e.target.value; render(); } }), null, mine.length ? null : 'Club goals are set by a club\'s admins.'),
+    d.scope !== 'personal' ? field('Club', h('select', { name: 'club', required: true }, mine.map((c) => h('option', { value: c.slug, selected: c.slug === d.club }, c.name)))) : null,
+    d.scope === 'versus' ? field('Against', h('input', { name: 'rival', required: true, placeholder: 'Their club address, e.g. velachery-smashers', pattern: '[a-z0-9-]{3,30}' }), null, 'The part after tonament.com/club/ on their club page.') : null,
+    groupField('Count', choiceGroup({ name: 'metric', label: 'Count', value: d.metric, options: [{ value: 'games', label: 'Games played' }, { value: 'wins', label: 'Games won' }], onchange: (e) => { d.metric = e.target.value; } })),
+    field('Sport', h('select', { name: 'sport', onchange: (e) => { d.sport = e.target.value; } }, h('option', { value: '' }, 'Any sport'), (S.sports || []).filter((x) => x.status === 'live').map((x) => h('option', { value: x.id, selected: x.id === d.sport }, x.name)))),
+    d.scope !== 'versus' ? field('Target', h('input', { name: 'target', type: 'number', min: 1, max: 100000, required: true, value: d.target, inputmode: 'numeric' }), null, d.scope === 'club' ? 'For the whole club, together.' : 'For each person.') : null,
+    groupField('When', choiceGroup({ name: 'period', label: 'When', value: d.period, options: [{ value: 'week', label: 'This week' }, { value: 'month', label: 'This month' }, { value: 'days30', label: 'Next 30 days' }], onchange: (e) => { d.period = e.target.value; } })),
+    field('Name (optional)', h('input', { name: 'title', maxlength: 80, placeholder: 'e.g. November grind' })),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Set the goal')));
+    return form;
+  }
+
+  function viewGoal() {
+    const g = S.goal;
+    if (!g || g.id !== S.route.id) return loading();
+    document.title = `${g.title} · Goal`;
+    const share = () => shareSheet({ title: g.title, text: g.scope === 'versus' ? `${g.title} — ${g.club.name} ${g.club.total}, ${g.rival.name} ${g.rival.total}. Every game counts:` : `${g.title} — join me:`, url: `${location.origin}/goals/${g.id}`, image: `/img/goal/${g.id}.png` });
+    const post = (what, msg) => act(async () => { S.goal = await api('POST', `/goals/${g.id}/${what}`); }, msg);
+    const max = Math.max(1, ...g.board.map((p) => p.value), g.target || 0);
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: '/goals' }, '← Goals')),
+      h('div', { class: 'card goal-head' },
+        h('p', { class: 'eyebrow' }, [g.scope === 'versus' ? 'Club v club' : g.scope === 'club' ? `${g.club.name} goal` : 'Goal', goalWhat(g), goalLeft(g)].join(' · ')),
+        h('h1', {}, g.title),
+        g.scope === 'versus' ? h('div', { class: 'goal-versus big' }, [g.club, g.rival].map((o) => h('a', { class: 'goal-side', href: `/club/${o.slug}` }, h('span', {}, o.name), h('strong', {}, o.total))))
+          : g.scope === 'club' ? [h('p', { class: 'goal-big' }, `${g.total}`, h('small', {}, ` / ${g.target} ${g.metric}`)), h('span', { class: 'progress' }, h('span', { style: `width:${Math.min(100, (g.total / g.target) * 100)}%` }))]
+            : g.me ? [h('p', { class: 'goal-big' }, `${g.me.value}`, h('small', {}, ` / ${g.target} ${g.metric}`)), h('span', { class: 'progress' }, h('span', { style: `width:${Math.min(100, (g.me.value / g.target) * 100)}%` }))] : null,
+        h('div', { class: 'actions' },
+          g.can.join ? h('button', { class: 'btn btn-primary', onclick: () => post('join', 'You\'re in — every game counts') }, 'Join the goal') : null,
+          !S.me && g.scope === 'personal' && !g.ended ? h('a', { class: 'btn btn-primary', href: `/signup?next=${encodeURIComponent(`/goals/${g.id}`)}` }, 'Join free') : null,
+          h('button', { class: 'btn', onclick: share }, 'Share'),
+          g.can.leave ? h('button', { class: 'btn btn-ghost', onclick: () => confirm('Leave this goal?') && post('leave', 'You left the goal') }, 'Leave') : null)),
+      h('div', { class: 'card' }, h('h2', {}, g.scope === 'personal' ? `Chasing it (${g.people})` : 'Who\'s counting'),
+        g.board.length ? h('ol', { class: 'entries goal-board' }, g.board.map((p, i) => h('li', { class: S.me && p.id === S.me.id ? 'me' : '' },
+          h('span', { class: 'seed' }, i + 1),
+          h('span', { class: 'name' }, p.handle ? h('a', { href: `/p/${p.handle}` }, p.name) : p.name,
+            g.scope === 'versus' ? h('small', { class: 'contact' }, p.side === g.club.id ? g.club.name : g.rival.name) : null,
+            h('span', { class: 'progress' }, h('span', { style: `width:${(p.value / max) * 100}%` }))),
+          h('strong', { class: 'goal-value' }, g.scope === 'personal' && g.target && p.value >= g.target ? `${p.value} 🏅` : p.value)))) : empty('Nobody yet.'),
+        h('p', { class: 'hint' }, 'Counts confirmed group games, challenges and tournament matches played since the goal started.')),
+    ];
+  }
+
   // ---------- notifications
   function viewNotifications() {
     document.title = 'Notifications · Tonament';
@@ -7124,6 +7265,14 @@
       const won = d.winner === 'a' ? d.a : d.b;
       const lost = d.winner === 'a' ? d.b : d.a;
       return ['⚔️ ', h('strong', {}, won.join(' & ')), ' beat ', lost.join(' & '), ' ', h('span', { class: 'feed-score' }, d.score), ` in a ${d.back ? 'rematch' : 'challenge'}`];
+    }
+    if (x.verb === 'goal') {
+      if (d.rival) return ['🏆 ', h('a', { href: `/club/${d.slug}` }, d.club), ` beat ${d.rival} `, h('span', { class: 'feed-score' }, `${d.value}–${d.against}`), ' in ', h('a', { href: `/goals/${d.goal}` }, d.title)];
+      if (d.club) return ['🏅 ', h('a', { href: `/club/${d.slug}` }, d.club), ' reached ', h('a', { href: `/goals/${d.goal}` }, d.title), ` — ${d.value} ${d.metric} together`];
+      return ['🏅 ', who, ' reached ', h('a', { href: `/goals/${d.goal}` }, d.title)];
+    }
+    if (x.verb === 'goal_set') {
+      return ['🎯 ', who, d.rival ? ` set ${d.club} v ${d.rival}: ` : ` set a goal for ${d.club}: `, h('a', { href: `/goals/${d.goal}` }, d.title), ' — every game counts'];
     }
     if (x.verb === 'ladder') {
       return ['🪜 ', who, ` climbed to #${d.to} on the `, h('a', { href: `/club/${d.slug}?tab=ladder` }, d.ladder), d.forfeit ? ` — ${d.beat} didn't answer in time` : [` — beat ${d.beat} `, h('span', { class: 'feed-score' }, d.score)]];
@@ -8041,7 +8190,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|goals(?:\/new|\/\d+)?$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);
