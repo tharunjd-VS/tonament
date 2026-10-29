@@ -374,15 +374,19 @@
   }
 
   // Under the tournament: sponsors (paid) and the "Powered by" credit on branded pages.
+  // Spectators also get a quiet "run your own" line, carrying the organiser's invite.
   function brandFooter(t) {
     return [
+      !t.can.manage && !t.whiteLabel && !t.official
+        ? h('p', { class: 'run-your-own muted small' }, 'Organising a tournament? ', h('a', { href: refHref('/signup?next=%2Fnew', t.refCode) }, 'Run it on Tonament — free'))
+        : null,
       t.sponsors && t.sponsors.length
         ? h('section', { class: 'sponsors', 'aria-label': 'Sponsors' },
           h('p', { class: 'eyebrow' }, 'Supported by'),
           h('div', { class: 'sponsor-logos' }, t.sponsors.map((sp) => h('img', { src: sp.url, alt: sp.caption || 'Sponsor', loading: 'lazy' }))))
         : null,
       t.branding
-        ? h('a', { class: 'powered', href: '/', 'aria-label': 'Powered by Tonament' },
+        ? h('a', { class: 'powered', href: refHref('/', t.refCode), 'aria-label': 'Powered by Tonament' },
           h('span', {}, 'Powered by'), h('img', { class: 'on-dark', src: '/brand/logo-white.svg', alt: 'TONAMENT', height: 14 }), h('img', { class: 'on-light', src: '/brand/logo.svg', alt: 'TONAMENT', height: 14 }))
         : null,
     ];
@@ -488,6 +492,17 @@
         history.replaceState(null, '', '/link'); // keep the token out of history
         render();
         await useLink();
+        return;
+      } else if (parts[0] === 'invite') {
+        if (!S.me) {
+          navigate('/signin?next=/invite', { replace: true });
+          return;
+        }
+        S.route = { name: 'invite' };
+        S.referrals = null;
+        render();
+        S.referrals = await api('GET', '/me/referrals').catch((e) => ({ enabled: false, error: e.message }));
+        if (S.route.name === 'invite') render();
         return;
       } else if (parts[0] === 'groups') {
         if (!S.me) {
@@ -742,7 +757,10 @@
     else if (S.route.name === 'tournament') view = S.t ? viewTournament() : loading();
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
     else if (S.route.name === 'display') view = S.t ? viewDisplay() : loading();
+    else if (S.route.name === 'invite') view = viewInvite();
     else view = viewHome();
+    // An invite from a friend: on the home page, sign-up and the New tournament flow.
+    if (!S.error && ['home', 'signin', 'signup', 'new'].includes(S.route.name)) view = [inviteBanner(), view];
     // The venue display is always dark (easier to read across a hall); leaving it restores the theme.
     const displaying = S.route.name === 'display' && !S.error;
     document.body.classList.toggle('display-mode', displaying);
@@ -1010,7 +1028,11 @@
         h('h2', {}, 'My tournaments'),
         S.mine == null ? loading()
           : S.mine.length === 0 ? empty('Tournaments you create, or are added to as an organiser or umpire, show up here.')
-            : h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role])))) : null,
+            : h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role]))),
+        S.mine && S.mine.some((t) => t.role === 'owner') && S.billing && S.billing.enabled
+          ? h('a', { class: 'card invite-nudge', href: '/invite' }, h('span', { 'aria-hidden': 'true' }, '🎁'),
+            h('span', {}, h('strong', {}, 'Invite another organiser'), h('small', { class: 'muted' }, ' — their first tournament is free, and you get a free upgrade.')))
+          : null) : null,
       findSection(),
       sportsSection(),
     ];
@@ -1643,7 +1665,7 @@
         const fd = new FormData(form);
         Object.assign(d, { name: fd.get('name'), startsOn: fd.get('startsOn') || '', startTime: fd.get('startTime') || '' });
         try {
-          const { id } = await api('POST', '/tournaments', {
+          const { id, gift } = await api('POST', '/tournaments', {
             sport: sport.id,
             name: d.name,
             startsOn: d.startsOn,
@@ -1656,7 +1678,8 @@
             events: chosen(),
           });
           S.newDraft = null;
-          toast('Tournament created — finish setting it up below');
+          if (gift) S.gift = null;
+          toast(gift ? `Created on the ${gift.plan} plan (up to ${gift.entries} entries) — a gift from ${gift.from} 🎁` : 'Tournament created — finish setting it up below');
           navigate(`/t/${id}`);
         } catch (err) {
           toast(err.message, true);
@@ -4016,9 +4039,24 @@
   }
 
   // One button per bigger plan, cheapest first ("Club · up to 64 — ₹499").
+  // A free upgrade from inviting friends: one tap, no payment.
+  function creditButtons(t) {
+    const list = t.credits || [];
+    if (!list.length) return null;
+    const best = list.reduce((a, c) => (c.tier === 'open' || !a ? c : a), null);
+    return h('button', {
+      class: 'btn btn-primary', type: 'button',
+      onclick: () => confirm(`Use your free ${best.tierName} upgrade on ${t.name}?`) && act(async () => {
+        const r = await api('POST', `${tPath(t)}/credit`, { creditId: best.id }, t.id);
+        S.t = r.tournament;
+      }, `${t.name} is now on the ${best.tierName} plan ✓`),
+    }, `Use a free ${best.tierName} upgrade${list.length > 1 ? ` (you have ${list.length})` : ''}`);
+  }
+
   function upgradeButtons(t, small) {
     return (t.upgrades || []).map((u, i) => h('button', {
-      class: `btn ${i === 0 ? 'btn-primary' : 'btn-ghost'}${small ? '' : ' btn-lg'}`,
+      // A free upgrade on offer leads; paying is then the second choice.
+      class: `btn ${i === 0 && !(t.credits && t.credits.length) ? 'btn-primary' : 'btn-ghost'}${small ? '' : ' btn-lg'}`,
       disabled: S.paying,
       onclick: () => payPass(t, u.id),
     }, S.paying && i === 0 ? 'Opening payment…' : `${u.name} · up to ${u.limit} — ${money(u.amount)}`));
@@ -4039,6 +4077,7 @@
       h('p', {}, waiting
         ? 'Move up a plan to include them — everyone waiting is confirmed automatically.'
         : `Move up a plan for more entries across all events${paidBefore ? '' : ' (Open and above also put your logo, colours and sponsors on the public pages)'} — one-time, for this tournament${paidBefore ? '; you only pay the difference' : ''}.`),
+      t.credits && t.credits.length ? h('div', { class: 'actions' }, creditButtons(t)) : null,
       h('div', { class: 'actions' }, upgradeButtons(t), h('a', { class: 'btn btn-ghost', href: '/pricing', target: '_blank', rel: 'noopener' }, 'Compare plans')),
       h('p', { class: 'hint', style: 'margin:10px 0 0' }, 'Secure payment by Razorpay — UPI, cards, netbanking or wallets. Activated instantly.'));
   }
@@ -4435,6 +4474,7 @@
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.myOrgs && !S.myOrgs.length ? h('a', { href: '/academy/new', onclick: closeMenu }, 'Create an academy page') : null,
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
+            S.billing && S.billing.enabled ? h('a', { href: '/invite', onclick: closeMenu }, 'Invite organisers 🎁') : null,
             canInstall() ? h('button', { onclick: (e) => { closeMenu(e); installApp(); } }, 'Install the app') : null,
             h('button', { onclick: signOut }, 'Sign out'),
             h('div', { class: 'menu-theme' }, 'Theme', themeSwitch()))),
@@ -4447,6 +4487,89 @@
 
   function closeMenu(e) {
     e.target.closest('details')?.removeAttribute('open');
+  }
+
+  // ---------- invites (referrals): organisers invite organisers.
+  // A ?ref=code link is remembered for 60 days and sent with the sign-up; the
+  // friend's first tournament is on the Club plan, and the inviter earns a free
+  // upgrade once the friend runs one (server/referrals.js).
+  const REF_KEY = 'tonament:ref';
+  const REF_CODE = /^[a-z0-9]{4,24}$/;
+  function savedRef() {
+    try {
+      const r = JSON.parse(localStorage.getItem(REF_KEY) || 'null');
+      return r && REF_CODE.test(r.code) && Date.now() - r.at < 60 * 86400000 ? r.code : null;
+    } catch { return null; }
+  }
+  const clearRef = () => { try { localStorage.removeItem(REF_KEY); } catch { /* fine */ } };
+  // Links that bring new organisers in carry the code of whoever shared the page.
+  const refHref = (path, code) => (code && S.billing && S.billing.enabled ? `${path}${path.includes('?') ? '&' : '?'}ref=${code}` : path);
+  (() => {
+    const code = new URLSearchParams(location.search).get('ref');
+    if (code && REF_CODE.test(code)) try { localStorage.setItem(REF_KEY, JSON.stringify({ code, at: Date.now() })); } catch { /* this visit only */ }
+  })();
+  async function loadInviter() {
+    const code = savedRef();
+    if (!code || S.me || S.invitedBy !== undefined) return;
+    S.invitedBy = null;
+    const r = await api('GET', `/referrals/${code}`).catch(() => null);
+    S.invitedBy = r && r.name ? r.name : null;
+    render();
+  }
+  // "Kavya invited you": before signing up, and the gift waiting for the first tournament after.
+  function inviteBanner() {
+    if (!S.billing || !S.billing.enabled) return null;
+    const gift = S.me && S.gift;
+    if (!gift && (S.me || !S.invitedBy)) return null;
+    const from = gift ? gift.from : S.invitedBy;
+    return h('div', { class: 'card invite-banner' },
+      h('span', { class: 'invite-gift', 'aria-hidden': 'true' }, '🎁'),
+      h('span', {}, h('strong', {}, `${from} invited you to Tonament`),
+        h('small', { class: 'muted' }, gift ? ` Your first tournament is free up to ${gift.entries} entries (Club plan) — it's applied when you create it.` : ' Your first tournament is free up to 64 entries (Club plan) — sign up to claim it.')),
+      !S.me ? h('a', { class: 'btn btn-primary btn-small', href: '/signup?next=%2Fnew' }, 'Claim it') : S.route.name !== 'new' ? h('a', { class: 'btn btn-primary btn-small', href: '/new' }, 'Create it') : null);
+  }
+  async function refreshMe() {
+    const me = await api('GET', '/auth/me').catch(() => null);
+    if (me) { S.me = me.user; S.gift = me.gift || null; }
+  }
+
+  // /invite: your link, how it works, friends and credits.
+  function viewInvite() {
+    document.title = 'Invite organisers · Tonament';
+    const r = S.referrals;
+    if (!r) return loading();
+    if (!r.enabled) return h('div', { class: 'card' }, h('h1', {}, 'Invite organisers'), h('p', { class: 'muted' }, 'Every tournament is free right now — share Tonament with anyone: tonament.com'));
+    const url = `${location.origin}/?ref=${r.code}`;
+    const share = () => shareText(`I run my tournaments on Tonament — entries, draws and live scores on everyone's phone. Sign up with my link and your first tournament is free up to 64 entries: ${url}`);
+    const unused = r.credits.filter((c) => !c.usedAt && c.reason !== 'welcome');
+    return [
+      h('div', { class: 'card invite-hero' },
+        h('p', { class: 'eyebrow' }, 'Invite organisers · ', h('b', {}, 'You both get a free upgrade')),
+        h('h1', {}, 'Share Tonament, get free upgrades'),
+        h('ol', { class: 'invite-steps' },
+          h('li', {}, h('strong', {}, 'Share your link'), ' with clubs, academies and anyone who runs tournaments. (The "Run your own" links on your tournament pages carry it too.)'),
+          h('li', {}, h('strong', {}, 'Your friend'), ' gets their first tournament free up to 64 entries — the Club plan, worth ', money(S.billing.tiers ? S.billing.tiers[0].price : 49900), '.'),
+          h('li', {}, h('strong', {}, 'You get a free Club upgrade'), ` when they run it (${r.qualifyEntries}+ entries) — and an Open upgrade for every 3rd friend. Got an academy or venue page? It gets a month more too.`)),
+        h('div', { class: 'invite-link' }, h('code', {}, url)),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn btn-primary', type: 'button', onclick: share }, 'Share on WhatsApp'),
+          h('button', { class: 'btn', type: 'button', onclick: () => copy(url, 'Invite link copied') }, 'Copy link'))),
+      h('div', { class: 'card' },
+        h('h2', {}, 'Your invites'),
+        h('p', {}, h('strong', {}, `${r.friends.length} friend${r.friends.length === 1 ? '' : 's'} joined`), ` · ${r.qualified} ran a tournament`,
+          h('br'), h('small', { class: 'muted' }, `${r.toMilestone} more for an Open upgrade (150 entries).`)),
+        h('div', { class: 'invite-meter', 'aria-hidden': 'true' }, [0, 1, 2].map((i) => h('span', { class: i < (r.qualified % 3) ? 'on' : '' }))),
+        r.friends.length ? h('ul', { class: 'org-t-list' }, r.friends.map((f) => h('li', {}, h('span', {}, f.name), f.qualified ? pill('done', 'Ran a tournament ✓') : pill('waiting', 'Joined')))) : h('p', { class: 'muted small' }, 'Nobody yet — share your link to get started.')),
+      h('div', { class: 'card' },
+        h('h2', {}, 'Your free upgrades'),
+        unused.length
+          ? [h('ul', { class: 'org-t-list' }, unused.map((c) => h('li', {}, h('span', {}, h('strong', {}, `${c.tierName} upgrade`), h('small', { class: 'muted' }, c.reason === 'milestone' ? ' · for 3 friends' : ' · for a friend')), pill('done', 'Ready')))),
+            h('p', { class: 'hint' }, 'Use one from any of your tournaments: Players tab → "Use a free upgrade" when you need more entries.')]
+          : h('p', { class: 'muted small' }, 'None yet. You\'ll get one when a friend you invited runs their first tournament.'),
+        r.credits.some((c) => c.usedAt && c.reason !== 'welcome')
+          ? h('p', { class: 'muted small' }, 'Used: ', r.credits.filter((c) => c.usedAt && c.reason !== 'welcome').map((c) => `${c.tierName} for ${c.tournament ? c.tournament.name : 'a tournament'}`).join(' · '))
+          : null),
+    ];
   }
 
   // ---------- installing the app (Add to Home screen): no app store needed.
@@ -4529,9 +4652,10 @@
         e.preventDefault();
         btn.disabled = true;
         try {
-          const body = Object.fromEntries(new FormData(form));
+          const body = { ...Object.fromEntries(new FormData(form)), ...(signup && savedRef() && { ref: savedRef() }) };
           const { user } = await api('POST', signup ? '/auth/signup' : '/auth/login', body);
           S.me = user;
+          if (signup) { clearRef(); await refreshMe(); }
           S.t = null; // reload tournaments with this user's access
           toast(signup ? `Welcome, ${user.name}!` : `Signed in as ${user.name}`);
           navigate(next);
@@ -4612,7 +4736,7 @@
     const send = async (address) => {
       btn.disabled = true;
       try {
-        const { code, poll } = await api('POST', '/auth/link', { email: address, next });
+        const { code, poll } = await api('POST', '/auth/link', { email: address, next, ...(savedRef() && { ref: savedRef() }) });
         S.route.sent = { email: address, code };
         render();
         waitForLink(poll);
@@ -4651,7 +4775,7 @@
   async function useLink(name) {
     const r = S.route;
     try {
-      const res = await api('POST', '/auth/link/use', { token: r.token, ...(name && { name }) });
+      const res = await api('POST', '/auth/link/use', { token: r.token, ...(name && { name }), ...(savedRef() && { ref: savedRef() }) });
       if (res.needsName) {
         Object.assign(r, { state: 'name', email: res.email });
         render();
@@ -4660,6 +4784,8 @@
       S.me = res.user;
       S.t = null;
       navFor = null;
+      clearRef();
+      await refreshMe();
       toast(`Signed in as ${res.user.name}`);
       navigate(safeNext(res.next), { replace: true });
     } catch (err) {
@@ -4960,7 +5086,8 @@
     const body = { today: groupToday, leaderboard: groupLeaderboard, members: groupMembers, attendance: groupAttendance, settings: groupSettings }[tab](g);
     return [head, claimCard,
       h('nav', { class: 'tabs' }, tabs.map(([id, label]) => h('a', { href: `/g/${g.slug}${id === 'today' ? '' : `?tab=${id}`}`, class: id === tab ? 'active' : '' }, label, id === 'members' && g.requests.length ? h('span', { class: 'tab-count' }, g.requests.length) : null))),
-      h('section', {}, body)];
+      h('section', {}, body),
+      g.admin ? null : h('p', { class: 'run-your-own muted small' }, 'Play in a group or run a club? ', h('a', { href: refHref('/signup?next=%2Fgroups%2Fnew', g.refCode) }, 'Start your own on Tonament — free'))];
   }
 
   // The RSVP card for a session (today's, or the next one).
@@ -6796,7 +6923,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);
@@ -6861,7 +6988,9 @@
     S.billing = billingCfg;
     S.sports = list;
     S.me = me.user;
+    S.gift = me.gift || null;
     S.emailEnabled = Boolean(me.emailEnabled);
     route();
+    loadInviter();
   });
 })();

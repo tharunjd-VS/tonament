@@ -32,7 +32,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|signin|signup|forgot|reset|link|admin|academy\/new|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|invite|signin|signup|forgot|reset|link|admin|academy\/new|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -205,7 +205,7 @@ ${meta('name', 'twitter:image', base + image.path)}
 
 function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
   const svc = createService(db, { mailer, fetchImpl });
-  const auth = createAuth(db, { mailer });
+  const auth = createAuth(db, { mailer, onSignup: (q, user, ref) => svc.referrals.attach(q, user, ref) });
 
   const T = '/api/tournaments/([a-z0-9-]+)';
   const ev = (c) => c.body.event ?? (c.query.get('event') || undefined);
@@ -218,6 +218,8 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
   const routes = [
     ['GET', '/api/sports', () => sports.list(), 300],
     ['GET', '/api/version', () => ({ version: currentAppVersion() })],
+    ['GET', '/api/referrals/([a-z0-9]{4,24})', async (c, code) => (await svc.referrals.lookup(code)) || { name: null }, 300],
+    ['GET', '/api/me/referrals', (c) => svc.referrals.summary(c.actor)],
     ['GET', '/api/sports/interest', (c) => svc.sportInterest(c.actor)],
     ['POST', '/api/sports/([a-z-]+)/interest', (c, id) => svc.setSportInterest(c.actor, id, c.body.want)],
     ['GET', '/api/tournaments', (c) => svc.listTournaments(Object.fromEntries(c.query)), 5],
@@ -277,7 +279,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${T}/matches/${N}/result`, (c, id, mid) => svc.setResult(id, c.actor, mid, c.body.games, c.body.at)],
     ['POST', `${T}/matches/${N}/undo`, (c, id, mid) => svc.undo(id, c.actor, mid, c.body.at)],
 
-    ['GET', '/api/auth/me', (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled })],
+    ['GET', '/api/auth/me', async (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled, gift: c.actor.user ? await svc.referrals.welcomeFor(c.actor.user) : null })],
     ['POST', '/api/auth/forgot', async (c) => {
       const url = baseUrl(c.req);
       if (!url) throw new HttpError(503, 'Set APP_URL in the project settings to enable password reset');
@@ -395,6 +397,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['GET', '/api/admin/settings', (c) => svc.adminSettings(c.actor)],
     ['PATCH', '/api/admin/settings', (c) => svc.setAdminSettings(c.actor, c.body)],
     ['POST', `${T}/checkout`, (c, id) => svc.checkout(id, c.actor, c.body)],
+    ['POST', `${T}/credit`, (c, id) => svc.useCredit(id, c.actor, c.body.creditId)],
     ['POST', '/api/billing/razorpay/verify', (c) => svc.verifyPayment(c.body, { baseUrl: baseUrl(c.req) })],
     ['GET', '/api/admin/payments', (c) => svc.adminPayments(c.actor, Object.fromEntries(c.query))],
     ['GET', '/api/admin/payments\\.csv', async (c) => ({

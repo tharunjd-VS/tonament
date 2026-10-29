@@ -77,7 +77,9 @@ function checkPassword(password) {
   if (password.length > 200) fail(400, 'Password is too long');
 }
 
-function createAuth(db, { mailer } = {}) {
+function createAuth(db, { mailer, onSignup = null } = {}) {
+  // onSignup(q, user, ref): a new account (referrals.attach), in the same transaction.
+  const joined = (q, row, ref) => (onSignup && ref ? onSignup(q, row, String(ref).slice(0, 40)) : null);
   function sessionCookie(req, token, maxAgeSeconds) {
     const secure = req.headers['x-forwarded-proto'] === 'https' || process.env.VERCEL;
     return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`;
@@ -100,11 +102,13 @@ function createAuth(db, { mailer } = {}) {
     if (!validEmail(email)) fail(400, 'Enter a valid email address');
     checkPassword(password);
     let row;
+    const hash = await hashPassword(password);
     try {
-      [row] = await db.query(
-        'INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING *',
-        [email, name, await hashPassword(password)],
-      );
+      row = await db.tx(async (q) => {
+        const [created] = await q('INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING *', [email, name, hash]);
+        await joined(q, created, input.ref);
+        return created;
+      });
     } catch (err) {
       if (err.code === '23505') fail(409, 'An account with this email already exists. Sign in instead.');
       throw err;
@@ -169,9 +173,10 @@ function createAuth(db, { mailer } = {}) {
     // poll: kept by the tab that asked. When the link is opened anywhere (say,
     // in the mail app's own browser), that tab signs in too.
     const poll = crypto.randomBytes(24).toString('base64url');
+    const ref = typeof input.ref === 'string' && /^[a-z0-9]{4,24}$/.test(input.ref) ? input.ref : null;
     await db.query(
-      `INSERT INTO sign_in_links (id, email, next, expires_at, poll_hash) VALUES ($1, $2, $3, now() + interval '${LINK_MINUTES} minutes', $4)`,
-      [tokenHash(token), email, next, tokenHash(poll)],
+      `INSERT INTO sign_in_links (id, email, next, expires_at, poll_hash, ref) VALUES ($1, $2, $3, now() + interval '${LINK_MINUTES} minutes', $4, $5)`,
+      [tokenHash(token), email, next, tokenHash(poll), ref],
     );
     // The token stays after the #, so it's never sent to the server or logged.
     const url = `${baseUrl}/#/link?token=${token}&code=${code}`;
@@ -220,6 +225,7 @@ function createAuth(db, { mailer } = {}) {
         if (name.length > 60) fail(400, 'Enter your name (up to 60 characters)');
         // No password yet ("link" never matches one); they can set one with "Forgot password".
         [row] = await q('INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING *', [link.email, name, 'link']);
+        await joined(q, row, input.ref || link.ref);
       }
       await q('UPDATE sign_in_links SET used_at = COALESCE(used_at, now()), uses = uses + 1, user_id = $2 WHERE id = $1', [link.id, row.id]);
       await q('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1', [row.id]);

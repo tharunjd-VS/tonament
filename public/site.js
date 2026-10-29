@@ -7,6 +7,11 @@
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
   }
+  // An invite link (?ref=code) is remembered for the sign-up, as in the app.
+  var ref = new URLSearchParams(location.search).get('ref');
+  if (ref && /^[a-z0-9]{4,24}$/.test(ref)) {
+    try { localStorage.setItem('tonament:ref', JSON.stringify({ code: ref, at: Date.now() })); } catch (e) { /* this visit only */ }
+  }
   var year = document.querySelector('[data-year]');
   if (year) year.textContent = String(new Date().getFullYear());
   fetch('/api/billing/config')

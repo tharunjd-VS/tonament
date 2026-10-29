@@ -931,6 +931,8 @@ function createGroups({ db, fail, text, orgs }) {
         settings: { ...g.settings, endTime: endTimeOf(g.settings) },
         role: m ? (m.status === 'requested' ? 'requested' : m.role) : actor?.user?.isAdmin ? 'admin' : null,
         member,
+        // The creator's invite code: the group page's "Run your own" link carries it.
+        refCode: (await q('SELECT ref_code FROM users WHERE id = $1', [g.created_by]))[0]?.ref_code || null,
       };
       if (!member) {
         const rows = await q(`SELECT m.user_id AS id, m.role, m.status, m.rating, m.games, m.wins, u.name, u.guest

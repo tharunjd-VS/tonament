@@ -14,6 +14,7 @@ const { normalizeEmail, validEmail } = require('./auth');
 const { createOrgs, createSettings } = require('./orgs');
 const { createPlayers } = require('./players');
 const { createGroups } = require('./groups');
+const { createReferrals } = require('./referrals');
 const dupr = require('./dupr');
 const { inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
 const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
@@ -212,6 +213,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const settings = createSettings(db);
   let orgs;
   let profiles;
+  let referrals;
 
   // ---------- queries (q is db.query or a transaction's query)
 
@@ -754,6 +756,14 @@ function createService(db, { mailer, fetchImpl } = {}) {
     };
   }
 
+  // The owner's invite code (made the first time the owner opens their tournament).
+  async function ownerRefCode(q, t, actor) {
+    const [owner] = await q(`SELECT u.id, u.name, u.ref_code FROM members m JOIN users u ON u.email = m.email WHERE m.tournament_id = $1 AND m.role = 'owner' LIMIT 1`, [t.id]);
+    if (!owner) return null;
+    if (owner.ref_code) return owner.ref_code;
+    return actor?.user?.id === owner.id && billingConfig().enabled ? referrals.codeFor(q, owner) : null;
+  }
+
   async function view(q, t, actor) {
     const { org } = await withOrgBranding(q, t);
     const events = await eventsOf(q, t.id); // first: it may attach stray entries to a new event
@@ -791,10 +801,13 @@ function createService(db, { mailer, fetchImpl } = {}) {
       org: org && (org.public || access.can.manage) ? org : null,
       ...pageContent(t, media, access),
       plan: t.plan,
+      // The owner's invite code: "Run your own tournament" links carry it.
+      refCode: await ownerRefCode(q, t, actor),
       ...(access.can.manage && {
         planName: planName(t.plan),
         limits: { entries: Number.isFinite(planLimit(t.plan)) ? planLimit(t.plan) : null },
         upgrades: await upgradesFor(q, t),
+        credits: await referrals.creditsFor(q, actor.user, t.plan),
       }),
       ...access,
       events: evs,
@@ -1176,6 +1189,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const id = `${slugify(name)}-${crypto.randomBytes(3).toString('hex')}`;
     const adminKey = crypto.randomBytes(18).toString('base64url');
     const scorerKey = crypto.randomBytes(18).toString('base64url');
+    let gift = null;
     await db.tx(async (q) => {
       await q(
         `INSERT INTO tournaments (id, name, sport, format, config, admin_key, scorer_key, visibility)
@@ -1185,8 +1199,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
       await saveDetails(q, { id }, details);
       for (const [i, e] of events.entries()) await insertEvent(q, id, i, e, eventConfigOf(config));
       await q(`INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, 'owner')`, [id, actor.user.email]);
+      // Invited by a friend? Their first tournament starts on the Club plan.
+      gift = await referrals.useWelcome(q, actor.user, id);
     });
-    return { id };
+    return { id, ...(gift && { gift }) };
   }
 
   const insertEvent = (q, tid, position, e, config) =>
@@ -2218,7 +2234,15 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return pools.map((p, i) => ({ p, i })).sort((x, y) => rank(x.p.key) - rank(y.p.key) || x.i - y.i).map((x) => x.p);
   };
 
-  async function start(id, actor, { skipUnconfirmed = false, event } = {}) {
+  // Starting is when a tournament is clearly real: an invited organiser's
+  // first one earns their inviter a reward (referrals.js).
+  async function start(id, actor, opts = {}) {
+    const result = await startEvent(id, actor, opts);
+    await referrals.qualify(db.query, id).catch((err) => console.error('Referral:', err.message));
+    return result;
+  }
+
+  async function startEvent(id, actor, { skipUnconfirmed = false, event } = {}) {
     return mutateEvent(id, actor, event, async (q, t) => {
       if (t.status !== 'setup') fail(409, 'The tournament has already started');
       // Unconfirmed self-entries are never drawn; the organiser has to decide
@@ -3504,9 +3528,23 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   const groups = createGroups({ db, fail, text, orgs });
 
+  referrals = createReferrals({ db, fail, mailer: mailer?.enabled ? mailer : null, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, ''), confirmWaiting });
+
+  // A free upgrade from a referral credit: one of your tournaments moves up a plan.
+  async function useCredit(id, actor, creditId) {
+    if (!actor.user) fail(401, 'Sign in first');
+    return db.tx(async (q) => {
+      const { t } = await lockWith(q, id, actor, 'manage');
+      const done = await referrals.useCredit(q, actor.user, t, creditId);
+      return { ...done, tournament: await view(q, await load(q, id), actor) };
+    });
+  }
+
   return {
     orgs,
     groups,
+    referrals,
+    useCredit,
     players: profiles,
     connectDupr,
     disconnectDupr,

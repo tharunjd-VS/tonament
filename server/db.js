@@ -478,11 +478,31 @@ CREATE TABLE IF NOT EXISTS dupr_submissions (
   attempts    INTEGER NOT NULL DEFAULT 0,
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- v31: referrals. Each organiser has a code for their invite link; a friend
+-- who signs up with it gets their first tournament on the Club plan, and the
+-- inviter earns a free upgrade once the friend runs one (plan_credits).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_code TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by INTEGER;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS users_ref_code ON users(ref_code);
+ALTER TABLE sign_in_links ADD COLUMN IF NOT EXISTS ref TEXT;
+CREATE TABLE IF NOT EXISTS plan_credits (
+  id            SERIAL PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tier          TEXT NOT NULL,                   -- club | open
+  reason        TEXT NOT NULL,                   -- welcome | referral | milestone
+  friend_id     INTEGER,                         -- who earned it (the referred friend)
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  used_at       TIMESTAMPTZ,
+  tournament_id TEXT,
+  UNIQUE (user_id, reason, friend_id)
+);
+CREATE INDEX IF NOT EXISTS plan_credits_user ON plan_credits(user_id, used_at);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 30;
+const SCHEMA_VERSION = 31;
 
 async function migrate(db) {
   try {

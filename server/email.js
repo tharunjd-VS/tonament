@@ -267,4 +267,26 @@ function partnerEmail({ player, tournament, event, url, hasAccount }) {
   };
 }
 
-module.exports = { createMailer, passwordResetEmail, signInLinkEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };
+// The inviter's reward: a friend they invited ran their first tournament.
+function referralEarnedEmail({ name, friend, milestone, pages = [], url }) {
+  const extra = [
+    milestone ? 'That makes 3 friends — so there\'s an <strong>Open upgrade</strong> (150 entries) for you as well.' : null,
+    pages.length ? `And ${esc(pages.join(', '))} gets a month more on Tonament.` : null,
+  ].filter(Boolean);
+  return {
+    subject: `${friend} ran their first tournament — you've earned a free upgrade`,
+    html: layout({
+      heading: 'You\'ve earned a free upgrade',
+      body: [
+        `Hi ${esc(name)}, <strong>${esc(friend)}</strong> joined Tonament through your invite and has just run their first tournament.`,
+        'As a thank-you, you have a <strong>free Club upgrade</strong> (up to 64 entries) for any tournament of yours — use it from the tournament\'s Players tab whenever you need it.',
+        ...extra,
+      ],
+      button: 'See your invites',
+      url,
+    }),
+    text: `Hi ${name}, ${friend} joined Tonament through your invite and has just run their first tournament. You have a free Club upgrade (up to 64 entries) for any tournament of yours.${milestone ? ' That makes 3 friends, so there is an Open upgrade for you as well.' : ''}${pages.length ? ` ${pages.join(', ')} gets a month more on Tonament.` : ''}\n\n${url}`,
+  };
+}
+
+module.exports = { referralEarnedEmail, createMailer, passwordResetEmail, signInLinkEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };

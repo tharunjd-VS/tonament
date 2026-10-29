@@ -1402,3 +1402,20 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 
 /* "A new version is ready" (shown instead of reloading while something is unsaved) */
 .update-bar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 70; display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-radius: 14px; background: var(--surface); color: var(--text); border: 1px solid var(--accent); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); width: max-content; max-width: calc(100% - 32px); font-size: 0.92rem; }
+
+/* Invites (referrals) */
+.invite-banner { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin: 0 0 14px; border-color: var(--accent); }
+.invite-banner > span:nth-child(2) { flex: 1; min-width: 0; }
+.invite-gift { font-size: 1.6rem; line-height: 1; }
+.invite-nudge { display: flex; align-items: center; gap: 10px; margin-top: 10px; color: var(--text); text-decoration: none; }
+.invite-nudge:hover { border-color: var(--accent); }
+.invite-hero h1 { margin: 6px 0 12px; }
+.invite-steps { padding-left: 1.2em; display: grid; gap: 8px; margin: 0 0 16px; }
+.invite-link { background: var(--surface-2); border: 1px dashed var(--border); border-radius: 10px; padding: 10px 12px; margin: 0 0 12px; overflow-x: auto; }
+.invite-link code { font-size: 0.95rem; white-space: nowrap; }
+.invite-meter { display: flex; gap: 6px; margin: 4px 0 12px; }
+.invite-meter span { flex: 1; height: 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); }
+.invite-meter span.on { background: var(--accent); border-color: var(--accent); }
+.run-your-own { text-align: center; margin: 22px 0 6px; }
+.invite-price { margin: 18px 0; border-color: var(--accent); }
+.invite-price h2 { margin-top: 0; }
