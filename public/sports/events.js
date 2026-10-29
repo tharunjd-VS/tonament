@@ -19,6 +19,7 @@
   // disciplines: the event types a sport offers ('any' = the singles-or-pairs catch-all).
   const TEAM = { disciplines: ['team'] };
   const SPORT_LISTS = {
+    badminton: { levels: ['Open', 'Beginner', 'Beginner+', 'Intermediate', 'Advanced'] },
     volleyball: TEAM,
     throwball: TEAM,
     'sepak-takraw': TEAM,
@@ -43,6 +44,8 @@
   const agesFor = (sport) => (sport ? (SPORT_LISTS[sport] || {}).ages || AGES : uniq([...AGES, ...Object.values(SPORT_LISTS).flatMap((l) => l.ages || [])]));
   const disciplinesFor = (sport) => (sport && (SPORT_LISTS[sport] || {}).disciplines) || ['singles', 'doubles', 'any'];
   const isTeamSport = (sport) => disciplinesFor(sport).includes('team');
+  // The levels a player can be (lowest first) — an event's levels without 'Open'.
+  const entryLevels = (sport) => levelsFor(sport).filter((l) => l !== 'Open');
   // The quick-add choices for a sport; all of them when none is given (search).
   const presetsFor = (sport) => (sport ? PRESETS.filter((p) => disciplinesFor(sport).includes(p.discipline)) : PRESETS);
 
@@ -138,5 +141,5 @@
   // "Courts", "Tables", "Boards", "Pitches".
   const courtWords = (sport) => { const w = courtWord(sport); return /(ch|sh|s)$/.test(w) ? `${w}es` : `${w}s`; };
 
-  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName, courtWord, courtWords };
+  return { DISCIPLINES, GENDERS, LEVELS, AGES, levelsFor, agesFor, disciplinesFor, isTeamSport, entryLevels, presetsFor, PRESETS, PLACES, PERKS, placeLabel, perkLabel, normalize, eventName, shortName, courtWord, courtWords };
 });

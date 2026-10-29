@@ -479,7 +479,7 @@ test('a venue\'s daily slots by level: levels, anyone can join, listed by time',
   await db.query(`INSERT INTO org_members (org_id, email, role) VALUES ($1, $2, 'owner')`, [o.id, mgr.user.email]);
   const inter = await svc.groups.createGroup(mgr, { name: 'Evening Intermediates', sport: 'badminton', host: 'rally-hub', time: '19:00', endTime: '21:00', levels: ['Intermediate'] });
   const beg = await svc.groups.createGroup(mgr, { name: 'Evening Beginners', sport: 'badminton', host: 'rally-hub', time: '18:00', endTime: '19:00', levels: ['Beginner', 'Intermediate', 'Beginner'] });
-  await assert.rejects(svc.groups.createGroup(mgr, { name: 'Pros', sport: 'badminton', levels: ['Pro'] }), /Level: one of Beginner, Intermediate, Advanced/);
+  await assert.rejects(svc.groups.createGroup(mgr, { name: 'Pros', sport: 'badminton', levels: ['Pro'] }), /Level: one of Beginner, Beginner\+, Intermediate, Advanced/);
   // Hosted groups are open by default: anyone joins with one tap, no invite link.
   const g = await svc.groups.view(beg.slug, mgr);
   assert.deepEqual([g.settings.levels, g.settings.open], [['Beginner', 'Intermediate'], true]);

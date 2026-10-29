@@ -1768,6 +1768,90 @@
           : x.action ? h('button', { class: `btn btn-small${x.done ? ' btn-ghost' : ''}`, onclick: x.action[1] }, x.action[0]) : null))));
   }
 
+  // ---------- level pools (an Open event split by level)
+  // The pools meet in the final (2 pools) or the semis (one per level).
+  const playerLevels = (t) => CAT.entryLevels(t.sport.id);
+  const poolsAllowed = (t) => !CAT.isTeamSport(t.sport.id) && t.event.discipline !== 'team' && (!t.event.level || t.event.level === 'Open');
+  const poolsOn = (t) => poolsAllowed(t) && t.format === 'league_knockout' && Boolean(t.config.pools);
+  // 'Beginner+' -> 'B+', 'Intermediate' -> 'I', '3.5' -> '3.5'.
+  const levelShort = (l) => (/^[A-Z]/.test(l) ? l.replace(/[a-z\s]+/g, '') : l);
+  // The pools in bracket order (the organiser's order, else lowest first).
+  function poolList(t) {
+    let pools;
+    if (t.config.groupPools && t.config.groupPools.length) {
+      pools = [...new Map(t.config.groupPools.map((p) => [p.key, p])).values()];
+    } else {
+      const levels = playerLevels(t);
+      const defs = t.config.pools === 'two'
+        ? [{ key: 'lower', levels: levels.slice(0, Math.max(1, Math.floor(levels.length / 2))) }, { key: 'upper', levels: levels.slice(Math.max(1, Math.floor(levels.length / 2))) }]
+        : levels.map((l) => ({ key: l, levels: [l] }));
+      pools = defs.map((d) => ({ key: d.key, label: d.levels.join(' & '), n: t.entries.filter((e) => d.levels.includes(e.level)).length })).filter((d) => d.n);
+    }
+    const order = t.config.poolOrder || [];
+    const rank = (k) => { const i = order.indexOf(k); return i < 0 ? 100 : i; };
+    // nat: the natural order (lowest level first), the base for swapping pairings.
+    return pools.map((p, i) => ({ p: { ...p, nat: i }, i })).sort((x, y) => rank(x.p.key) - rank(y.p.key) || x.i - y.i).map((x) => x.p);
+  }
+  // "Semis: Beginner v Beginner+ · Intermediate v Advanced" (who meets whom first).
+  function poolMeetings(pools) {
+    if (pools.length < 2) return null;
+    if (pools.length === 2) return `${pools[0].label} v ${pools[1].label} in the final`;
+    const pairs = [];
+    for (let i = 0; i < 4 && i < pools.length; i += 2) pairs.push(pools[i + 1] ? `${pools[i].label} v ${pools[i + 1].label}` : `${pools[i].label} straight to the final`);
+    return pools.length <= 4 ? `Semis: ${pairs.join(' · ')}` : `${pools.length} pools — neighbours meet first`;
+  }
+  // The other semi pairings: 4 pools have 3; with 3, who goes straight through rotates.
+  function nextPoolOrder(pools) {
+    const k = pools.map((p) => p.key);
+    const [a, b, c, d] = [...pools].sort((x, y) => x.nat - y.nat).map((p) => p.key);
+    // Same pairings in either half count as the same option.
+    const same = (o) => [o.slice(0, 2), o.slice(2)].map((x) => [...x].sort().join()).sort().join('|');
+    const options = k.length === 4 ? [[a, b, c, d], [a, c, b, d], [a, d, b, c]] : k.length === 3 ? [[a, b, c], [a, c, b], [b, c, a]] : null;
+    if (!options) return null;
+    const at = options.findIndex((o) => (k.length === 4 ? same(o) === same(k) : o.join() === k.join()));
+    return options[(at + 1) % options.length];
+  }
+  function levelPoolsCard(t) {
+    if (!t.can.manage || !poolsAllowed(t) || !['setup', 'league'].includes(t.status)) return null;
+    if (t.status === 'league' && !poolsOn(t)) return null;
+    const mode = poolsOn(t) ? t.config.pools : '';
+    const save = (body, msg) => act(async () => { S.t = await api('PATCH', `${tPath(t)}/events/${t.eventId}`, body, t.id); }, msg);
+    const levels = playerLevels(t);
+    const counts = levels.map((l) => [l, t.entries.filter((e) => e.level === l).length]).filter(([, n]) => n);
+    const none = t.entries.filter((e) => !e.level).length;
+    const pools = mode ? poolList(t) : [];
+    const swap = mode && t.status !== 'knockout' ? nextPoolOrder(pools) : null;
+    return h('div', { class: 'card pools-card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Split by level'), mode ? pill('org', mode === 'two' ? '2 pools' : 'By level') : null),
+      t.status === 'setup' ? [
+        h('p', { class: 'muted small', style: 'margin-top:0' }, 'Open event with mixed levels? Each level plays its own league groups, and the pools only meet at the end — like you would do it on paper.'),
+        choiceGroup({
+          name: 'pools', label: 'Split by level', value: mode,
+          options: [
+            { value: '', label: 'Off', hint: 'One draw for everyone' },
+            { value: 'two', label: '2 pools', hint: `${levels.slice(0, Math.max(1, Math.floor(levels.length / 2))).join(', ')} | the rest — meet in the final` },
+            { value: 'levels', label: 'By level', hint: 'One pool per level — winners meet in the semis' },
+          ],
+          onchange: (e) => save({ pools: e.target.value || null, ...(e.target.value && t.format !== 'league_knockout' && { format: 'league_knockout' }) }, e.target.value ? 'Level pools on — set each player\'s level below' : 'Level pools off'),
+        }),
+      ] : null,
+      mode ? h('p', { class: 'pool-counts small' },
+        counts.map(([l, n]) => h('span', {}, h('b', {}, levelShort(l)), ` ${l} ${n}`)),
+        none ? h('span', { class: 'none' }, `No level ${none}`) : null) : null,
+      mode && pools.length > 1 ? h('div', { class: 'pool-meet' },
+        h('span', {}, poolMeetings(pools)),
+        swap ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => save({ poolOrder: swap }, 'Pairings swapped') }, 'Swap pairings') : null) : null,
+      mode && t.status === 'setup' && none ? h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'Tap a level next to each player in the list. Everyone needs one before you start.') : null,
+      mode && t.status === 'league' ? h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'Wrong level? Move them on the Groups tab until their group starts playing.') : null);
+  }
+  // One-tap level buttons on an entry (organisers, before the draw).
+  function levelChips(t, e) {
+    const set = (level) => act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/level`, { level }, t.id); });
+    return h('span', { class: 'level-chips', role: 'group', 'aria-label': `${e.name}'s level` }, playerLevels(t).map((l) => h('button', {
+      type: 'button', class: 'level-chip', title: l, 'aria-pressed': String(e.level === l), onclick: () => set(e.level === l ? null : l),
+    }, levelShort(l))));
+  }
+
   function panelEntries(t) {
     const setup = t.status === 'setup';
     const editable = t.can.manage && setup;
@@ -1782,6 +1866,7 @@
       e.source === 'self' ? pill('', 'Self-entered') : e.source === 'walk-in' ? pill('', 'Walk-in') : e.source === 'drawn' ? pill('', 'Drawn pair') : null,
       !setup && e.withdrawn ? pill('withdrawn', 'Withdrew') : null,
       !setup && !e.inDraw ? pill('', 'Didn\'t show') : null,
+      e.level && !(editable && poolsOn(t)) ? h('span', { class: 'event-tag level-tag' }, e.level) : null,
     ];
 
     const list = h('div', { class: 'card' },
@@ -1828,6 +1913,7 @@
               ? h('small', { class: 'contact' }, e.members.map((m) => `${m.name}: ${m.contact}`).join(' · '))
               : null,
             h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group), e.rating != null ? pill('', `DUPR ${e.rating.toFixed(2)}`) : null),
+            editable && poolsOn(t) ? levelChips(t, e) : null,
             entryPeople(t, e),
             editable && !e.confirmed && !['pending', 'due', 'sent'].includes(e.feeStatus)
               ? h('button', { class: 'btn btn-small btn-primary confirm-btn', onclick: () => confirmEntry(t, e) }, 'Confirm place')
@@ -1864,8 +1950,8 @@
         list,
       ];
     }
-    if (!setup) return [paymentsToCheck(t), upgradeCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, rankedCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
-    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
+    if (!setup) return [paymentsToCheck(t), upgradeCard(t), levelPoolsCard(t), running ? lateEntryCard(t) : null, venueCard(t), prizesCard(t, [t.event]), list, rankedCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
+    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), venueCard(t), prizesCard(t, [t.event]), levelPoolsCard(t), addEntriesForm(t, usingCheckIn), soloCard(t), list, startCard(t), eventSettingsCard(t), prizeSettingsCard(t), tournamentSettingsCard(t)];
   }
 
   function addEntriesForm(t, walkIn) {
@@ -1884,8 +1970,9 @@
         e.preventDefault();
         const names = ta.value.split('\n').map((x) => x.trim()).filter(Boolean);
         if (!names.length) return;
+        const level = (new FormData(e.target).get('level')) || null;
         act(async () => {
-          S.t = await api('POST', `${tPath(t)}/entries`, withEv(t, { names, walkIn }), t.id);
+          S.t = await api('POST', `${tPath(t)}/entries`, withEv(t, { names, walkIn, level }), t.id);
           S.draft = '';
         }, `Added ${names.length} ${names.length === 1 ? 'entry' : 'entries'}`);
       },
@@ -1893,6 +1980,7 @@
     h('h2', {}, walkIn ? 'Add walk-ins' : t.event.discipline === 'team' ? 'Add teams' : 'Add players or pairs'),
     walkIn ? h('p', { class: 'muted small' }, 'Walk-ins are checked in automatically.') : null,
     ta,
+    poolsOn(t) ? groupField('Level', choiceGroup({ name: 'level', label: 'Level', value: S.addLevel || '', options: [{ value: '', label: 'Not set' }, ...playerLevels(t).map((l) => ({ value: l, label: l }))], onchange: (ev) => { S.addLevel = ev.target.value; } }), null, 'For everyone in this batch — add each level in turn.') : null,
     h('div', { class: 'actions', style: 'margin-top:10px' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add')));
   }
 
@@ -2007,6 +2095,8 @@
         'Their results and ranking points go on their Tonament profile too. We\'ll let them know.')
       : null,
     duprEntryFields(t, drawn),
+    poolsOn(t) ? field('Your level', h('select', { name: 'level' }, h('option', { value: '' }, 'Choose…'), playerLevels(t).map((l) => h('option', { value: l }, l))), null,
+      'The organiser groups players by level, so you play people at your standard.') : null,
     t.event.discipline === 'doubles' && !drawn
       ? h('label', { class: 'check-field' },
         h('input', { type: 'checkbox', name: 'solo', onchange: (e) => syncSolo(e.target.form, e.target.checked) }),
@@ -2103,9 +2193,15 @@
     const groupsStage = t.status === 'league';
     const knockoutOnly = t.format === 'knockout';
     const how = groupsStage
-      ? 'They join the smallest group and get catch-up matches against everyone in it.'
+      ? poolsOn(t) ? 'Pick their group (or their level, for that pool\'s smallest group). They get catch-up matches against everyone in it.'
+        : 'They join the smallest group (or the one you pick) and get catch-up matches against everyone in it.'
       : knockoutOnly ? 'They take a first-round bye and play the seed who had it.' : null;
     const input = h('input', { name: 'name', required: true, maxlength: 60, placeholder: 'Player or pair name', autocomplete: 'off' });
+    const pick = groupsStage ? h('select', { name: 'group', 'aria-label': 'Group' },
+      h('option', { value: '' }, poolsOn(t) ? 'Group: by level' : 'Group: smallest'),
+      t.groups.map((g) => h('option', { value: g.no }, `${g.name}${g.pool ? ` · ${g.pool}` : ''}`))) : null;
+    const lv = groupsStage && poolsOn(t) ? h('select', { name: 'level', 'aria-label': 'Level' },
+      h('option', { value: '' }, 'Level'), playerLevels(t).map((l) => h('option', { value: l }, l))) : null;
     return h('div', { class: 'card' },
       h('div', { class: 'card-head' },
         h('h2', {}, 'Late entries'),
@@ -2116,9 +2212,10 @@
           onsubmit: (e) => {
             e.preventDefault();
             const name = input.value;
-            act(async () => { S.t = await api('POST', `${tPath(t)}/late-entry`, withEv(t, { name }), t.id); }, `${name} added`);
+            const extra = { ...(pick && pick.value !== '' && { group: Number(pick.value) }), ...(lv && lv.value && { level: lv.value }) };
+            act(async () => { S.t = await api('POST', `${tPath(t)}/late-entry`, withEv(t, { name, ...extra }), t.id); }, `${name} added`);
           },
-        }, input, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add late entry'))
+        }, input, pick, lv, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add late entry'))
         : null,
       h('p', { class: 'muted small', style: 'margin:8px 0 0' },
         how || 'The knockout has started — late entries could only join during the group stage.'));
@@ -3015,7 +3112,8 @@
     if (stage === 'league' && done === ms.length && t.format === 'league_knockout') {
       return h('div', { class: 'banner info' },
         h('div', {}, h('strong', {}, 'League stage complete. '),
-          `Top ${t.config.qualifiers} from each group go through to the knockout.`),
+          `Top ${t.config.qualifiers} from each group go through to the knockout.`,
+          poolsOn(t) && poolList(t).length > 1 ? h('span', { class: 'small', style: 'display:block;margin-top:4px' }, `Level pools: ${poolMeetings(poolList(t))}.`) : null),
         t.can.manage
           ? h('button', {
             class: 'btn btn-primary',
@@ -3095,13 +3193,23 @@
         : draws ? h('p', { class: 'muted small' }, `League matches are 2 ${unitOf(t).toLowerCase()}s; 1 each is a draw. ${ranking}`) : null,
       h('div', { class: 'groups-grid' }, t.groups.map((g) => {
         const fixtures = t.matches.filter((m) => m.stage === 'league' && m.group === g.no).sort(byOrder);
+        // Organisers: move a player while neither group has started.
+        const canMove = t.can.manage && t.status === 'league' && !g.started;
+        const others = t.groups.filter((x) => x.no !== g.no && !x.started);
+        const moveTo = (r) => canMove && others.length && !r.withdrawn ? h('select', {
+          class: 'move-select', 'aria-label': `Move ${r.name}`,
+          onchange: (ev) => {
+            const to = Number(ev.target.value);
+            act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${r.id}/move`, { group: to }, t.id); }, `${r.name} moved to ${t.groups[to].name}`);
+          },
+        }, h('option', { value: '' }, 'Move…'), others.map((x) => h('option', { value: x.no }, `${x.name}${x.pool ? ` · ${x.pool}` : ''}`))) : null;
         return h('div', { class: 'card' },
-          h('h2', {}, g.name),
+          h('h2', {}, g.name, g.pool ? h('span', { class: 'event-tag level-tag pool-tag' }, g.pool) : null),
           h('div', { class: 'table-wrap' }, h('table', {},
             h('thead', {}, h('tr', {}, cols.map((c, i) => h('th', { class: i === 1 ? '' : 'num', title: titles[c] || null }, c)))),
             h('tbody', {}, g.standings.map((r) => h('tr', { class: qualifying(g, q).has(r.id) ? 'q' : r.withdrawn ? 'out' : '' },
               h('td', { class: 'num' }, r.rank),
-              h('td', { class: 'name' }, r.name, r.withdrawn ? [' ', pill('withdrawn', 'Withdrew')] : null),
+              h('td', { class: 'name' }, r.name, r.withdrawn ? [' ', pill('withdrawn', 'Withdrew')] : null, moveTo(r)),
               h('td', { class: 'num' }, r.played),
               h('td', { class: 'num' }, r.won),
               draws ? h('td', { class: 'num' }, r.drawn) : null,

@@ -28,9 +28,9 @@ const VISIBILITY = ['private', 'link', 'public'];
 // Settings that belong to the tournament as a whole; everything else in a
 // config (format details, scoring, caps) belongs to each event.
 const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
-const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level', 'ranked', 'dupr', 'duprMin', 'duprMax'];
+const EVENT_KEYS = ['format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level', 'ranked', 'dupr', 'duprMin', 'duprMax', 'pools', 'poolOrder'];
 // Event settings that can still change once the event has started.
-const LIVE_EVENT_KEYS = ['lateEntry', 'prizes', 'ranked'];
+const LIVE_EVENT_KEYS = ['lateEntry', 'prizes', 'ranked', 'poolOrder'];
 const MAX_PRIZE = 10000000; // ₹1 crore
 
 // Prizes for one event: [{ place, cash (whole rupees), reward }].
@@ -221,18 +221,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return { ...row, sportDef: sports.get(row.sport) };
   }
 
-  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into, players, user_id, phone, pay_ref, pay_sent_at, hold_until';
+  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into, players, user_id, phone, pay_ref, pay_sent_at, hold_until, level';
 
   // Entries and matches of one event (`ev` is an event context, see eventFor).
   // Solo players already paired up play as their pair entry, so they're left out.
   const entriesOf = (q, ev) =>
     q(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE event_id = $1 AND paired_into IS NULL ORDER BY seed, id`, [ev.eventId]);
 
-  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null, solo = false, side = null, players = null, userId = null, phone = null, holdUntil = null }) =>
+  const insertEntry = (q, t, { name, seed, group = null, source = 'organiser', checkedIn = false, contact = null, confirmed = true, feeStatus = null, feeAmount = null, solo = false, side = null, players = null, userId = null, phone = null, holdUntil = null, level = null }) =>
     q(
-      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount, solo, solo_side, players, user_id, phone, hold_until)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17) RETURNING id`,
-      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount, solo, side, players && JSON.stringify(players), userId, phone, holdUntil],
+      `INSERT INTO entries (tournament_id, event_id, name, seed, group_no, source, checked_in, contact, confirmed, fee_status, fee_amount, solo, solo_side, players, user_id, phone, hold_until, level)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18) RETURNING id`,
+      [t.id, t.eventId, name, seed, group, source, checkedIn, contact, confirmed, feeStatus, feeAmount, solo, side, players && JSON.stringify(players), userId, phone, holdUntil, level],
     );
 
   // A team's players (optional): one name per line, or a list.
@@ -641,9 +641,13 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const results = scored
         .filter(({ row }) => row.stage === 'league' && row.group_no === g && row.status === 'done')
         .map(({ row, score }) => resultOf(row, score));
+      const pool = (t.config.groupPools || [])[g] || null;
       return {
         no: g,
         name: groupName(g),
+        pool: pool && pool.label,
+        // Organisers can move players in or out until the group's first match starts.
+        started: scored.some(({ row }) => row.stage === 'league' && row.group_no === g && (row.rallies || row.walkover || row.status === 'done')),
         standings: formats.standings(members, results, t.sportDef.leaguePoints).map((r) => ({
           ...r,
           name: names.get(r.id),
@@ -717,6 +721,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         name: e.name,
         seed: e.seed,
         group: e.group_no,
+        level: e.level || null,
         checkedIn: e.checked_in,
         inDraw: e.in_draw,
         withdrawn: e.withdrawn,
@@ -1246,6 +1251,23 @@ function createService(db, { mailer, fetchImpl } = {}) {
       config.partners = input.partners;
     }
     if (input.balancePairs !== undefined) config.balancePairs = Boolean(input.balancePairs);
+    // Level pools: an Open event split by level, the pools meeting in the
+    // final (two) or the semis (one per level, for 4 levels).
+    if (input.pools !== undefined) {
+      const pools = input.pools || null;
+      if (pools && !['two', 'levels'].includes(pools)) fail(400, 'pools must be "two" or "levels"');
+      if (pools && catalog.isTeamSport(ev.sportDef.id)) fail(400, 'Level pools are for singles and doubles events');
+      if (pools && format !== 'league_knockout') fail(400, 'Level pools need the League + Knockout format');
+      config.pools = pools;
+      config.poolOrder = null;
+    }
+    if (input.poolOrder !== undefined) {
+      if (['knockout', 'completed'].includes(ev.status)) fail(409, 'The knockout has started — the pairings are set');
+      const order = input.poolOrder;
+      if (order !== null && (!Array.isArray(order) || order.length > 12 || !order.every((k) => typeof k === 'string' && k.length <= 40))) fail(400, 'poolOrder must be a list of pools');
+      config.poolOrder = order;
+    }
+    if (format !== 'league_knockout') config.pools = null;
     if (input.ranked !== undefined) config.ranked = Boolean(input.ranked);
     if (input.dupr !== undefined || input.duprMin !== undefined || input.duprMax !== undefined) {
       if (ev.sportDef.id !== 'pickleball') fail(400, 'DUPR settings are for pickleball events');
@@ -1355,7 +1377,17 @@ function createService(db, { mailer, fetchImpl } = {}) {
     if (t.status !== 'setup') fail(409, 'Entries are locked once the tournament has started');
   }
 
-  async function addEntries(id, actor, names, { walkIn = false, event } = {}) {
+  // A player's level ('Beginner', …) from the sport's list; '' or null clears it.
+  function levelIn(t, value) {
+    if (!given(value)) return null;
+    const levels = catalog.entryLevels(t.sportDef.id);
+    const hit = levels.find((l) => l.toLowerCase() === String(value).trim().toLowerCase());
+    if (!hit) fail(400, `Level: one of ${levels.join(', ')}`);
+    return hit;
+  }
+  const poolsOn = (t) => t.format === 'league_knockout' && Boolean(t.config.pools);
+
+  async function addEntries(id, actor, names, { walkIn = false, level = null, event } = {}) {
     if (!Array.isArray(names)) fail(400, 'names must be a list');
     const clean = names.map((n) => (typeof n === 'string' ? n.trim().replace(/\s+/g, ' ') : '')).filter(Boolean);
     if (!clean.length) fail(400, 'Enter at least one name');
@@ -1372,8 +1404,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
       }
       let seed = existing.reduce((max, e) => Math.max(max, e.seed), 0);
       // Walk-ins added on the day are checked in straight away.
+      const lv = levelIn(t, level);
       for (const n of clean) {
-        await insertEntry(q, t, { name: n, seed: ++seed, source: walkIn ? 'walk-in' : 'organiser', checkedIn: Boolean(walkIn) });
+        await insertEntry(q, t, { name: n, seed: ++seed, source: walkIn ? 'walk-in' : 'organiser', checkedIn: Boolean(walkIn), level: lv });
       }
     });
   }
@@ -1442,6 +1475,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (partnerMail && !validEmail(partnerMail)) fail(400, 'Partner\'s email: enter a valid email address');
       if (partnerMail && partnerMail === contact) fail(400, 'Partner\'s email: that\'s your own email');
       const players = team ? playersOf(input.players) : null;
+      // "Your level" in an Open event (optional), so organisers can split by level.
+      const selfLevel = team ? null : levelIn(t, input.level);
       const doubles = t.event.discipline === 'doubles';
       const drawn = doubles && t.config.partners === 'drawn';
       const solo = doubles && (drawn || Boolean(input.solo));
@@ -1482,7 +1517,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       if (online) {
         // Paid events never take a payment for a place that isn't there.
         if (!room) fail(409, `${eventLabel(t)} is full`);
-        const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee, solo, side, players, userId, phone });
+        const [{ id: entryId }] = await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'pending', feeAmount: fee, solo, side, players, userId, phone, level: selfLevel });
         await linkPeople(entryId);
         const [pay] = await q(
           `INSERT INTO payments (tournament_id, tournament_name, user_email, amount, currency, kind, entry_id, event_id, event_name, player)
@@ -1495,11 +1530,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
         // Paid to the organiser: the place is held for a while (if there is
         // one) and confirmed when the organiser has the money.
         const holdUntil = room ? holdTime(t) : new Date(); // no room: straight to the waitlist
-        await linkPeople(await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'due', feeAmount: fee, solo, side, players, userId, phone, holdUntil }));
+        await linkPeople(await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed: false, feeStatus: 'due', feeAmount: fee, solo, side, players, userId, phone, holdUntil, level: selfLevel }));
         return { t, name, confirmed: false, owners: [], eventId: t.eventId, solo, due: fee, holding: room, partnerMail: people[1]?.email, player };
       }
       const confirmed = room;
-      await linkPeople(await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side, players, userId, phone }));
+      await linkPeople(await insertEntry(q, t, { name, seed, source: 'self', contact, confirmed, solo, side, players, userId, phone, level: selfLevel }));
       let owners = [];
       if (!confirmed && !t.waiting_notified) {
         await q('UPDATE tournaments SET waiting_notified = true WHERE id = $1', [t.id]);
@@ -1917,23 +1952,29 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   // ---------- stages
 
-  async function createBracket(q, t, seeded) {
-    const slots = formats.knockoutSlots(seeded);
+  // slots: first-round places (ids, null = bye), when already worked out
+  // (level pools). A part of the bracket with nobody in it (an empty pool
+  // section) is "dead": its matches are byes with no winner, and whoever
+  // meets it goes straight through.
+  async function createBracket(q, t, seeded, slots = formats.knockoutSlots(seeded)) {
     const rounds = Math.log2(slots.length);
     t.config = { ...t.config, knockoutRounds: rounds };
     await saveEventConfig(q, t);
     const byes = [];
+    let dead = [];
+    for (let s = 0; s < slots.length >> 1; s++) dead.push(slots[2 * s] == null && slots[2 * s + 1] == null);
     for (let r = 1; r <= rounds; r++) {
+      if (r > 1) dead = Array.from({ length: slots.length >> r }, (_, s) => dead[2 * s] && dead[2 * s + 1]);
       for (let s = 0; s < slots.length >> r; s++) {
         if (r > 1) {
-          await insertMatch(q, t, 'knockout', null, r, s, null, null);
+          await insertMatch(q, t, 'knockout', null, r, s, null, null, dead[s] ? 'bye' : 'scheduled');
           continue;
         }
         const a = slots[2 * s];
         const b = slots[2 * s + 1];
         if (a == null || b == null) {
           await insertMatch(q, t, 'knockout', null, 1, s, a, b, 'bye', a ?? b);
-          byes.push({ round: 1, slot: s, winner: a ?? b });
+          if (a != null || b != null) byes.push({ round: 1, slot: s, winner: a ?? b });
         } else {
           await insertMatch(q, t, 'knockout', null, 1, s, a, b);
         }
@@ -1941,10 +1982,20 @@ function createService(db, { mailer, fetchImpl } = {}) {
     }
     for (const bye of byes) await advance(q, t, bye, bye.winner);
   }
+  // A dead part of the bracket: a bye that nobody came out of.
+  const deadMatch = (m) => Boolean(m) && m.status === 'bye' && m.winner_id == null;
 
   async function advance(q, t, m, winnerId) {
     const next = await koMatch(q, t, m.round + 1, m.slot >> 1);
     const [row] = await q(`UPDATE matches SET ${nextSlotColumn(m)} = $1 WHERE id = $2 RETURNING *`, [winnerId, next.id]);
+    // Facing an empty part of the bracket: straight through.
+    const other = await koMatch(q, t, m.round, m.slot ^ 1);
+    if (deadMatch(other) && row.status === 'scheduled') {
+      await q(`UPDATE matches SET status = 'bye', winner_id = $1 WHERE id = $2`, [winnerId, row.id]);
+      if (row.round === t.config.knockoutRounds) await setStatus(q, t, 'completed');
+      else await advance(q, t, row, winnerId);
+      return;
+    }
     await settleWalkover(q, t, row);
   }
 
@@ -1966,6 +2017,23 @@ function createService(db, { mailer, fetchImpl } = {}) {
     const gone = new Set(out.map((r) => r.id));
     await finishWalkover(q, t, m, gone.has(m.a_id) ? m.b_id : m.a_id);
   }
+
+  // The level pools for these entries, in bracket order (the organiser's
+  // poolOrder first, then lowest level first). Every entry needs a level.
+  function poolsOf(t, entries) {
+    const levels = catalog.entryLevels(t.sportDef.id);
+    const { pools, missing } = formats.poolsFor(entries.map((e) => ({ id: e.id, level: e.level })), t.config.pools, levels);
+    if (missing.length) {
+      const names = entries.filter((e) => missing.includes(e.id)).map((e) => e.name);
+      fail(400, `Set a level for ${names.length === 1 ? names[0] : `${names.length} entries (${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''})`} — or switch level pools off`, 'levels');
+    }
+    if (pools.length < 2) fail(400, `Everyone is in one level pool (${pools[0] ? pools[0].label : 'none'}) — check the levels, or switch level pools off`, 'levels');
+    return orderPools(pools, t.config.poolOrder);
+  }
+  const orderPools = (pools, order) => {
+    const rank = (k) => { const i = (order || []).indexOf(k); return i < 0 ? 100 : i; };
+    return pools.map((p, i) => ({ p, i })).sort((x, y) => rank(x.p.key) - rank(y.p.key) || x.i - y.i).map((x) => x.p);
+  };
 
   async function start(id, actor, { skipUnconfirmed = false, event } = {}) {
     return mutateEvent(id, actor, event, async (q, t) => {
@@ -1995,19 +2063,35 @@ function createService(db, { mailer, fetchImpl } = {}) {
         return;
       }
       if (entries.length < 2) fail(400, usingCheckIn ? 'Check in at least 2 entries to start' : 'Add at least 2 entries to start');
-      const groups = groupsFor(t, entries.length);
       const { qualifiers } = t.config;
-      t.config = { ...t.config, groups };
+      let draw;
+      let groupPools = null;
+      if (poolsOn(t)) {
+        // Level pools: each pool (Beginner, …) is drawn into its own groups.
+        const pools = poolsOf(t, entries);
+        draw = [];
+        groupPools = [];
+        for (const p of pools) {
+          if (p.ids.length < 2) fail(400, `${p.label} has only 1 entry — a pool needs at least 2. Change their level, or switch level pools off`, 'levels');
+          const n = t.config.groupSize ? formats.groupCount(p.ids.length, t.config.groupSize) : 1;
+          const smallest = Math.floor(p.ids.length / n);
+          if (qualifiers > smallest) fail(400, `${p.label}: the smallest group has ${smallest} entries, so at most ${smallest} can qualify from each group`);
+          for (const ids of formats.snakeGroups(p.ids, n)) { draw.push(ids); groupPools.push({ key: p.key, label: p.label }); }
+        }
+      } else {
+        const groups = groupsFor(t, entries.length);
+        if (entries.length < groups * 2) {
+          fail(400, `${groups} group${groups > 1 ? 's need' : ' needs'} at least ${groups * 2} entries (you have ${entries.length})`);
+        }
+        if (t.format === 'league_knockout') {
+          const smallest = Math.floor(entries.length / groups);
+          if (qualifiers > smallest) fail(400, `The smallest group has ${smallest} entries, so at most ${smallest} can qualify from each group`);
+          if (groups * qualifiers < 2) fail(400, 'At least 2 entries must qualify for the knockout');
+        }
+        draw = formats.snakeGroups(entries.map((e) => e.id), groups);
+      }
+      t.config = { ...t.config, groups: draw.length, groupPools };
       await saveEventConfig(q, t);
-      if (entries.length < groups * 2) {
-        fail(400, `${groups} group${groups > 1 ? 's need' : ' needs'} at least ${groups * 2} entries (you have ${entries.length})`);
-      }
-      if (t.format === 'league_knockout') {
-        const smallest = Math.floor(entries.length / groups);
-        if (qualifiers > smallest) fail(400, `The smallest group has ${smallest} entries, so at most ${smallest} can qualify from each group`);
-        if (groups * qualifiers < 2) fail(400, 'At least 2 entries must qualify for the knockout');
-      }
-      const draw = formats.snakeGroups(entries.map((e) => e.id), groups);
       for (const [g, ids] of draw.entries()) {
         for (const eid of ids) await q('UPDATE entries SET group_no = $1 WHERE id = $2', [g, eid]);
         for (const [r, pairs] of formats.roundRobin(ids).entries()) {
@@ -2024,15 +2108,27 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const pending = await pendingLeague(q, t);
       if (pending) fail(409, `${pending} league match${pending > 1 ? 'es are' : ' is'} still to be played`);
       const { groups } = eventView(t, await entriesOf(q, t), await matchesOf(q, t), { can: {} });
-      const seeded = [];
-      for (let tier = 0; tier < t.config.qualifiers; tier++) {
-        for (const g of groups) {
-          const row = g.standings.filter((r) => !r.withdrawn)[tier]; // withdrawn players don't qualify
-          if (row) seeded.push({ id: row.id, group: g.no, tier });
+      const seedOf = (list) => {
+        const out = [];
+        for (let tier = 0; tier < t.config.qualifiers; tier++) {
+          for (const g of list) {
+            const row = g.standings.filter((r) => !r.withdrawn)[tier]; // withdrawn players don't qualify
+            if (row) out.push({ id: row.id, group: g.no, tier });
+          }
         }
-      }
+        return out;
+      };
+      const seeded = seedOf(groups);
       if (seeded.length < 2) fail(409, 'Not enough players left to make a knockout');
-      await createBracket(q, t, seeded);
+      const gp = t.config.groupPools;
+      if (gp && gp.length === groups.length) {
+        // Level pools: each pool plays off in its own part of the bracket.
+        const keys = orderPools([...new Map(gp.map((p) => [p.key, p])).values()], t.config.poolOrder).map((p) => p.key);
+        const sections = keys.map((k) => seedOf(groups.filter((g) => gp[g.no].key === k)));
+        await createBracket(q, t, null, formats.pooledSlots(sections));
+      } else {
+        await createBracket(q, t, seeded);
+      }
       await setStatus(q, t, 'knockout');
     });
   }
@@ -2058,11 +2154,80 @@ function createService(db, { mailer, fetchImpl } = {}) {
     });
   }
 
+  // An entry's level (before the draw, or while their group hasn't started).
+  // With level pools on during the league, a new level moves them to that
+  // pool (its smallest group that hasn't started).
+  async function setEntryLevel(id, actor, entryId, input = {}) {
+    return mutateEntry(id, actor, entryId, async (q, t) => {
+      const level = levelIn(t, input.level);
+      const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+      if (t.status === 'setup' || !poolsOn(t) || t.status !== 'league' || e.group_no == null) {
+        if (t.status !== 'setup' && t.status !== 'league') fail(409, 'The knockout has started — levels are set');
+        await q('UPDATE entries SET level = $1 WHERE id = $2', [level, e.id]);
+        return;
+      }
+      const gp = t.config.groupPools || [];
+      const fits = (g) => gp[g] && level && gp[g].label.split(' & ').includes(level);
+      if (fits(e.group_no) || !level) { await q('UPDATE entries SET level = $1 WHERE id = $2', [level, e.id]); return; }
+      const started = await startedGroups(q, t);
+      const sizes = await q(`SELECT group_no, COUNT(*)::int AS n FROM entries WHERE event_id = $1 AND group_no IS NOT NULL AND in_draw GROUP BY group_no`, [t.eventId]);
+      const target = gp.map((_, g) => g).filter((g) => fits(g) && !started.has(g))
+        .sort((x, y) => ((sizes.find((r) => r.group_no === x) || {}).n || 0) - ((sizes.find((r) => r.group_no === y) || {}).n || 0) || x - y)[0];
+      if (target === undefined) fail(409, `Every ${level} group has started — withdraw them and add them as a spot entry instead`);
+      await moveInto(q, t, e, target, started);
+      await q('UPDATE entries SET level = $1 WHERE id = $2', [level, e.id]);
+    });
+  }
+
+  // Groups whose league has started (a point, a walkover or a result).
+  async function startedGroups(q, t) {
+    const rows = await q(
+      `SELECT DISTINCT group_no FROM matches WHERE event_id = $1 AND stage = 'league' AND (rallies <> '' OR walkover OR status = 'done')`, [t.eventId]);
+    return new Set(rows.map((r) => r.group_no));
+  }
+  // Moves an entry to another group and redoes both groups' fixtures.
+  async function moveInto(q, t, e, target, started) {
+    const from = e.group_no;
+    if (from === target) return;
+    for (const g of [from, target]) {
+      if (started.has(g)) fail(409, `${groupName(g)} has started — add them to it as a spot entry instead`);
+    }
+    await q('UPDATE entries SET group_no = $1 WHERE id = $2', [target, e.id]);
+    for (const g of [from, target]) {
+      await q(`DELETE FROM matches WHERE event_id = $1 AND stage = 'league' AND group_no = $2`, [t.eventId, g]);
+      const ids = (await q('SELECT id FROM entries WHERE event_id = $1 AND group_no = $2 AND in_draw ORDER BY seed, id', [t.eventId, g])).map((r) => r.id);
+      for (const [r, pairs] of formats.roundRobin(ids).entries()) {
+        for (const [slot, [a, b]] of pairs.entries()) await insertMatch(q, t, 'league', g, r + 1, slot, a, b);
+      }
+    }
+  }
+  // Organisers: move a player to another group during the league, while
+  // neither group has started ("he's really Intermediate").
+  async function moveEntry(id, actor, entryId, input = {}) {
+    return mutateEntry(id, actor, entryId, async (q, t) => {
+      if (t.status !== 'league') fail(409, 'Players can be moved between groups during the league stage');
+      const target = Number(input.group);
+      if (!Number.isInteger(target) || target < 0 || target >= t.config.groups) fail(400, 'Pick one of the groups');
+      const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+      if (e.group_no == null || !e.in_draw) fail(409, 'They aren\'t in a group');
+      if (e.withdrawn) fail(409, 'They have withdrawn');
+      const started = await startedGroups(q, t);
+      for (const g of [e.group_no, target]) if (started.has(g)) fail(409, `${groupName(g)} has started — add them to it as a spot entry instead`);
+      const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM entries WHERE event_id = $1 AND group_no = $2 AND in_draw', [t.eventId, e.group_no]);
+      if (n <= 2 && e.group_no !== target) fail(409, `${groupName(e.group_no)} would be left with 1 player`);
+      await moveInto(q, t, e, target, started);
+      // A single-level pool sets their level (moved into Intermediate = Intermediate).
+      const pool = (t.config.groupPools || [])[target];
+      if (pool && !pool.label.includes(' & ')) await q('UPDATE entries SET level = $1 WHERE id = $2', [pool.label, e.id]);
+    });
+  }
+
   // Add a player after the start (only if the organiser allows late entries).
   // Groups: joins the smallest group with catch-up matches against everyone in
   // it. Knockout: takes a first-round bye slot.
   async function lateEntry(id, actor, input = {}) {
     const name = text(input.name, 'Name', { max: 60 });
+    const wanted = given(input.group) ? Number(input.group) : null;
     return mutateEvent(id, actor, input.event, async (q, t) => {
       if (t.status === 'setup') fail(409, 'The draw hasn\'t been made yet — just add them to the entries');
       if (t.status === 'completed') fail(409, 'The tournament has finished');
@@ -2086,8 +2251,23 @@ function createService(db, { mailer, fetchImpl } = {}) {
         }));
         const active = (x) => x.members.filter((e) => !e.withdrawn).length;
         groups.sort((x, y) => active(x) - active(y) || (done.get(x.g) || 0) - (done.get(y.g) || 0) || x.g - y.g);
-        const { g, members } = groups[0];
-        const [{ id: newId }] = await insertEntry(q, t, { name, seed, group: g, source: 'walk-in', checkedIn: true });
+        const level = levelIn(t, input.level);
+        const gp = t.config.groupPools || [];
+        let choice;
+        if (wanted !== null) {
+          // The organiser's pick (a spot entry put where they belong).
+          choice = groups.find((x) => x.g === wanted);
+          if (!choice) fail(400, 'Pick one of the groups');
+        } else if (level && gp.length) {
+          // Their level's pool: its smallest group.
+          choice = groups.find((x) => (gp[x.g] || {}).label && gp[x.g].label.split(' & ').includes(level));
+          if (!choice) fail(400, `There's no ${level} pool — pick a group for them`);
+        } else {
+          choice = groups[0];
+        }
+        const { g, members } = choice;
+        const ownLevel = level || (gp[g] && !gp[g].label.includes(' & ') ? gp[g].label : null);
+        const [{ id: newId }] = await insertEntry(q, t, { name, seed, group: g, source: 'walk-in', checkedIn: true, level: ownLevel });
         const [{ last }] = await q(
           `SELECT COALESCE(MAX(round), 0)::int AS last FROM matches WHERE event_id = $1 AND stage = 'league' AND group_no = $2`,
           [t.eventId, g],
@@ -2319,9 +2499,18 @@ function createService(db, { mailer, fetchImpl } = {}) {
         if (t.status === 'completed') await setStatus(q, t, 'league');
       } else if (m.status === 'done') {
         if (m.round < t.config.knockoutRounds) {
-          const next = await koMatch(q, t, m.round + 1, m.slot >> 1);
+          let from = m;
+          let next = await koMatch(q, t, m.round + 1, m.slot >> 1);
+          // Through any byes it went straight on through (an empty bracket section).
+          while (next.status === 'bye' && next.winner_id != null && next.round < t.config.knockoutRounds) {
+            const after = await koMatch(q, t, next.round + 1, next.slot >> 1);
+            if (after.rallies || after.status === 'done') fail(409, 'A later-round match has already started');
+            await q(`UPDATE matches SET ${nextSlotColumn(from)} = NULL, status = 'scheduled', winner_id = NULL WHERE id = $1`, [next.id]);
+            from = next;
+            next = after;
+          }
           if (next.rallies || next.status === 'done') fail(409, 'The next-round match has already started');
-          await q(`UPDATE matches SET ${nextSlotColumn(m)} = NULL, status = 'scheduled', court = NULL, called_at = NULL WHERE id = $1`, [next.id]);
+          await q(`UPDATE matches SET ${nextSlotColumn(from)} = NULL, status = 'scheduled', winner_id = NULL, court = NULL, called_at = NULL WHERE id = $1`, [next.id]);
         }
         if (t.status === 'completed') await setStatus(q, t, 'knockout');
       }
@@ -3087,6 +3276,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     checkInAll,
     redraw,
     lateEntry,
+    setEntryLevel,
+    moveEntry,
     withdraw,
     removeEntry,
     reorderEntries,

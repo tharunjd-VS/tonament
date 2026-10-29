@@ -61,8 +61,7 @@ function seedOrder(size) {
 // seeded: [{ id, group, tier }] best first. Returns first-round slots
 // (ids or null for a bye). Byes go to the top seeds, and two entries from the
 // same group are kept apart in round one by swapping equal-tier opponents.
-function knockoutSlots(seeded) {
-  const size = bracketSize(seeded.length);
+function knockoutSlots(seeded, size = bracketSize(seeded.length)) {
   const slots = seedOrder(size).map((s) => seeded[s - 1] || null);
   const clash = (x, y) => x && y && x.group != null && x.group === y.group;
   for (let i = 0; i < slots.length; i += 2) {
@@ -77,6 +76,46 @@ function knockoutSlots(seeded) {
     }
   }
   return slots.map((s) => (s ? s.id : null));
+}
+
+// Level pools (an Open event split by level): which pool each entry plays in.
+// mode 'levels': one pool per level; 'two': the lower half of the sport's
+// levels v the upper half (Beginner, Beginner+ | Intermediate, Advanced).
+// entries: [{ id, level }]; levels: the sport's levels, lowest first.
+// Returns { pools: [{ key, label, levels, ids }], missing: [ids without a level] }.
+function poolsFor(entries, mode, levels) {
+  const missing = entries.filter((e) => !levels.includes(e.level)).map((e) => e.id);
+  let defs;
+  if (mode === 'two') {
+    const cut = Math.max(1, Math.floor(levels.length / 2));
+    defs = [{ key: 'lower', levels: levels.slice(0, cut) }, { key: 'upper', levels: levels.slice(cut) }];
+  } else {
+    defs = levels.map((l) => ({ key: l, levels: [l] }));
+  }
+  const pools = defs
+    .map((d) => ({ ...d, label: d.levels.join(' & '), ids: entries.filter((e) => d.levels.includes(e.level)).map((e) => e.id) }))
+    .filter((d) => d.ids.length);
+  return { pools, missing };
+}
+
+// The knockout for level pools: each pool plays off in its own section of
+// the bracket, so pools only meet once each has a winner (2 pools: the
+// final; 4 pools: the semis). sections: [[{ id, group, tier }] best first],
+// in bracket order (neighbours meet first). Sections are padded to a power
+// of two, with empty sections (all byes) when the pool count isn't one.
+function pooledSlots(sections) {
+  const pow2 = (n) => { let k = 1; while (k < n) k *= 2; return k; };
+  const size = Math.max(1, ...sections.map((s) => pow2(s.length)));
+  const count = pow2(sections.length);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const sec = sections[i] || [];
+    if (size === 1) out.push(sec[0] ? sec[0].id : null);
+    else out.push(...knockoutSlots(sec, size));
+  }
+  // A one-entry bracket (single pool, single qualifier) still needs a pair.
+  if (out.length === 1) out.push(null);
+  return out;
 }
 
 function roundName(round, totalRounds) {
@@ -146,4 +185,4 @@ function standings(memberIds, results, points = {}) {
   return ranked.map((r, i) => ({ rank: i + 1, ...r }));
 }
 
-module.exports = { WIN_POINTS, DRAW_POINTS, groupCount, snakeGroups, roundRobin, bracketSize, seedOrder, knockoutSlots, roundName, standings };
+module.exports = { WIN_POINTS, DRAW_POINTS, groupCount, snakeGroups, roundRobin, bracketSize, seedOrder, knockoutSlots, poolsFor, pooledSlots, roundName, standings };
