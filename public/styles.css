@@ -1227,3 +1227,11 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .level-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pool-tag { margin-left: 8px; vertical-align: middle; font-size: 0.75rem; }
 .move-select { display: block; margin-top: 4px; width: auto; max-width: 100%; padding: 2px 6px; font-size: 0.8rem; min-height: 0; }
+
+/* On the day: not here yet, arrived, retired, play next */
+.banner.warn { background: var(--live-soft); border: 1px solid var(--live); }
+.court-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.oop-actions, .play-actions, .arrive-form, .retire-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.order-of-play li { flex-wrap: wrap; }
+.order-of-play .oop-actions { flex-basis: 100%; justify-content: flex-end; }
+.arrive-form select { width: auto; max-width: 100%; }

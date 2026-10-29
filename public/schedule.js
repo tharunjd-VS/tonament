@@ -34,7 +34,8 @@
   // events: [{ id, name, status, matches: [{ id, stage, round, group, slot,
   //   status, a, b, court, queuePos, calledAt, catchUp }] }] in event order.
   // Returns { courts: [{ name, match, freeAt, next }], queue: [{ match, event,
-  //   startsAt, waitingFor: [{ name, court }] }], next }.
+  //   startsAt, waitingFor: [{ name, court, away?, since? }] }], next }.
+  // Entries with awaySince (not here yet) hold back their matches.
   function orderOfPlay({ events, courts = [], minutes = 30, now = Date.now() }) {
     const length = minutes * MINUTE;
     const all = events.flatMap((ev, evIndex) => ev.matches.map((m) => ({ m, ev, evIndex })));
@@ -47,6 +48,12 @@
       const until = Math.max(started + length, now + 5 * MINUTE);
       if (x.m.court && !onCourt.has(x.m.court)) onCourt.set(x.m.court, { match: x.m, event: x.ev, until });
       for (const p of [...people(x.m.a), ...people(x.m.b)]) busy.set(key(p), { name: p, court: x.m.court, until });
+    }
+
+    // Not here yet: checked in, but away from the courts. Their matches wait.
+    const away = new Map(); // person key -> since
+    for (const ev of events) {
+      for (const e of ev.entries || []) if (e.awaySince && e.inDraw !== false) for (const p of people(e)) away.set(key(p), e.awaySince);
     }
 
     // Pinned matches first ("Play next"), then catch-up matches, then round
@@ -73,7 +80,10 @@
         courtFree[c] = startsAt + length;
         for (const p of names) personFree.set(key(p), startsAt + length);
       }
-      const waitingFor = names.filter((p) => busy.has(key(p))).map((p) => ({ name: p, court: busy.get(key(p)).court }));
+      const waitingFor = [
+        ...names.filter((p) => busy.has(key(p))).map((p) => ({ name: p, court: busy.get(key(p)).court })),
+        ...names.filter((p) => !busy.has(key(p)) && away.has(key(p))).map((p) => ({ name: p, court: null, away: true, since: away.get(key(p)) })),
+      ];
       return { match: x.m, event: x.ev, startsAt, waitingFor };
     });
 

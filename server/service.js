@@ -221,7 +221,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return { ...row, sportDef: sports.get(row.sport) };
   }
 
-  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into, players, user_id, phone, pay_ref, pay_sent_at, hold_until, level';
+  const ENTRY_COLUMNS = 'id, event_id, name, seed, group_no, checked_in, in_draw, withdrawn, source, contact, confirmed, fee_status, fee_amount, created_at, solo, solo_side, paired_into, players, user_id, phone, pay_ref, pay_sent_at, hold_until, level, away_since';
 
   // Entries and matches of one event (`ev` is an event context, see eventFor).
   // Solo players already paired up play as their pair entry, so they're left out.
@@ -610,18 +610,20 @@ function createService(db, { mailer, fetchImpl } = {}) {
       winner: m.winner_id,
       draw: m.status === 'done' && Boolean(score.draw),
       walkover: m.walkover,
+      retired: m.retired || null,
       catchUp: m.catch_up,
       queuePos: m.queue_pos,
       calledAt: m.called_at,
       score,
-      summary: m.walkover ? 'Walkover' : t.sportDef.summary(score),
+      summary: m.walkover ? 'Walkover' : m.retired ? `${t.sportDef.summary(score) || '0–0'} ret.` : t.sportDef.summary(score),
       updatedAt: m.updated_at,
     };
   }
 
-  // A walkover counts as a win/loss but adds nothing to games or points.
+  // A walkover (or a retirement) counts as a win/loss but adds nothing to
+  // games or points.
   function resultOf(m, score) {
-    const w = m.walkover;
+    const w = m.walkover || Boolean(m.retired);
     return {
       a: m.a_id,
       b: m.b_id,
@@ -722,6 +724,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         seed: e.seed,
         group: e.group_no,
         level: e.level || null,
+        awaySince: e.away_since || null,
         checkedIn: e.checked_in,
         inDraw: e.in_draw,
         withdrawn: e.withdrawn,
@@ -2227,79 +2230,190 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // it. Knockout: takes a first-round bye slot.
   async function lateEntry(id, actor, input = {}) {
     const name = text(input.name, 'Name', { max: 60 });
-    const wanted = given(input.group) ? Number(input.group) : null;
     return mutateEvent(id, actor, input.event, async (q, t) => {
       if (t.status === 'setup') fail(409, 'The draw hasn\'t been made yet — just add them to the entries');
       if (t.status === 'completed') fail(409, 'The tournament has finished');
       if (!t.config.lateEntry) fail(409, 'Late entries are switched off for this tournament', 'late_off');
       const all = await entriesOf(q, t);
       if (all.length >= MAX_ENTRIES) fail(409, `An event can have at most ${MAX_ENTRIES} entries`);
-      if (all.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(400, `"${name}" is already entered`);
+      if (all.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(400, `"${name}" is already entered — if they entered earlier, tap Arrived next to their name`);
       await checkEntryLimit(q, t, 1);
       const seed = all.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
+      await placeLate(q, t, all, input, async (group, level) => {
+        const [{ id: newId }] = await insertEntry(q, t, { name, seed, group, source: 'walk-in', checkedIn: true, level: levelIn(t, input.level) || level });
+        return newId;
+      });
+    });
+  }
 
-      if (t.status === 'league') {
-        const done = new Map(
-          (await q(
-            `SELECT group_no, COUNT(*)::int AS n FROM matches WHERE event_id = $1 AND stage = 'league' AND status = 'done' GROUP BY group_no`,
-            [t.eventId],
-          )).map((r) => [r.group_no, r.n]),
-        );
-        const groups = Array.from({ length: t.config.groups }, (_, g) => ({
-          g,
-          members: all.filter((e) => e.group_no === g && e.in_draw),
-        }));
-        const active = (x) => x.members.filter((e) => !e.withdrawn).length;
-        groups.sort((x, y) => active(x) - active(y) || (done.get(x.g) || 0) - (done.get(y.g) || 0) || x.g - y.g);
-        const level = levelIn(t, input.level);
-        const gp = t.config.groupPools || [];
-        let choice;
-        if (wanted !== null) {
-          // The organiser's pick (a spot entry put where they belong).
-          choice = groups.find((x) => x.g === wanted);
-          if (!choice) fail(400, 'Pick one of the groups');
-        } else if (level && gp.length) {
-          // Their level's pool: its smallest group.
-          choice = groups.find((x) => (gp[x.g] || {}).label && gp[x.g].label.split(' & ').includes(level));
-          if (!choice) fail(400, `There's no ${level} pool — pick a group for them`);
-        } else {
-          choice = groups[0];
-        }
-        const { g, members } = choice;
-        const ownLevel = level || (gp[g] && !gp[g].label.includes(' & ') ? gp[g].label : null);
-        const [{ id: newId }] = await insertEntry(q, t, { name, seed, group: g, source: 'walk-in', checkedIn: true, level: ownLevel });
-        const [{ last }] = await q(
-          `SELECT COALESCE(MAX(round), 0)::int AS last FROM matches WHERE event_id = $1 AND stage = 'league' AND group_no = $2`,
-          [t.eventId, g],
-        );
-        for (const [i, m] of members.entries()) {
-          if (m.withdrawn) {
-            await insertMatch(q, t, 'league', g, last + i + 1, 0, newId, m.id, 'done', newId, { walkover: true, catchUp: true });
-          } else {
-            await insertMatch(q, t, 'league', g, last + i + 1, 0, newId, m.id, 'scheduled', null, { catchUp: true });
-          }
-        }
-        return;
-      }
+  // Someone who entered but wasn't here for the draw ("Didn't show") arrives:
+  // they join like a late entry, keeping their entry (fee, contact, level).
+  async function arrive(id, actor, entryId, input = {}) {
+    return mutateEntry(id, actor, entryId, async (q, t) => {
+      if (t.status === 'setup') fail(409, 'The draw hasn\'t been made yet — just tick them in the list');
+      if (t.status === 'completed') fail(409, 'The tournament has finished');
+      const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+      if (e.in_draw) fail(409, `${e.name} is already in the draw`);
+      if (!e.confirmed || e.solo) fail(409, `${e.name} isn't a confirmed entry`);
+      if (e.withdrawn) fail(409, `${e.name} has withdrawn`);
+      const all = await entriesOf(q, t);
+      await placeLate(q, t, all, { group: input.group, level: input.level || e.level }, async (group, level) => {
+        await q('UPDATE entries SET in_draw = true, checked_in = true, group_no = $2, level = COALESCE(level, $3), away_since = NULL WHERE id = $1', [e.id, group, level]);
+        return e.id;
+      });
+    });
+  }
 
-      if (t.format !== 'knockout') fail(409, 'The knockout has started — late entries can only join during the group stage');
-      const byes = await q(
-        `SELECT * FROM matches WHERE event_id = $1 AND stage = 'knockout' AND round = 1 AND status = 'bye' ORDER BY slot`,
-        [t.eventId],
+  // Puts a latecomer into the event: in the league, a group (the one picked,
+  // else their level's pool, else the smallest) with catch-up matches against
+  // everyone in it; in a knockout-only event, a first-round bye.
+  // place(group, level) saves the entry there and returns its id.
+  async function placeLate(q, t, all, input, place) {
+    const wanted = given(input.group) ? Number(input.group) : null;
+    if (t.status === 'league') {
+      const done = new Map(
+        (await q(
+          `SELECT group_no, COUNT(*)::int AS n FROM matches WHERE event_id = $1 AND stage = 'league' AND status = 'done' GROUP BY group_no`,
+          [t.eventId],
+        )).map((r) => [r.group_no, r.n]),
       );
-      for (const bye of byes) {
-        const next = await koMatch(q, t, 2, bye.slot >> 1);
-        if (!next || next.rallies || next.status !== 'scheduled') continue;
-        const [{ id: newId }] = await insertEntry(q, t, { name, seed, source: 'walk-in', checkedIn: true });
-        await q(`UPDATE matches SET ${nextSlotColumn(bye)} = NULL WHERE id = $1`, [next.id]); // undo the bye's advance
-        const side = bye.a_id == null ? 'a_id' : 'b_id';
-        await q(
-          `UPDATE matches SET ${side} = $1, status = 'scheduled', winner_id = NULL, catch_up = true, updated_at = now() WHERE id = $2`,
-          [newId, bye.id],
-        );
-        return;
+      const groups = Array.from({ length: t.config.groups }, (_, g) => ({
+        g,
+        members: all.filter((e) => e.group_no === g && e.in_draw),
+      }));
+      const active = (x) => x.members.filter((e) => !e.withdrawn).length;
+      groups.sort((x, y) => active(x) - active(y) || (done.get(x.g) || 0) - (done.get(y.g) || 0) || x.g - y.g);
+      const level = levelIn(t, input.level);
+      const gp = t.config.groupPools || [];
+      let choice;
+      if (wanted !== null) {
+        // The organiser's pick (a spot entry put where they belong).
+        choice = groups.find((x) => x.g === wanted);
+        if (!choice) fail(400, 'Pick one of the groups');
+      } else if (level && gp.length) {
+        // Their level's pool: its smallest group.
+        choice = groups.find((x) => (gp[x.g] || {}).label && gp[x.g].label.split(' & ').includes(level));
+        if (!choice) fail(400, `There's no ${level} pool — pick a group for them`);
+      } else {
+        choice = groups[0];
       }
-      fail(409, 'The bracket is full — late entry isn\'t possible');
+      const { g, members } = choice;
+      const ownLevel = level || (gp[g] && !gp[g].label.includes(' & ') ? gp[g].label : null);
+      const newId = await place(g, ownLevel);
+      const [{ last }] = await q(
+        `SELECT COALESCE(MAX(round), 0)::int AS last FROM matches WHERE event_id = $1 AND stage = 'league' AND group_no = $2`,
+        [t.eventId, g],
+      );
+      for (const [i, m] of members.entries()) {
+        if (m.withdrawn) {
+          await insertMatch(q, t, 'league', g, last + i + 1, 0, newId, m.id, 'done', newId, { walkover: true, catchUp: true });
+        } else {
+          await insertMatch(q, t, 'league', g, last + i + 1, 0, newId, m.id, 'scheduled', null, { catchUp: true });
+        }
+      }
+      return;
+    }
+
+    if (t.format !== 'knockout') fail(409, 'The knockout has started — latecomers can only join during the group stage');
+    const byes = await q(
+      `SELECT * FROM matches WHERE event_id = $1 AND stage = 'knockout' AND round = 1 AND status = 'bye' ORDER BY slot`,
+      [t.eventId],
+    );
+    for (const bye of byes) {
+      const next = await koMatch(q, t, 2, bye.slot >> 1);
+      if (!next || next.rallies || next.status !== 'scheduled') continue;
+      const newId = await place(null, null);
+      await q(`UPDATE matches SET ${nextSlotColumn(bye)} = NULL WHERE id = $1`, [next.id]); // undo the bye's advance
+      const side = bye.a_id == null ? 'a_id' : 'b_id';
+      await q(
+        `UPDATE matches SET ${side} = $1, status = 'scheduled', winner_id = NULL, catch_up = true, updated_at = now() WHERE id = $2`,
+        [newId, bye.id],
+      );
+      return;
+    }
+    fail(409, 'The bracket is full — no bye is left for them');
+  }
+
+  // "Not here yet": checked in, but not at the court. Their matches wait (the
+  // order of play and auto-call skip them) until they're back. A match
+  // called to a court with no point played goes back to the queue, and the
+  // court takes the next one.
+  async function setAway(id, actor, entryId, away = true) {
+    return db.tx(async (q) => {
+      const { t: tournament } = await lockWith(q, id, actor, 'score');
+      const t = await eventOfEntry(q, tournament, entryId);
+      const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+      if (t.status === 'setup' || t.status === 'completed') fail(409, 'This is for during the event');
+      if (!e.in_draw || e.withdrawn) fail(409, `${e.name} isn't playing now`);
+      await q(`UPDATE entries SET away_since = ${away ? 'COALESCE(away_since, now())' : 'NULL'} WHERE id = $1`, [e.id]);
+      if (away) {
+        const called = await q(`SELECT * FROM matches WHERE event_id = $1 AND status = 'live' AND rallies = '' AND (a_id = $2 OR b_id = $2)`, [t.eventId, e.id]);
+        for (const m of called) {
+          await q(`UPDATE matches SET status = 'scheduled', court = NULL, called_at = NULL, updated_at = now() WHERE id = $1`, [m.id]);
+          await autoCall(q, tournament, m.court);
+        }
+      }
+      return view(q, await load(q, id), actor);
+    });
+  }
+
+  // One match given to the side that's there (the other never came).
+  async function giveWalkover(id, actor, mid, winner) {
+    if (winner !== 'a' && winner !== 'b') fail(400, 'winner must be "a" or "b"');
+    return db.tx(async (q) => {
+      const { t: tournament } = await lockWith(q, id, actor, 'manage');
+      const m = await matchOf(q, tournament, mid);
+      const t = await eventFor(q, tournament, m.event_id);
+      if (!['scheduled', 'live'].includes(m.status)) fail(409, 'This match is already finished');
+      if (m.rallies) fail(409, 'This match has started — if a player can\'t go on, mark them as retired');
+      if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
+      requireStageOpen(t, m);
+      await q('UPDATE matches SET court = NULL WHERE id = $1', [m.id]);
+      await finishWalkover(q, t, m, winner === 'a' ? m.a_id : m.b_id);
+      if (m.stage === 'league' && t.format === 'league' && (await pendingLeague(q, t)) === 0) await setStatus(q, t, 'completed');
+      await autoCall(q, tournament, m.court);
+      return view(q, await load(q, id), actor);
+    });
+  }
+
+  // A player retires mid-match (injury, has to leave): the other side wins.
+  // The points played stay on the scoresheet; tables count it like a walkover.
+  async function retire(id, actor, mid, side) {
+    if (side !== 'a' && side !== 'b') fail(400, 'side must be "a" or "b"');
+    return db.tx(async (q) => {
+      const { t: tournament } = await lockWith(q, id, actor, 'score');
+      const m = await matchOf(q, tournament, mid);
+      const t = await eventFor(q, tournament, m.event_id);
+      if (m.status === 'done' || m.status === 'bye') fail(409, 'This match is already finished');
+      if (m.a_id == null || m.b_id == null) fail(409, 'Both players are not known yet');
+      requireStageOpen(t, m);
+      if (!m.rallies) fail(409, 'No point has been played — give a walkover instead');
+      const winnerId = side === 'a' ? m.b_id : m.a_id;
+      const [row] = await q(`UPDATE matches SET status = 'done', winner_id = $1, retired = $2, updated_at = now() WHERE id = $3 RETURNING *`, [winnerId, side, m.id]);
+      if (m.stage === 'knockout') {
+        if (m.round === t.config.knockoutRounds) await setStatus(q, t, 'completed');
+        else await advance(q, t, m, winnerId);
+      } else if (t.format === 'league' && (await pendingLeague(q, t)) === 0) {
+        await setStatus(q, t, 'completed');
+      }
+      await autoCall(q, tournament, m.court);
+      return viewOfRow(q, t, row);
+    });
+  }
+
+  // A new name for an entry after the draw (a substitute partner). Results
+  // stay with the entry; linked players whose name is gone are unlinked, so
+  // nobody is credited for a match they didn't play.
+  async function renameEntry(id, actor, entryId, input = {}) {
+    const name = text(input.name, 'Name', { max: 60 });
+    return mutateEntry(id, actor, entryId, async (q, t) => {
+      if (t.status === 'completed') fail(409, 'The tournament has finished');
+      const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+      const all = await entriesOf(q, t);
+      if (all.some((x) => x.id !== e.id && x.name.toLowerCase() === name.toLowerCase())) fail(400, `"${name}" is already entered`);
+      await q('UPDATE entries SET name = $1 WHERE id = $2', [name, e.id]);
+      const now = name.split('/').map((p) => p.trim().toLowerCase());
+      await q(`DELETE FROM entry_players WHERE entry_id = $1 AND NOT (lower(name) = ANY($2::text[]))`, [e.id, now]);
     });
   }
 
@@ -2490,7 +2604,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const m = await matchOf(q, tournament, mid);
       const t = await eventFor(q, tournament, m.event_id);
       if (m.walkover) fail(409, 'Walkovers can\'t be undone');
-      if (m.status === 'bye' || !m.rallies) fail(409, 'Nothing to undo');
+      if (m.status === 'bye' || (!m.rallies && !m.retired)) fail(409, 'Nothing to undo');
       checkAt(m, at);
       if (m.status === 'done' && m.stage === 'league') {
         if (t.status === 'knockout' || (t.status === 'completed' && t.format === 'league_knockout')) {
@@ -2522,9 +2636,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
           [t.id, m.court, m.id],
         );
       }
+      // Undoing a retirement reopens the match with its points; otherwise the last point goes.
       const [row] = await q(
-        `UPDATE matches SET rallies = $1, status = 'live', winner_id = NULL, updated_at = now() WHERE id = $2 RETURNING *`,
-        [m.rallies.slice(0, -1), m.id],
+        `UPDATE matches SET rallies = $1, status = 'live', winner_id = NULL, retired = NULL, updated_at = now() WHERE id = $2 RETURNING *`,
+        [m.retired ? m.rallies : m.rallies.slice(0, -1), m.id],
       );
       return viewOfRow(q, t, row);
     });
@@ -3276,6 +3391,11 @@ function createService(db, { mailer, fetchImpl } = {}) {
     checkInAll,
     redraw,
     lateEntry,
+    arrive,
+    setAway,
+    giveWalkover,
+    retire,
+    renameEntry,
     setEntryLevel,
     moveEntry,
     withdraw,

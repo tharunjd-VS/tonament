@@ -234,3 +234,115 @@ test('withdrawn players are skipped when the knockout is drawn from the groups',
   const finalists = t.matches.filter((m) => m.stage === 'knockout').flatMap((m) => [m.a?.name, m.b?.name]);
   assert.ok(!finalists.includes('P1'));
 });
+
+// ---------- on the day: late, absent and changed players
+
+const schedule = require('../public/schedule');
+const leagueOf = (t) => t.matches.filter((m) => m.stage === 'league');
+const named = (t, name) => t.entries.find((e) => e.name === name);
+const has = (m, e) => m.a?.id === e.id || m.b?.id === e.id;
+
+test('not here yet: their matches wait, the court takes the next one, and they come back', async () => {
+  const { id } = await svc.createTournament(ORG, { name: 'Away Open', format: 'league', scoring: { points: 21, bestOf: 1 } });
+  await svc.addEntries(id, ORG, names(4, 'A'));
+  await svc.updateSettings(id, ORG, { courts: { names: ['Court 1', 'Court 2'], minutes: '', auto: true } });
+  let t = await svc.start(id, ORG);
+  const a1 = named(t, 'A1');
+  const first = leagueOf(t).find((m) => has(m, a1));
+  await svc.callMatch(id, ORG, first.id, 'Court 1');
+  // A1 isn't at the court: the match goes back, and Court 1 gets a match without A1.
+  t = await svc.setAway(id, ORG, a1.id, true);
+  assert.ok(named(t, 'A1').awaySince);
+  const live = t.matches.filter((m) => m.status === 'live');
+  assert.equal(live.length, 1);
+  assert.equal(live[0].court, 'Court 1');
+  assert.ok(!has(live[0], a1));
+  assert.equal(t.matches.find((m) => m.id === first.id).status, 'scheduled');
+  const plan = schedule.orderOfPlay({ events: [t], courts: ['Court 1', 'Court 2'], minutes: 25 });
+  for (const x of plan.queue.filter((y) => has(y.match, a1))) assert.ok(x.waitingFor.some((w) => w.away && w.name === 'A1'));
+  assert.ok(!plan.courts.some((c) => c.next && has(c.next.match, a1)));
+  // Back: their matches can be called again.
+  t = await svc.setAway(id, ORG, a1.id, false);
+  const again = schedule.orderOfPlay({ events: [t], courts: ['Court 1', 'Court 2'], minutes: 25 });
+  assert.ok(again.queue.filter((y) => has(y.match, a1)).every((x) => !x.waitingFor.some((w) => w.away)));
+  // A spectator can see it; only the team can set it.
+  await assert.rejects(svc.setAway(id, { user: { id: 99, email: 'nobody@x.test', name: 'N' } }, a1.id, true), /permission|Only|organis|umpire|can't|cannot/i);
+});
+
+test('arrived: an entry that missed the draw joins a group with catch-up matches (or a bye)', async () => {
+  const { id } = await svc.createTournament(ORG, { name: 'Late Comer Open', groups: 2, qualifiers: 1, scoring: { points: 21, bestOf: 1 } });
+  await svc.addEntries(id, ORG, names(7, 'L'));
+  let t = await svc.getTournament(id, ORG);
+  for (const e of t.entries.slice(0, 6)) await svc.checkIn(id, ORG, e.id, true);
+  t = await svc.start(id, ORG);
+  const late = named(t, 'L7');
+  assert.equal(late.inDraw, false);
+  // Not a late entry (they already entered): "Arrived".
+  await assert.rejects(svc.lateEntry(id, ORG, { name: 'L7' }), /Late entries are switched off|already entered/);
+  t = await svc.arrive(id, ORG, late.id, { group: 1 });
+  assert.equal(named(t, 'L7').inDraw, true);
+  assert.equal(named(t, 'L7').group, 1);
+  assert.equal(leagueOf(t).filter((m) => has(m, late) && m.catchUp).length, 3);
+  await assert.rejects(svc.arrive(id, ORG, late.id, {}), /already in the draw/);
+
+  // Knockout only: they take a bye.
+  const { id: k } = await svc.createTournament(ORG, { name: 'Late KO', format: 'knockout' });
+  await svc.addEntries(k, ORG, names(4, 'K'));
+  let kt = await svc.getTournament(k, ORG);
+  for (const e of kt.entries.slice(0, 3)) await svc.checkIn(k, ORG, e.id, true);
+  kt = await svc.start(k, ORG);
+  kt = await svc.arrive(k, ORG, named(kt, 'K4').id, {});
+  assert.ok(kt.matches.some((m) => m.round === 1 && has(m, named(kt, 'K4')) && m.status === 'scheduled'));
+});
+
+test('walkover for one match, and a retirement mid-match', async () => {
+  const { id } = await svc.createTournament(ORG, { name: 'Walkover Open', format: 'knockout', scoring: { points: 21, bestOf: 1 } });
+  await svc.addEntries(id, ORG, names(4, 'W'));
+  let t = await svc.start(id, ORG);
+  const [s1, s2] = t.matches.filter((m) => m.round === 1).sort((a, b) => a.slot - b.slot);
+  // W? never came: the other side goes through.
+  t = await svc.giveWalkover(id, ORG, s1.id, 'a');
+  const final = () => t.matches.find((m) => m.round === 2);
+  assert.equal(t.matches.find((m) => m.id === s1.id).walkover, true);
+  assert.equal(final().a.id, s1.a.id);
+  // Retired at 8-3 in the other semi: the score stays, the opponent goes through.
+  for (const s of 'aaaaaaaabbb') await svc.rally(id, ORG, s2.id, s);
+  await assert.rejects(svc.giveWalkover(id, ORG, s2.id, 'b'), /mark them as retired/);
+  let m = await svc.retire(id, ORG, s2.id, 'a');
+  assert.equal(m.status, 'done');
+  assert.equal(m.winner, s2.b.id);
+  assert.equal(m.retired, 'a');
+  assert.match(m.summary, /8.3 ret\./);
+  t = await svc.getTournament(id, ORG);
+  assert.equal(final().b.id, s2.b.id);
+  // Undo the retirement: reopened with its points, out of the final again.
+  m = await svc.undo(id, ORG, s2.id);
+  assert.deepEqual([m.status, m.rallies, m.retired], ['live', 11, null]);
+  t = await svc.getTournament(id, ORG);
+  assert.equal(final().b, null);
+});
+
+test('retirement in the league counts like a walkover in the table', async () => {
+  const { id } = await svc.createTournament(ORG, { name: 'Retire League', format: 'league', scoring: { points: 21, bestOf: 1 } });
+  await svc.addEntries(id, ORG, ['R1', 'R2', 'R3']);
+  let t = await svc.start(id, ORG);
+  const m = leagueOf(t)[0];
+  for (const s of 'aaaaab') await svc.rally(id, ORG, m.id, s);
+  await svc.retire(id, ORG, m.id, 'a');
+  t = await svc.getTournament(id, ORG);
+  const winner = t.groups[0].standings.find((r) => r.id === m.b.id);
+  assert.deepEqual([winner.won, winner.pointsFor, winner.gamesFor], [1, 0, 0]);
+});
+
+test('substitute partner: rename keeps the results', async () => {
+  const { id } = await svc.createTournament(ORG, { name: 'Sub Open', format: 'knockout', scoring: { points: 21, bestOf: 1 } });
+  const ev = (await svc.getTournament(id, ORG)).eventId;
+  await svc.updateEvent(id, ORG, ev, { discipline: 'doubles', gender: 'men' });
+  await svc.addEntries(id, ORG, ['Asha / Ben', 'Chan / Dev', 'Eli / Fay', 'Gus / Hal']);
+  let t = await svc.start(id, ORG);
+  const pair = named(t, 'Asha / Ben');
+  await assert.rejects(svc.renameEntry(id, ORG, pair.id, { name: 'Chan / Dev' }), /already entered/);
+  t = await svc.renameEntry(id, ORG, pair.id, { name: 'Asha / Ravi' });
+  assert.equal(named(t, 'Asha / Ravi').id, pair.id);
+  assert.ok(t.matches.some((m) => m.a?.name === 'Asha / Ravi' || m.b?.name === 'Asha / Ravi'));
+});

@@ -1866,6 +1866,7 @@
       e.source === 'self' ? pill('', 'Self-entered') : e.source === 'walk-in' ? pill('', 'Walk-in') : e.source === 'drawn' ? pill('', 'Drawn pair') : null,
       !setup && e.withdrawn ? pill('withdrawn', 'Withdrew') : null,
       !setup && !e.inDraw ? pill('', 'Didn\'t show') : null,
+      !setup && e.awaySince && e.inDraw && !e.withdrawn ? pill('live', `Not here yet${awayFor(e.awaySince)}`) : null,
       e.level && !(editable && poolsOn(t)) ? h('span', { class: 'event-tag level-tag' }, e.level) : null,
     ];
 
@@ -1915,6 +1916,17 @@
             h('span', { class: 'entry-tags' }, tags(e), groupLabel(e.group), e.rating != null ? pill('', `DUPR ${e.rating.toFixed(2)}`) : null),
             editable && poolsOn(t) ? levelChips(t, e) : null,
             entryPeople(t, e),
+            running && t.can.manage && !e.inDraw && !e.withdrawn && e.confirmed && !e.solo
+            && (t.status === 'league' || t.format === 'knockout')
+            ? arrivedPicker(t, e) : null,
+            running && (t.can.score || t.can.manage) && e.inDraw && !e.withdrawn
+            ? h('span', { class: 'play-actions' },
+              e.awaySince
+                ? h('button', { class: 'btn btn-small', onclick: () => setAway(t, e, false) }, 'Here ✓')
+                : h('button', { class: 'btn btn-small btn-ghost', title: 'Checked in but not at the court: their matches wait', onclick: () => setAway(t, e, true) }, 'Not here'),
+              t.can.manage ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => renameEntry(t, e) }, 'Rename') : null,
+              t.can.manage ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => withdrawEntry(t, e) }, 'Withdraw') : null)
+            : null,
             editable && !e.confirmed && !['pending', 'due', 'sent'].includes(e.feeStatus)
               ? h('button', { class: 'btn btn-small btn-primary confirm-btn', onclick: () => confirmEntry(t, e) }, 'Confirm place')
               : null,
@@ -1926,9 +1938,7 @@
             h('button', { class: 'icon-btn', title: 'Move up', 'aria-label': `Move ${e.name} up`, disabled: i === 0, onclick: () => move(t, i, -1) }, '↑'),
             h('button', { class: 'icon-btn', title: 'Move down', 'aria-label': `Move ${e.name} down`, disabled: i === t.entries.length - 1, onclick: () => move(t, i, 1) }, '↓'),
             h('button', { class: 'icon-btn', title: 'Remove', 'aria-label': `Remove ${e.name}`, onclick: () => removeEntry(t, e) }, '✕')) : null,
-          t.can.manage && running && e.inDraw && !e.withdrawn
-            ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => withdrawEntry(t, e) }, 'Withdraw')
-            : null)))
+          null)))
         : empty(editable ? `No entries yet. Add ${t.event.discipline === 'team' ? 'teams' : 'players or pairs'} above.` : 'No entries yet.'),
       editable && t.entries.length
         ? h('p', { class: 'hint', style: 'margin:8px 0 0' },
@@ -2218,7 +2228,8 @@
         }, input, pick, lv, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add late entry'))
         : null,
       h('p', { class: 'muted small', style: 'margin:8px 0 0' },
-        how || 'The knockout has started — late entries could only join during the group stage.'));
+        how || 'The knockout has started — late entries could only join during the group stage.'),
+      how ? h('p', { class: 'hint', style: 'margin:6px 0 0' }, 'Entered already but missed the draw? Tap Arrived next to their name in the list below.') : null);
   }
 
   // Check-in shows straight away; the server catches up in the background.
@@ -2257,6 +2268,37 @@
       render();
     }
   }
+  // Not here yet / back: their matches wait in the order of play meanwhile.
+  function setAway(t, e, away) {
+    act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/away`, { away }, t.id); },
+      away ? `${e.name}: not here yet — their matches wait` : `${e.name} is here ✓`);
+  }
+  // A substitute partner (or a corrected name) after the draw.
+  function renameEntry(t, e) {
+    const name = prompt(`New name for ${e.name}. Results stay with the ${t.event.discipline === 'doubles' ? 'pair' : 'entry'} — use this when a partner is replaced.`, e.name);
+    if (!name || name.trim() === e.name) return;
+    act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/rename`, { name: name.trim() }, t.id); }, `Now ${name.trim()}`);
+  }
+  // Entered, but missed the draw: into a group with catch-up matches (or a bye).
+  function arrivedPicker(t, e) {
+    if (S.arriving !== e.id) {
+      return h('button', { class: 'btn btn-small btn-primary', onclick: () => { S.arriving = e.id; render(); } }, 'Arrived');
+    }
+    const league = t.status === 'league';
+    const pick = league ? h('select', { 'aria-label': 'Group' },
+      h('option', { value: '' }, poolsOn(t) && e.level ? `By level (${e.level})` : 'Smallest group'),
+      t.groups.map((g) => h('option', { value: g.no }, `${g.name}${g.pool ? ` · ${g.pool}` : ''}`))) : null;
+    return h('span', { class: 'arrive-form' }, pick,
+      h('button', {
+        class: 'btn btn-small btn-primary',
+        onclick: () => act(async () => {
+          S.t = await api('POST', `${tPath(t)}/entries/${e.id}/arrive`, pick && pick.value !== '' ? { group: Number(pick.value) } : {}, t.id);
+          S.arriving = null;
+        }, league ? `${e.name} added — catch-up matches are in the order of play` : `${e.name} added to the draw`),
+      }, 'Add to draw'),
+      h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.arriving = null; render(); } }, 'Cancel'));
+  }
+
   function withdrawEntry(t, e) {
     if (!confirm(`Withdraw ${e.name}? Their remaining matches become walkovers. This can't be undone.`)) return;
     act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/withdraw`, {}, t.id); }, `${e.name} withdrawn`);
@@ -2836,6 +2878,8 @@
     const pin = (m, top) => act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${m.id}/queue`, { top }, t.id); }, top ? 'Moved to the front' : 'Back in the usual order');
     const offCourt = (m) => patchMatch(t, m, { status: 'scheduled' }, 'Taken off court');
     const evOf = (m) => t.events.find((e) => e.matches.some((x) => x.id === m.id));
+    // Entries in this queued match marked not here yet.
+    const awayIn = (x) => (x.event.entries || []).filter((e) => e.awaySince && [x.match.a && x.match.a.id, x.match.b && x.match.b.id].includes(e.id));
 
     const courtCard = (court) => {
       const m = court.match;
@@ -2856,13 +2900,17 @@
           evName(ev) ? h('small', { class: 'muted' }, ev.name) : null,
           h('span', {}, vsName(m)),
           h('small', { class: 'muted' }, m.rallies ? m.summary || 'In progress' : `Called at ${clock(Date.parse(m.calledAt || Date.now()))}`)),
-        manage && !m.rallies ? h('button', { class: 'btn btn-ghost btn-small', onclick: () => offCourt(m) }, 'Take off court') : null);
+        manage && !m.rallies ? h('div', { class: 'court-tools' },
+          h('span', { class: 'muted small' }, 'Not here:'),
+          ['a', 'b'].map((sd) => m[sd] ? h('button', { class: 'btn btn-ghost btn-small', title: `${m[sd].name} isn't at the court — play the next match instead`, onclick: () => setAway(t, m[sd], true) }, nameOf(m[sd])) : null),
+          h('button', { class: 'btn btn-ghost btn-small', onclick: () => offCourt(m) }, 'Take off court')) : null);
     };
 
     const queue = plan.queue.filter((x) => mine(x.match));
     return h('div', { class: 'court-results' },
       h('div', { class: 'court-grid' }, plan.courts.map(courtCard)),
       c.auto && manage ? h('p', { class: 'hint' }, 'Auto-call is on: when a match ends, the next match goes to that court.') : null,
+      manage ? h('p', { class: 'hint' }, 'Player not at the court? Tap their name under "Not here" — the next ready match goes on instead, and theirs waits until they\'re back.') : null,
       h('section', { class: 'section' },
         h('h2', {}, `Up next (${plan.queue.length})`),
         queue.length
@@ -2876,10 +2924,15 @@
               ].filter(Boolean).join(' · '))),
             h('span', { class: 'oop-time', title: 'Estimated start' }, x.startsAt <= Date.now() + 60000 && !x.waitingFor.length ? 'Next' : `~${clock(x.startsAt)}`),
             manage
-              ? h('span', { class: 'row-actions' },
+              ? h('span', { class: 'oop-actions' },
+                awayIn(x).map((e) => h('button', { class: 'btn btn-small', onclick: () => setAway(t, e, false) }, `${e.name} is here ✓`)),
+                t.can.manage ? awayIn(x).map((e) => {
+                  const other = x.match.a && x.match.a.id === e.id ? x.match.b : x.match.a;
+                  return h('button', { class: 'btn btn-small btn-ghost', onclick: () => confirm(`${e.name} never came? Give the match to ${other.name} as a walkover.`) && act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${x.match.id}/walkover`, { winner: other.id === x.match.a.id ? 'a' : 'b' }, t.id); }, `Walkover to ${other.name}`) }, `Walkover to ${other.name}`);
+                }) : null,
                 x.match.queuePos == null
-                  ? h('button', { class: 'icon-btn', title: 'Play next', 'aria-label': `Play ${vsName(x.match)} next`, onclick: () => pin(x.match, true) }, '⤒')
-                  : h('button', { class: 'icon-btn', title: 'Back to the usual order', 'aria-label': 'Unpin', onclick: () => pin(x.match, false) }, '↺'))
+                  ? h('button', { class: 'btn btn-small btn-ghost', 'aria-label': `Play ${vsName(x.match)} next`, onclick: () => pin(x.match, true) }, 'Play next')
+                  : [pill('done', 'Next ✓'), h('button', { class: 'btn btn-small btn-ghost', onclick: () => pin(x.match, false) }, 'Unpin')])
               : null)))
           : h('p', { class: 'muted' }, find ? 'No matches for that name.' : 'Nothing waiting to be played.'),
         plan.queue.length ? h('p', { class: 'hint', style: 'margin:8px 0 0' }, `Times are estimates, based on ${c.minutes}-minute matches.`) : null));
@@ -2888,9 +2941,15 @@
   // "Hal, Ivy (Court 1); Cy (Court 2)"
   function waitingText(list) {
     const byCourt = new Map();
-    for (const w of list) byCourt.set(w.court || '', [...(byCourt.get(w.court || '') || []), w.name]);
-    return [...byCourt].map(([court, names]) => `${names.join(', ')}${court ? ` (${court})` : ''}`).join('; ');
+    for (const w of list.filter((x) => !x.away)) byCourt.set(w.court || '', [...(byCourt.get(w.court || '') || []), w.name]);
+    const away = list.filter((x) => x.away);
+    return [
+      ...[...byCourt].map(([court, names]) => `${names.join(', ')}${court ? ` (${court})` : ''}`),
+      ...(away.length ? [`${away.map((w) => w.name).join(', ')} (not here yet${awayFor(away[0].since)})`] : []),
+    ].join('; ');
   }
+  // ", 12 min" since they were marked not here.
+  const awayFor = (since) => { const m = Math.floor((Date.now() - Date.parse(since)) / 60000); return since && m >= 1 ? `, ${m} min` : ''; };
 
   // ----- display mode (/t/<id>/display): for a TV or projector at the venue.
   // Read-only and updating itself: every court with its live score, the order
@@ -3175,8 +3234,26 @@
   }
 
   // ----- groups tab
+  // Organisers: groups left too small (or much smaller than the rest) after
+  // no-shows and withdrawals.
+  function lopsidedGroups(t) {
+    if (!t.can.manage || t.status !== 'league' || t.groups.length < 2) return null;
+    const size = (g) => g.standings.filter((r) => !r.withdrawn).length;
+    const big = Math.max(...t.groups.map(size));
+    const bad = t.groups.filter((g) => size(g) < 2 || big - size(g) >= 2);
+    if (!bad.length) return null;
+    return h('div', { class: 'banner warn' }, h('span', {},
+      h('strong', {}, bad.map((g) => `${g.name} has ${size(g)} player${size(g) === 1 ? '' : 's'}`).join(' · ')),
+      `, after no-shows or withdrawals. Move someone in with "Move…" (until a group starts), or add a latecomer to ${bad.length === 1 ? 'it' : 'them'}.`));
+  }
+
   function panelGroups(t) {
     if (!t.groups.length) return empty('Groups appear once the tournament starts.');
+    const warn = lopsidedGroups(t);
+    if (warn) return [warn, panelGroupsBody(t)];
+    return panelGroupsBody(t);
+  }
+  function panelGroupsBody(t) {
     const q = t.format === 'league_knockout' ? t.config.qualifiers : 1;
     const signed = (n) => (n > 0 ? `+${n}` : String(n));
     const sport = window.TonamentSports[t.sport.id];
@@ -3410,6 +3487,7 @@
       syncLine(m),
       h('div', { class: 'scorer-tools' },
         h('button', { class: 'btn', disabled: fresh, onclick: () => undo(t, m) }, '↶ Undo'),
+        !fresh ? retireButtons(t, m) : null,
         h('form', {
           class: 'inline-form',
           onsubmit: (e) => { e.preventDefault(); patchMatch(t, m, { court: courtInput.value }, `${CAT.courtWord(t.sport.id)} saved`); courtInput.blur(); },
@@ -3417,6 +3495,19 @@
       h('p', { class: 'hint center', style: 'margin:0' }, `${m.score.hint || 'Tap the side that won the rally.'} ${m.score.taps && m.score.taps.max > 1 && !m.score.taps.values
         ? 'Keyboard: A / L to pick the player, 1–9 to score, Z to undo.'
         : 'Keyboard: A / ← and L / → to score, Z to undo.'}`));
+  }
+
+  // Injury, or someone has to leave: they retire, the other side wins and
+  // the points played stay on the scoresheet.
+  function retireButtons(t, m) {
+    if (S.retiring !== m.id) return h('button', { class: 'btn btn-ghost', onclick: () => { S.retiring = m.id; render(); } }, 'Retired…');
+    const go = (sd) => {
+      if (!confirm(`${m[sd].name} retired? ${m[sd === 'a' ? 'b' : 'a'].name} win${m[sd === 'a' ? 'b' : 'a'].name.includes('/') ? '' : 's'} the match.`)) return;
+      act(async () => { mergeMatch(await api('POST', `${tPath(t)}/matches/${m.id}/retire`, { side: sd }, t.id)); S.retiring = null; }, 'Match ended — retired');
+    };
+    return h('span', { class: 'retire-pick' },
+      ['a', 'b'].map((sd) => h('button', { class: 'btn btn-small btn-ghost danger', onclick: () => go(sd) }, `${m[sd].name} retired`)),
+      h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.retiring = null; render(); } }, 'Cancel'));
   }
 
   // The result at the end: each game's (set's, frame's) score, checked with
