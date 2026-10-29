@@ -19,6 +19,7 @@ const { createSocial } = require('./social');
 const { createClubs } = require('./clubs');
 const { createCards } = require('./cards');
 const { createNotify } = require('./notify');
+const { createChallenges } = require('./challenges');
 const dupr = require('./dupr');
 const { inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail } = require('./email');
 const { TIERS, PLAN_NAMES, billingConfig, createRazorpay, verifyPaymentSignature, verifyWebhookSignature } = require('./billing');
@@ -3643,7 +3644,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
 
   const notify = createNotify({ db, fail, mailer: mailer?.enabled ? mailer : null, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, '') });
   social = createSocial({ db, fail, text, mediaUrl, notify });
-  const groups = createGroups({ db, fail, text, orgs, social, notify });
+  const challenges = createChallenges({ db, fail, text, social, notify });
+  const groups = createGroups({ db, fail, text, orgs, social, notify, ratings: challenges });
   const clubs = createClubs({ db, fail, orgs, social, mediaUrl, notify });
   const cards = createCards({ db });
 
@@ -3666,6 +3668,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     social,
     cards,
     notify,
+    challenges,
     referrals,
     useCredit,
     takeOverScoring,

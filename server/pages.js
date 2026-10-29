@@ -677,9 +677,11 @@ function playerHtml({ base, p }) {
         <p class="muted">${[where, p.sports.map((x) => x.name).join(', ')].filter(Boolean).map(esc).join(' · ')}</p>
         ${titles.length ? `<p class="player-titles">🏆 ${titles.length} title${titles.length === 1 ? '' : 's'}</p>` : ''}
         ${dupr}
+        ${(p.ratings || []).length ? `<p class="player-ratings">${p.ratings.map((r) => `<span class="event-tag" title="Tonament rating from ${r.games} game${r.games === 1 ? '' : 's'}">${esc(r.name)} ${r.rating}</span>`).join(' ')}</p>` : ''}
         ${(p.clubs || []).length ? `<p class="plays-for">Plays for ${p.clubs.map((c) => `<a href="/club/${esc(c.slug)}">${esc(c.name)}</a>`).join(', ')}</p>` : ''}
         <p class="actions">${p.own ? '<a class="btn btn-small" href="/me/profile">Edit profile</a>'
-          : `<button class="btn btn-small btn-primary" type="button" data-follow="user" data-id="${p.id}" hidden>Follow</button>`}
+          : `<button class="btn btn-small btn-primary" type="button" data-follow="user" data-id="${p.id}" hidden>Follow</button>
+          <a class="btn btn-small" href="/challenges/new?to=${p.id}">Challenge</a>`}
           <button class="btn btn-small btn-ghost" type="button" data-share="${esc(base + path)}" data-title="${esc(p.name)} on Tonament">Share</button>
           ${p.public ? `<a class="btn btn-small btn-ghost" href="/img/p/${esc(p.handle)}.png?size=story" download="${esc(p.handle)}-tonament.png">Story image</a>` : ''}
           ${p.own ? '' : `<span class="muted small" data-followers="user:${p.id}"></span>`}</p>

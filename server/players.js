@@ -351,6 +351,8 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
       ...profileFields(u), id: u.id, public: u.profile_public, own, results, records: summarise(results, groups), rankings: await positions(u),
       groupPlay: own ? groups : groupPlayPublic(groups),
       clubs: await clubsOf(u.id),
+      ratings: (await db.query('SELECT sport, rating, games FROM ratings WHERE user_id = $1 AND games > 0 ORDER BY games DESC', [u.id]))
+        .map((r) => ({ ...r, name: (require('./sports').get(r.sport) || {}).name || r.sport })),
     };
   }
 

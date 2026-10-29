@@ -15,7 +15,7 @@ const AUTO_CONFIRM_MINUTES = 10;
 const MAX_COURTS = 12;
 
 // orgs: the venue / academy pages module (a group can be hosted by one).
-function createGroups({ db, fail, text, orgs, social = null, notify = null }) {
+function createGroups({ db, fail, text, orgs, social = null, notify = null, ratings = null }) {
   // ---------- helpers
 
   const slugOf = (value) => String(value || '').trim().toLowerCase()
@@ -646,6 +646,12 @@ function createGroups({ db, fail, text, orgs, social = null, notify = null }) {
       await q('UPDATE group_members SET rating = rating + $3, games = games + 1, wins = wins + $4 WHERE group_id = $1 AND user_id = $2', [g.id, Number(id), d, won ? 1 : 0]);
     }
     await q('UPDATE group_games SET deltas = $1::jsonb WHERE id = $2', [JSON.stringify(deltas), x.id]);
+    // The player's Tonament rating for the sport moves too (all their games, everywhere).
+    if (ratings) {
+      const sides = { a: [x.a1, x.a2].filter(Boolean), b: [x.b1, x.b2].filter(Boolean) };
+      const global = await ratings.rate(q, g.sport, sides, x.winner, margin);
+      await q('UPDATE group_games SET rating_deltas = $1::jsonb WHERE id = $2', [JSON.stringify(global), x.id]);
+    }
     if (social) await gameActivity(q, g, x);
   }
   // A confirmed game in the feeds of people who follow the players (the group's
@@ -663,6 +669,7 @@ function createGroups({ db, fail, text, orgs, social = null, notify = null }) {
     });
   }
   async function reverseRating(q, g, x) {
+    if (ratings && x.rating_deltas) await ratings.unrate(q, g.sport, x.rating_deltas, { a: [x.a1, x.a2].filter(Boolean), b: [x.b1, x.b2].filter(Boolean) }, x.winner);
     for (const [id, d] of Object.entries(x.deltas || {})) {
       const won = (x.winner === 'a' ? [x.a1, x.a2] : [x.b1, x.b2]).includes(Number(id));
       await q('UPDATE group_members SET rating = rating - $3, games = GREATEST(games - 1, 0), wins = GREATEST(wins - $4, 0) WHERE group_id = $1 AND user_id = $2', [g.id, Number(id), d, won ? 1 : 0]);

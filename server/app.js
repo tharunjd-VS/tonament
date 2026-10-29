@@ -32,7 +32,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|notifications|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|notifications|challenges|challenges\/new|c\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -403,6 +403,18 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['PATCH', '/api/notifications/settings', (c) => svc.notify.setPref(c.actor, c.body)],
     ['POST', '/api/notifications/push', (c) => svc.notify.subscribe(c.actor, c.body)],
     ['DELETE', '/api/notifications/push', (c) => svc.notify.unsubscribe(c.actor, c.body)],
+    // Challenges: a game between two players (or pairs), and the Tonament rating
+    ['GET', '/api/challenges', (c) => svc.challenges.mine(c.actor)],
+    ['GET', '/api/challenges/people', (c) => svc.challenges.people(c.actor, { withId: c.query.get('with') })],
+    ['POST', '/api/challenges', (c) => svc.challenges.create(c.actor, c.body)],
+    ['GET', `/api/challenges/${N}`, (c, id) => svc.challenges.get(id, c.actor)],
+    ['POST', `/api/challenges/${N}/respond`, (c, id) => svc.challenges.respond(id, c.actor, c.body)],
+    ['POST', `/api/challenges/${N}/cancel`, (c, id) => svc.challenges.cancel(id, c.actor)],
+    ['POST', `/api/challenges/${N}/rally`, (c, id) => svc.challenges.rally(id, c.actor, c.body)],
+    ['POST', `/api/challenges/${N}/undo`, (c, id) => svc.challenges.undo(id, c.actor, c.body)],
+    ['POST', `/api/challenges/${N}/result`, (c, id) => svc.challenges.result(id, c.actor, c.body)],
+    ['POST', `/api/challenges/${N}/confirm`, (c, id) => svc.challenges.confirm(id, c.actor)],
+    ['POST', `/api/challenges/${N}/dispute`, (c, id) => svc.challenges.dispute(id, c.actor)],
     // Clubs (free; every page is one)
     ['POST', '/api/clubs', (c) => svc.clubs.create(c.actor, c.body)],
     ['GET', '/api/clubs', (c) => svc.clubs.discover(Object.fromEntries(c.query))],

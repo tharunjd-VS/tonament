@@ -68,6 +68,18 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/challenges",
+      "destination": "/api/index?__path=app"
+    },
+    {
+      "source": "/challenges/:path*",
+      "destination": "/api/index?__path=app"
+    },
+    {
+      "source": "/c/:id(\\d{1,12})",
+      "destination": "/api/index?__path=app"
+    },
+    {
       "source": "/clubs/:path*",
       "destination": "/api/index?__path=app"
     },

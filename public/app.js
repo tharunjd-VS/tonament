@@ -647,6 +647,29 @@
         // Seen: the count goes, the dots stay until the next visit.
         if (S.inbox.items.some((n) => !n.read)) api('POST', '/notifications/read', {}).then(() => refreshBell(true)).catch(() => {});
         return;
+      } else if (parts[0] === 'challenges') {
+        if (!S.me) {
+          navigate(`/signin?next=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
+          return;
+        }
+        if (parts[1] === 'new') {
+          S.route = { name: 'challengeNew' };
+          S.chDraft = null;
+          S.chPeople = null;
+          render();
+          S.chPeople = await api('GET', `/challenges/people${params.get('to') ? `?with=${encodeURIComponent(params.get('to'))}` : ''}`).catch(() => []);
+        } else {
+          S.route = { name: 'challenges' };
+          S.challenges = null;
+          render();
+          S.challenges = await api('GET', '/challenges').catch(() => ({ incoming: [], outgoing: [], toPlay: [], toConfirm: [], played: [] }));
+        }
+      } else if (parts[0] === 'c' && /^\d+$/.test(parts[1] || '')) {
+        S.route = { name: 'challenge', id: Number(parts[1]) };
+        if (!S.challenge || S.challenge.id !== S.route.id) S.challenge = null;
+        render();
+        await loadChallenge();
+        return;
       } else if (parts[0] === 'clubs') {
         S.route = { name: 'clubs' };
         render();
@@ -855,6 +878,9 @@
     else if (S.route.name === 'club') view = viewClub();
     else if (S.route.name === 'item') view = viewItem();
     else if (S.route.name === 'notifications') view = viewNotifications();
+    else if (S.route.name === 'challenges') view = viewChallenges();
+    else if (S.route.name === 'challengeNew') view = viewChallengeNew();
+    else if (S.route.name === 'challenge') view = viewChallenge();
     else if (S.route.name === 'profile') view = viewProfile();
     else if (S.route.name === 'groups') view = viewGroups();
     else if (S.route.name === 'groupNew') view = viewGroupNew();
@@ -4884,7 +4910,8 @@
     const initials = (name) => name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
     nav.replaceChildren(...(S.me
       ? [
-        h('a', { class: 'btn btn-small btn-primary', href: '/new' }, 'New tournament'),
+        // On narrow phones the button says just "New", so the 🔔 and the menu fit.
+        h('a', { class: 'btn btn-small btn-primary nav-new', href: '/new', 'aria-label': 'New tournament' }, h('span', { class: 'long' }, 'New tournament'), h('span', { class: 'short' }, '+ New')),
         h('a', { class: 'bell', href: '/notifications', 'aria-label': 'Notifications', title: 'Notifications' }, '🔔', h('span', { class: 'bell-count', hidden: true })),
         h('details', { class: 'menu' },
           h('summary', { class: 'avatar', title: S.me.email, 'aria-label': 'Account menu' }, initials(S.me.name)),
@@ -4893,6 +4920,7 @@
             h('a', { href: '/me/profile', onclick: closeMenu }, 'Your profile'),
             h('a', { href: '/groups', onclick: closeMenu }, 'Your groups'),
             h('a', { href: '/clubs', onclick: closeMenu }, 'Clubs'),
+            h('a', { href: '/challenges', onclick: closeMenu }, 'Challenges'),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
@@ -6722,9 +6750,12 @@
         c.invite ? h('button', { class: 'btn btn-small', onclick: () => shareText(`Join ${c.name} on Tonament:\n${clubUrl(c)}`) }, 'Invite') : null),
       h('ul', { class: 'org-t-list' }, c.roster.map((p) => h('li', {},
         h('span', {}, p.handle ? h('a', { href: `/p/${p.handle}` }, p.name) : p.name, p.role !== 'player' ? [' ', pill('org', p.roleName)] : null),
-        c.can.admin && p.id !== (S.me && S.me.id) ? moreButton(p.name, [
+        p.id !== (S.me && S.me.id) && S.me ? moreButton(p.name, [
+          { label: 'Challenge', hint: 'To a game', onClick: () => navigate(`/challenges/new?to=${p.id}&club=${c.id}`) },
+          ...(c.can.admin ? [
           ...roles.filter(([r]) => r !== p.role).map(([r, label]) => ({ label: `Make ${label.toLowerCase()}`, onClick: () => set(p.id, { action: 'role', role: r }, `${p.name} is now ${label.toLowerCase()}`) })),
           { label: 'Remove from the club', danger: true, onClick: () => confirm(`Remove ${p.name} from ${c.name}?`) && set(p.id, { action: 'remove' }, 'Removed') },
+          ] : []),
         ]) : null)))),
       c.can.admin ? h('div', { class: 'card' }, h('h2', {}, 'Joining'),
         h('label', { class: 'check-field' },
@@ -6758,6 +6789,187 @@
       h('div', { class: 'actions' },
         h('a', { class: 'btn btn-primary', href: `/@${c.slug}/edit` }, c.pagePublic ? 'Edit the page' : 'Set up the page'),
         c.pagePublic ? h('a', { class: 'btn', href: `/@${c.slug}` }, 'View it') : null));
+  }
+
+  // ---------- challenges: one player (or pair) v another, and the Tonament rating
+  const sideNames = (list) => list.map((p) => p.name).join(' & ');
+  const withRating = (list) => list.map((p) => `${p.name}${p.rating != null ? ` (${p.rating})` : ''}`).join(' & ');
+  const CH_STATUS = {
+    sent: ['waiting', 'Waiting for a reply'], accepted: ['org', 'To play'], live: ['live', 'Playing'], done: ['waiting', 'To confirm'],
+    confirmed: ['done', 'Confirmed'], disputed: ['withdrawn', 'Disputed'], declined: ['', 'Declined'], expired: ['', 'Expired'], cancelled: ['', 'Cancelled'],
+  };
+  const challengeable = () => (S.sports || []).filter((x) => x.status === 'live' && x.family !== 'timed' && !CAT.isTeamSport(x.id));
+
+  function challengeRow(x) {
+    const [cls, label] = x.can.respond ? ['org', 'Your move'] : CH_STATUS[x.status] || ['', x.status];
+    const mine = x.me === 'b' ? [x.b, x.a] : [x.a, x.b];
+    return h('a', { class: 'card challenge-card', href: `/c/${x.id}` },
+      h('span', { class: 'challenge-card-text' },
+        h('strong', {}, `${x.me ? 'You' : sideNames(mine[0])} v ${sideNames(mine[1])}`),
+        h('small', { class: 'muted' }, [x.sport.name, x.format, x.summary, x.place].filter(Boolean).join(' · '))),
+      pill(cls, label));
+  }
+
+  function viewChallenges() {
+    document.title = 'Challenges · Tonament';
+    const c = S.challenges;
+    const section = (title, list, note) => (list && list.length ? h('section', { class: 'section' }, h('h2', {}, `${title} (${list.length})`),
+      note ? h('p', { class: 'muted small' }, note) : null, h('div', { class: 'card-list' }, list.map(challengeRow))) : null);
+    return [
+      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Challenges'), h('a', { class: 'btn btn-primary', href: '/challenges/new' }, 'New challenge')),
+      h('p', { class: 'muted' }, 'Challenge a friend, a club-mate or a rival to a game. Every confirmed game moves your Tonament rating and goes on both your feeds.'),
+      c == null ? loading() : [
+        section('For you', c.incoming, 'Accept or decline.'),
+        section('To play', c.toPlay, 'Score it live when you play, or enter the result after.'),
+        section('To confirm', c.toConfirm),
+        section('Waiting for a reply', c.outgoing),
+        section('Played', c.played),
+        !c.incoming.length && !c.toPlay.length && !c.toConfirm.length && !c.outgoing.length && !c.played.length
+          ? empty('No challenges yet. Tap New challenge, or Challenge on a player\'s profile.') : null,
+      ],
+    ];
+  }
+
+  function viewChallengeNew() {
+    document.title = 'New challenge · Tonament';
+    const params = new URLSearchParams(location.search);
+    const d = (S.chDraft ||= { to: params.get('to') || '', sport: params.get('sport') || '', back: params.get('back') || '', club: params.get('club') || '', pair: false, bestOf: '' });
+    const people = S.chPeople;
+    if (!people) return loading();
+    const options = challengeable();
+    if (!d.sport && options.length) d.sport = (options.find((x) => x.id === 'badminton') || options[0]).id;
+    const sport = options.find((x) => x.id === d.sport);
+    const bestOf = sport && (sport.fields || []).find((f) => f.key === 'bestOf');
+    const pick = (name, label, value, exclude = []) => h('select', { name, required: true, 'aria-label': label, onchange: (e) => { d[name] = e.target.value; } },
+      h('option', { value: '' }, label), people.filter((p) => !exclude.includes(String(p.id))).map((p) => h('option', { value: p.id, selected: String(p.id) === String(value) }, p.name)));
+    const form = h('form', {
+      class: 'card form new-flow',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const body = {
+          sport: d.sport, to: Number(fd.get('to')), bestOf: fd.get('bestOf') ? Number(fd.get('bestOf')) : undefined,
+          place: fd.get('place'), message: fd.get('message'), playAt: fd.get('playAt') || null, back: d.back || null, club: d.club || null,
+          ...(d.pair && { partner: Number(fd.get('partner')), opponentPartner: Number(fd.get('opponentPartner')) }),
+        };
+        act(async () => {
+          const x = await api('POST', '/challenges', body);
+          S.chDraft = null;
+          S.challenge = x;
+          navigate(`/c/${x.id}`);
+        }, 'Challenge sent 🔥');
+      },
+    },
+    h('h1', {}, d.back ? 'Challenge back' : 'New challenge'),
+    people.length ? null : h('p', { class: 'muted small' }, 'Follow players or join a club to challenge them from here — or use Challenge on anyone\'s profile.'),
+    groupField('Sport', choiceGroup({ name: 'sport', label: 'Sport', value: d.sport, options: options.map((x) => ({ value: x.id, label: x.name, icon: x.id })), onchange: (e) => { d.sport = e.target.value; render(); } })),
+    groupField('Who plays', choiceGroup({ name: 'pairs', label: 'Who plays', value: d.pair ? 'pairs' : 'one', options: [{ value: 'one', label: 'One v one' }, { value: 'pairs', label: 'Pairs' }], onchange: (e) => { d.pair = e.target.value === 'pairs'; render(); } })),
+    field('Challenge', pick('to', 'Pick a player', d.to)),
+    d.pair ? h('div', { class: 'grid-2' }, field('Your partner', pick('partner', 'Your partner', d.partner, [String(d.to)])), field('Their partner', pick('opponentPartner', 'Their partner', d.opponentPartner, [String(d.to), String(d.partner || '')]))) : null,
+    bestOf ? groupField(bestOf.label || 'Match length', choiceGroup({ name: 'bestOf', label: 'Match length', value: d.bestOf || String(sport.defaults.bestOf), options: bestOf.options.map((o) => ({ value: String(o.value), label: o.label })), onchange: (e) => { d.bestOf = e.target.value; } })) : null,
+    h('div', { class: 'grid-2' },
+      field('When (optional)', h('input', { type: 'datetime-local', name: 'playAt' })),
+      field('Where (optional)', h('input', { name: 'place', maxlength: 80, placeholder: 'e.g. Smashpoint, court 2' }))),
+    field('Message (optional)', h('input', { name: 'message', maxlength: 200, placeholder: d.back ? 'Rematch? 😤' : 'Fancy a game this week?' })),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit', disabled: !people.length }, 'Send challenge')));
+    return form;
+  }
+
+  // Taps go one at a time, each on top of the last (fast tapping never
+  // trips over itself); the screen shows how many are still being saved.
+  const chQueue = [];
+  let chSending = false;
+  function challengeTap(id, extra) {
+    chQueue.push(extra);
+    render();
+    if (!chSending) sendChallengeTaps(id);
+  }
+  async function sendChallengeTaps(id) {
+    chSending = true;
+    while (chQueue.length) {
+      const extra = chQueue[0];
+      try {
+        S.challenge = await api('POST', `/challenges/${id}/rally`, { ...extra, at: S.challenge.rallies });
+        chQueue.shift();
+      } catch (e) {
+        chQueue.length = 0; // the game moved on (or ended): show where it is
+        if (e.code === 'stale') await loadChallenge(); else toast(e.message, true);
+      }
+      render();
+    }
+    chSending = false;
+  }
+
+  async function loadChallenge() {
+    try {
+      S.challenge = await api('GET', `/challenges/${S.route.id}`);
+      S.error = null;
+    } catch (e) {
+      S.error = e.message;
+    }
+    render();
+  }
+  // While it's waiting or being played, everyone's screen follows along.
+  setInterval(() => {
+    if (S.route.name === 'challenge' && S.challenge && ['sent', 'accepted', 'live', 'done'].includes(S.challenge.status) && !document.hidden && !isEditing() && !chSending) loadChallenge();
+  }, 5000);
+
+  function viewChallenge() {
+    const x = S.challenge;
+    if (!x || x.id !== S.route.id) return loading();
+    document.title = `${sideNames(x.a)} v ${sideNames(x.b)} · Challenge`;
+    const post = (what, body, msg) => act(async () => { S.challenge = await api('POST', `/challenges/${x.id}/${what}`, body || {}); }, msg);
+    const m = { a: { id: 'a', name: sideNames(x.a) }, b: { id: 'b', name: sideNames(x.b) }, status: x.status === 'live' || x.status === 'accepted' ? 'live' : 'done', winner: x.winner, summary: x.summary, score: x.score };
+    const tapNow = (extra) => challengeTap(x.id, extra);
+    const playing = x.can.score && !x.final;
+    S.gameMode = S.gameMode || {};
+    const atEnd = Boolean(S.gameMode[`c${x.id}`]);
+    const opponent = x.me === 'a' ? x.b : x.a;
+    const back = () => navigate(`/challenges/new?to=${opponent[0].id}&sport=${x.sport.id}&back=${x.id}`);
+    const finalForm = () => {
+      const fa = h('input', { type: 'number', min: 0, max: 99, required: true, 'aria-label': m.a.name, inputmode: 'numeric' });
+      const fb = h('input', { type: 'number', min: 0, max: 99, required: true, 'aria-label': m.b.name, inputmode: 'numeric' });
+      return h('div', { class: 'card' }, h('p', { class: 'muted small', style: 'margin-top:0' }, 'Played it already? Enter how it ended — the other side confirms it.'),
+        h('form', { class: 'final-form', onsubmit: (e) => { e.preventDefault(); post('result', { a: Number(fa.value), b: Number(fb.value) }, 'Score saved — the other side confirms it'); } },
+          h('label', {}, h('span', {}, m.a.name), fa), h('label', {}, h('span', {}, m.b.name), fb), h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save score')));
+    };
+    const [cls, label] = CH_STATUS[x.status] || ['', x.status];
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: '/challenges' }, '← Challenges')),
+      h('div', { class: 'card challenge-head' },
+        h('p', { class: 'eyebrow' }, `${x.parent ? 'Rematch' : 'Challenge'} · ${x.sport.name} · ${x.format}`),
+        h('h1', {}, withRating(x.a), h('span', { class: 'muted' }, ' v '), withRating(x.b)),
+        h('p', { class: 'muted small' }, [x.playAt ? fmtWhen(x.playAt) : null, x.place].filter(Boolean).join(' · ') || null),
+        x.message ? h('p', { class: 'challenge-message' }, `“${x.message}”`) : null,
+        pill(cls, label)),
+      x.status === 'sent' ? h('div', { class: 'card' },
+        x.can.respond ? [h('h2', {}, 'You\'re challenged'), h('div', { class: 'actions' },
+          h('button', { class: 'btn btn-primary btn-lg', onclick: () => post('respond', { accept: true }, 'Challenge accepted 🔥') }, 'Accept'),
+          h('button', { class: 'btn btn-lg', onclick: () => post('respond', { accept: false }, 'Declined') }, 'Not this time'))]
+          : [h('p', { style: 'margin:0' }, `Waiting for ${sideNames(x.b)} to answer.`), x.can.cancel ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-ghost', onclick: () => confirm('Cancel this challenge?') && post('cancel', {}, 'Cancelled') }, 'Cancel it')) : null]) : null,
+      x.score && x.rallies ? scoreboard(m) : x.final ? h('div', { class: 'card final-score' }, h('strong', {}, `${m.a.name} ${x.final.a} – ${x.final.b} ${m.b.name}`)) : null,
+      playing ? h('div', { class: 'seg score-mode', role: 'group', 'aria-label': 'How to score' },
+        [[false, 'Score live'], [true, 'Final score']].map(([v, l]) => h('button', { 'aria-pressed': String(atEnd === v), onclick: () => { S.gameMode[`c${x.id}`] = v; render(); } }, l))) : null,
+      playing && atEnd ? finalForm() : null,
+      playing && !atEnd ? h('div', { class: 'scorer' },
+        x.score && x.score.taps && x.score.taps.values ? periodPad(x.score, { a: m.a.name, b: m.b.name }, tapNow)
+          : x.score && x.score.taps && x.score.taps.max > 1 ? pointPad(`c${x.id}`, x.score, { a: m.a.name, b: m.b.name }, tapNow)
+            : h('div', { class: 'score-btns' }, ['a', 'b'].map((s) => h('button', { class: `score-btn side-${s}`, onclick: () => tapNow({ side: s }) },
+              h('span', { class: 'sbtn-plus' }, '+1'), h('span', { class: 'sbtn-name' }, m[s].name)))),
+        h('div', { class: 'sync', role: 'status' }, chQueue.length ? 'Saving…' : 'All points saved'),
+        h('div', { class: 'scorer-tools' }, h('button', { class: 'btn', disabled: !x.rallies || chQueue.length > 0, onclick: () => post('undo', { at: x.rallies }) }, '↶ Undo')),
+        h('p', { class: 'hint center', style: 'margin:0' }, `${(x.score && x.score.hint) || 'Tap the side that won the rally.'} Both sides see the score live.`)) : null,
+      ['done', 'disputed', 'confirmed'].includes(x.status) ? h('div', { class: 'card' },
+        h('h2', {}, x.status === 'confirmed' ? `${sideNames(x[x.winner])} won ✓` : x.status === 'disputed' ? 'Disputed — it doesn\'t count unless the losing side keeps it' : `${sideNames(x[x.winner])} won ${x.summary}`),
+        x.status === 'done' ? h('p', { class: 'muted small' }, `${sideNames(x[x.winner === 'a' ? 'b' : 'a'])} ${x[x.winner === 'a' ? 'b' : 'a'].length > 1 ? 'confirm' : 'confirms'} the result. It confirms itself ${fmtWhen(x.confirmBy)}.`) : null,
+        x.deltas ? h('p', { class: 'small' }, 'Tonament rating: ', [...x.a, ...x.b].map((p) => `${p.name} ${x.deltas[p.id] >= 0 ? '+' : ''}${x.deltas[p.id]}`).join(' · ')) : null,
+        h('div', { class: 'actions' },
+          x.can.confirm ? h('button', { class: 'btn btn-primary', onclick: () => post('confirm', {}, 'Result confirmed') }, x.status === 'disputed' ? 'Keep this result' : `Confirm ${x.summary}`) : null,
+          x.can.dispute ? h('button', { class: 'btn btn-ghost', onclick: () => confirm('Say this result is wrong? It won\'t count.') && post('dispute', {}, 'Marked as disputed') }, 'Something\'s wrong') : null,
+          x.can.back ? h('button', { class: x.me && x.me !== x.winner ? 'btn btn-primary' : 'btn', onclick: back }, x.me && x.me !== x.winner ? 'Challenge back 😤' : 'Play again') : null)) : null,
+      ['declined', 'expired', 'cancelled'].includes(x.status) && x.can.back ? h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: back }, 'Challenge again')) : null,
+      x.score && x.rallies ? gamesTable(m) : null,
+    ];
   }
 
   // ---------- notifications
@@ -6855,6 +7067,11 @@
       return [h('strong', {}, won.join(' & ')), ' beat ', lost.join(' & '), ' ', h('span', { class: 'feed-score' }, d.score),
         amIn && d.slug ? [' · ', h('a', { href: `/g/${d.slug}` }, d.group)] : null];
     }
+    if (x.verb === 'challenge') {
+      const won = d.winner === 'a' ? d.a : d.b;
+      const lost = d.winner === 'a' ? d.b : d.a;
+      return ['⚔️ ', h('strong', {}, won.join(' & ')), ' beat ', lost.join(' & '), ' ', h('span', { class: 'feed-score' }, d.score), ` in a ${d.back ? 'rematch' : 'challenge'}`];
+    }
     if (x.verb === 'joined') return [who, ' joined ', h('a', { href: `/club/${d.slug}` }, d.club)];
     if (x.verb === 'club') return [who, ' started ', h('a', { href: `/club/${d.slug}` }, d.club), d.city ? ` in ${d.city}` : ''];
     return [who, ` ${x.verb}`];
@@ -6886,6 +7103,8 @@
               { label: 'Report', onClick: () => report('activity', x.id) },
             ]),
           ] : (x.kudos ? ` · 👏 ${x.kudos}` : '')),
+        x.verb === 'challenge' && S.me && x.data.winners && !x.data.winners.includes(S.me.id) && x.people.some((p) => p.id === S.me.id)
+          ? h('p', { class: 'feed-cta' }, h('a', { class: 'btn btn-small', href: `/c/${x.data.challenge}` }, 'Challenge back 😤')) : null,
         open ? h('div', { class: 'feed-comments' },
           list == null ? loading() : h('ul', {}, list.map((c) => h('li', {}, h('strong', {}, c.by.name), ' ', c.body,
             c.mine ? h('button', { class: 'link-btn small', onclick: () => act(async () => { await api('DELETE', `/comments/${c.id}`); S.comments[x.id] = list.filter((y) => y.id !== c.id); x.comments -= 1; }) }, 'Delete') : null))),
@@ -7766,7 +7985,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

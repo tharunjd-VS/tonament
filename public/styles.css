@@ -521,6 +521,8 @@ a.b-match:hover { border-color: var(--accent); }
 
 /* ---------- accounts & team */
 .nav { display: flex; align-items: center; gap: 10px; }
+.nav-new .short { display: none; }
+@media (max-width: 440px) { .nav { gap: 6px; } .nav-new .long { display: none; } .nav-new .short { display: inline; } }
 .nav-link { font-weight: 600; text-decoration: none; color: var(--text); font-size: 0.92rem; }
 .menu { position: relative; }
 .menu > summary { list-style: none; }
@@ -1473,6 +1475,14 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .feed-comment-form { display: flex; gap: 8px; }
 .feed-comment-form input { flex: 1; min-width: 0; }
 .plays-for { margin: 6px 0 0; }
+/* Challenges */
+.challenge-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; text-decoration: none; color: var(--text); }
+.challenge-card-text { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.challenge-head h1 { margin: 4px 0; font-size: 1.35rem; overflow-wrap: anywhere; }
+.challenge-head .eyebrow { margin: 0; }
+.challenge-message { font-style: italic; margin: 8px 0; }
+.feed-cta { margin: 8px 0 0; }
+.player-ratings { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 4px; }
 /* Notifications */
 .bell { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 50%; text-decoration: none; font-size: 1.15rem; }
 .bell:hover { background: rgba(255, 255, 255, 0.08); }

@@ -17,6 +17,8 @@ const KINDS = {
   club_request: { label: 'Requests to join your clubs', email: true },
   club_joined: { label: 'A club letting you in', email: false },
   confirm_game: { label: 'Results to confirm', email: false },
+  challenge: { label: 'Challenges for you', email: true },
+  challenge_reply: { label: 'Replies to your challenges', email: false },
 };
 const PAGE = 40;
 const DELIVERY_MS = 4000;

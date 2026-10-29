@@ -620,11 +620,54 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_prefs JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_token TEXT;
+-- v36: challenges. One player (or pair) challenges another to a game; it's
+-- scored like a group game (live, or the final score) and the losing side
+-- confirms it. ratings: one Tonament rating per player per sport, from every
+-- confirmed game (challenges and group games).
+CREATE TABLE IF NOT EXISTS challenges (
+  id           SERIAL PRIMARY KEY,
+  sport        TEXT NOT NULL,
+  scoring      JSONB NOT NULL DEFAULT '{}',
+  a1           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- the challenger's side
+  a2           INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  b1           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- the challenged side
+  b2           INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  created_by   INTEGER NOT NULL,
+  org_id       INTEGER,                                                 -- from a club's page
+  parent_id    INTEGER,                                                 -- "challenge back"
+  status       TEXT NOT NULL DEFAULT 'sent',  -- sent | accepted | declined | cancelled | live | done | confirmed | disputed
+  message      TEXT,
+  place        TEXT,
+  play_at      TIMESTAMPTZ,
+  rallies      TEXT NOT NULL DEFAULT '',
+  first_server TEXT NOT NULL DEFAULT 'a',
+  final        JSONB,
+  winner       TEXT,
+  ended_at     TIMESTAMPTZ,
+  confirmed_by INTEGER,
+  deltas       JSONB,
+  responded_at TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS challenges_a ON challenges(a1, created_at DESC);
+CREATE INDEX IF NOT EXISTS challenges_b ON challenges(b1, created_at DESC);
+CREATE TABLE IF NOT EXISTS ratings (
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sport      TEXT NOT NULL,
+  rating     INTEGER NOT NULL DEFAULT 1000,
+  games      INTEGER NOT NULL DEFAULT 0,
+  wins       INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, sport)
+);
+CREATE INDEX IF NOT EXISTS ratings_sport ON ratings(sport, rating DESC);
+-- A group game's change to the Tonament rating (to undo it if the game's voided).
+ALTER TABLE group_games ADD COLUMN IF NOT EXISTS rating_deltas JSONB;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 35;
+const SCHEMA_VERSION = 36;
 
 async function migrate(db) {
   try {

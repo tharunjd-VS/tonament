@@ -137,6 +137,11 @@ function createCards({ db }) {
       const lost = d.winner === 'a' ? d.b : d.a;
       return { eyebrow: `Game won · ${sportName(a.sport)}`, title: (won || []).join(' & '), subtitle: `beat ${(lost || []).join(' & ')}`, big: d.score };
     }
+    if (a.verb === 'challenge') {
+      const won = d.winner === 'a' ? d.a : d.b;
+      const lost = d.winner === 'a' ? d.b : d.a;
+      return { eyebrow: `${d.back ? 'Rematch' : 'Challenge'} won · ${sportName(a.sport)}`, title: (won || []).join(' & '), subtitle: `beat ${(lost || []).join(' & ')}`, big: d.score, bigLabel: 'Your move?' };
+    }
     if (a.verb === 'joined' || a.verb === 'club') {
       return { eyebrow: a.verb === 'club' ? 'New club' : 'Joined the club', title: d.club, subtitle: `${who ? who.name : 'Someone'} ${a.verb === 'club' ? 'started it' : 'is in'} — join them on Tonament` };
     }
