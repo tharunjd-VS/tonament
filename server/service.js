@@ -1394,7 +1394,7 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
       if (input.selfEntry !== undefined) config.selfEntry = Boolean(input.selfEntry);
       if (input.entriesCloseAt !== undefined) config.entriesCloseAt = closeTime(input.entriesCloseAt);
       // The late-arrival policy (latecomers.js), shown to players.
-      if (input.latePolicy !== undefined) config.latePolicy = latecomers.policyOf(input.latePolicy);
+      if (input.latePolicy !== undefined) config.latePolicy = latecomers.policyOf({ ...(config.latePolicy || {}), ...(input.latePolicy || {}) });
       await q('UPDATE tournaments SET name = $1, config = $2::jsonb WHERE id = $3', [name, JSON.stringify(config), t.id]);
       t.config = config;
       await saveDetails(q, t, details);
@@ -2810,6 +2810,138 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
       await autoCall(q, tournament, m.court);
       return view(q, await load(q, id), actor);
     });
+  }
+
+  // A walk-in takes the place of someone who hasn't turned up, before that
+  // entry has played: same group, seed and matches, new name, no contact or
+  // fee. Only when the late-arrival policy allows it. Returns the view.
+  async function replaceEntry(id, actor, entryId, input = {}) {
+    const name = text(input.name, 'Name', { max: 60 });
+    return mutateEntry(id, actor, entryId, async (q, t) => {
+      if (t.status === 'setup') fail(409, 'The draw hasn\'t been made — just add them to the entries');
+      if (t.status === 'completed') fail(409, 'The tournament has finished');
+      if (!latecomers.policyOf(t.config.latePolicy).replaceNoShow) fail(409, 'Your policy doesn\'t let a walk-in take someone\'s place — change it in Setup › Late arrivals');
+      const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+      if (!e.in_draw || e.withdrawn) fail(409, `${e.name} isn't playing now`);
+      if (await playedAny(q, e.id)) fail(409, `${e.name} has already played — they can withdraw instead`);
+      const all = await entriesOf(q, t);
+      if (all.some((x) => x.id !== e.id && x.name.toLowerCase() === name.toLowerCase())) fail(400, `"${name}" is already entered`);
+      await q(`UPDATE entries SET name = $1, contact = NULL, phone = NULL, fee_status = NULL, fee_amount = NULL, source = 'walk-in', user_id = NULL,
+               players = NULL, checked_in = true, away_since = NULL, pay_ref = NULL WHERE id = $2`, [name, e.id]);
+      await q('DELETE FROM entry_players WHERE entry_id = $1', [e.id]);
+    });
+  }
+  // Has this entry started or finished a match (a bye doesn't count)?
+  async function playedAny(q, entryId) {
+    const [{ n }] = await q(
+      `SELECT COUNT(*)::int AS n FROM matches WHERE (a_id = $1 OR b_id = $1) AND status <> 'bye' AND (status = 'done' OR rallies <> '')`, [entryId]);
+    return n > 0;
+  }
+  // What replaceEntry changes, to put back on undo.
+  async function entrySnapshot(entryId) {
+    const [e] = await db.query('SELECT name, contact, phone, fee_status, fee_amount, source, user_id, players, checked_in, away_since, pay_ref FROM entries WHERE id = $1', [Number(entryId)]);
+    const players = await db.query('SELECT * FROM entry_players WHERE entry_id = $1 ORDER BY slot', [Number(entryId)]);
+    return { entry: e, players };
+  }
+  async function restoreEntry(id, actor, entryId, snap) {
+    return mutateEntry(id, actor, entryId, async (q) => {
+      if (await playedAny(q, Number(entryId))) fail(409, 'They\'ve started playing since — it can\'t be undone now');
+      const e = snap.entry;
+      await q(`UPDATE entries SET name = $1, contact = $2, phone = $3, fee_status = $4, fee_amount = $5, source = $6, user_id = $7, players = $8::jsonb,
+               checked_in = $9, away_since = $10, pay_ref = $11 WHERE id = $12`,
+      [e.name, e.contact, e.phone, e.fee_status, e.fee_amount, e.source, e.user_id, e.players == null ? null : JSON.stringify(e.players), e.checked_in, e.away_since, e.pay_ref, Number(entryId)]);
+      await q('DELETE FROM entry_players WHERE entry_id = $1', [Number(entryId)]);
+      for (const row of snap.players) {
+        const cols = Object.keys(row);
+        await q(`INSERT INTO entry_players (${cols.join(', ')}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})`, cols.map((c) => row[c]));
+      }
+    });
+  }
+
+  // Takes back a late placement (an arrival or a late entry) while none of
+  // its catch-up matches has been played: the matches go, and the entry is
+  // out of the draw again (mode 'out') or removed (mode 'delete').
+  async function undoLate(id, actor, entryId, mode) {
+    return mutateEntry(id, actor, entryId, async (q, t) => {
+      if (t.status !== 'league') fail(409, 'Only during the group stage');
+      const [e] = await q('SELECT * FROM entries WHERE id = $1', [Number(entryId)]);
+      const ms = await q('SELECT * FROM matches WHERE event_id = $1 AND (a_id = $2 OR b_id = $2)', [t.eventId, e.id]);
+      if (ms.some((m) => !m.catch_up)) fail(409, `${e.name} has other matches now — it can't be undone`);
+      if (ms.some((m) => m.rallies || (m.status === 'done' && !m.walkover) || m.status === 'live')) fail(409, `${e.name} has started a catch-up match — it can't be undone now`);
+      await q('DELETE FROM matches WHERE id = ANY($1::int[])', [ms.map((m) => m.id)]);
+      if (mode === 'delete') await q('DELETE FROM entries WHERE id = $1', [e.id]);
+      else await q('UPDATE entries SET in_draw = false, checked_in = false, group_no = NULL WHERE id = $1', [e.id]);
+    });
+  }
+
+  // Umpires tell the organisers something ("Court 2: Sanjay isn't here").
+  async function addNote(id, actor, input = {}) {
+    const body = text(input.text, 'Note', { max: 300 });
+    return db.tx(async (q) => {
+      const { t } = await lockWith(q, id, actor, 'score');
+      const by = actor.user ? actor.user.name : 'An umpire';
+      await q('INSERT INTO assistant_notes (tournament_id, user_id, by_name, text) VALUES ($1, $2, $3, $4)', [t.id, actor.user ? actor.user.id : null, by, body]);
+      const managers = await q(`SELECT u.id FROM members m JOIN users u ON u.email = m.email WHERE m.tournament_id = $1 AND m.role IN ('owner', 'organiser')`, [t.id]);
+      await notify.send(q, { users: managers.map((r) => r.id), kind: 'umpire_note', actor: actor.user ? actor.user.id : null, title: `${by}: ${body}`, body: t.name, url: `/t/${t.id}/entries` });
+      return { ok: true };
+    });
+  }
+  async function notes(id, actor) {
+    return db.tx(async (q) => {
+      const { t } = await lockWith(q, id, actor, 'manage');
+      const items = await q(`SELECT id, by_name AS by, text, created_at AS at FROM assistant_notes WHERE tournament_id = $1 AND status = 'open'
+                             AND created_at > now() - interval '1 day' ORDER BY id`, [t.id]);
+      return { items };
+    });
+  }
+  async function closeNote(id, actor, noteId) {
+    return db.tx(async (q) => {
+      const { t } = await lockWith(q, id, actor, 'manage');
+      await q(`UPDATE assistant_notes SET status = 'done' WHERE id = $1 AND tournament_id = $2`, [Number(noteId) || 0, t.id]);
+      return { ok: true };
+    });
+  }
+
+  // What needs a decision now, worked out from the policy and the state of
+  // play (no AI): players late past the grace time, two solos who could pair,
+  // fees still unpaid after the draw. Up to five, most urgent first.
+  async function nudges(id, actor) {
+    const t = await getTournament(id, actor);
+    if (!t.can.manage) fail(403, 'Organisers only');
+    const policy = latecomers.policyOf(t.config.latePolicy);
+    const out = [];
+    for (const ev of t.events) {
+      if (ev.status === 'league' || ev.status === 'knockout') {
+        for (const e of ev.entries.filter((x) => x.awaySince && x.inDraw && !x.withdrawn)) {
+          const mins = Math.floor((Date.now() - Date.parse(e.awaySince)) / 60000);
+          if (mins < policy.graceMinutes) continue;
+          const m = (ev.matches || []).find((x) => ['scheduled', 'live'].includes(x.status) && !x.rallies && x.a && x.b && (x.a.id === e.id || x.b.id === e.id));
+          const played = (ev.matches || []).some((x) => (x.a?.id === e.id || x.b?.id === e.id) && x.status !== 'bye' && (x.status === 'done' || x.rallies));
+          if (!m && !(policy.replaceNoShow && !played)) continue;
+          const other = m && (m.a.id === e.id ? m.b : m.a);
+          out.push({
+            kind: 'late', urgency: mins, entryId: e.id, eventId: ev.id, name: e.name,
+            text: `${e.name} is ${mins} minutes late${m ? ` for ${m.a.name} v ${m.b.name}` : ''}`,
+            why: `Your policy: a walkover after ${policy.graceMinutes} minutes.`,
+            actions: [
+              ...(m ? [{ action: 'walkover', label: `Walkover to ${other.name}`, matchId: m.id, winner: m.a.id === e.id ? 'b' : 'a' }] : []),
+              ...(policy.replaceNoShow && !played ? [{ action: 'replace', label: 'Someone else plays instead' }] : []),
+              { action: 'wait', label: 'Wait' },
+            ],
+          });
+        }
+      }
+      if (ev.status === 'setup') {
+        const solos = ev.entries.filter((x) => x.solo && x.confirmed && !x.withdrawn);
+        if (solos.length === 2) {
+          out.push({ kind: 'solos', urgency: 0, eventId: ev.id, text: `${solos[0].name} and ${solos[1].name} are both looking for a partner in ${ev.name}`, why: 'They\'re the only two — pair them before the draw?', actions: [{ action: 'pair', label: 'Pair them', a: solos[0].id, b: solos[1].id }] });
+        }
+      } else if (ev.fee && ev.status !== 'completed') {
+        const due = ev.entries.filter((x) => x.inDraw && !x.withdrawn && !['received', 'cash', 'waived', 'paid'].includes(x.feeStatus));
+        if (due.length) out.push({ kind: 'fees', urgency: -1, eventId: ev.id, text: `${due.length} in ${ev.name} haven't paid the entry fee`, why: due.slice(0, 4).map((x) => x.name).join(', ') + (due.length > 4 ? '…' : ''), actions: [{ action: 'players', label: 'See who' }] });
+      }
+    }
+    return { items: out.sort((a, b) => b.urgency - a.urgency).slice(0, 5) };
   }
 
   // A player retires mid-match (injury, has to leave): the other side wins.
@@ -4592,6 +4724,14 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     razorpayWebhook,
     adminSetPlan,
     adminGrantAi,
+    replaceEntry,
+    restoreEntry,
+    entrySnapshot,
+    undoLate,
+    addNote,
+    notes,
+    closeNote,
+    nudges,
     setOfficial,
     setEntryFee,
     adminPayments,

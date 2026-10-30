@@ -18,8 +18,10 @@
 
 const crypto = require('node:crypto');
 const { COSTS } = require('./credits');
+const { policyOf } = require('./latecomers');
 
-const TYPES = ['check_in', 'not_here', 'here', 'arrived', 'add_entry', 'mark_paid', 'walkover'];
+const TYPES = ['check_in', 'not_here', 'here', 'arrived', 'add_entry', 'mark_paid', 'walkover', 'pair_solos', 'replace'];
+const UNDO_MINUTES = 10;
 const SYSTEM = `You help a tournament organiser on the day. They tell you what is happening (typed, dictated, a forwarded message or a photo of a paper list). Turn it into actions from this list only:
 - check_in: a player or pair is here, before the draw (entryId)
 - arrived: a player or pair who missed the draw is here now (entryId)
@@ -28,6 +30,9 @@ const SYSTEM = `You help a tournament organiser on the day. They tell you what i
 - add_entry: a new player, pair or team to add (eventId, name — a pair as "First / Second")
 - mark_paid: an entry's fee was paid (entryId, paidHow: cash or upi)
 - walkover: a player never came to their match (matchId, entryId of the one who didn't come)
+- pair_solos: two players each looking for a partner should play together, before the draw (entryId and partnerId)
+- replace: someone new plays in place of an entry who hasn't come and hasn't played yet (entryId of the one not coming, name of the new player or pair)
+Two walk-ins who want to play together after the draw are one add_entry named "First / Second".
 Use the ids from the tournament below. If a name could be more than one entry, or matches none, or the event is unclear, don't guess: add a question instead. Never decide which group anyone goes in, who wins, seeds or levels — the app decides those by the organiser's published rules. Don't infer anything about people from their names. Put the words each action came from in "quote". "summary" is one short sentence of what you understood.`;
 
 const SCHEMA = {
@@ -39,7 +44,7 @@ const SCHEMA = {
       type: 'array',
       items: {
         type: 'object', additionalProperties: false,
-        required: ['type', 'entryId', 'eventId', 'name', 'paidHow', 'matchId', 'quote'],
+        required: ['type', 'entryId', 'eventId', 'name', 'paidHow', 'matchId', 'partnerId', 'quote'],
         properties: {
           type: { type: 'string', enum: TYPES },
           entryId: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
@@ -47,6 +52,7 @@ const SCHEMA = {
           name: { anyOf: [{ type: 'string' }, { type: 'null' }] },
           paidHow: { anyOf: [{ type: 'string', enum: ['cash', 'upi'] }, { type: 'null' }] },
           matchId: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+          partnerId: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
           quote: { type: 'string' },
         },
       },
@@ -75,7 +81,7 @@ function createAssistant({ db, fail, ai, svc }) {
     for (const ev of t.events) {
       lines.push(`Event ${ev.id}: ${ev.name} — ${ev.status === 'setup' ? 'before the draw' : ev.status === 'completed' ? 'finished' : 'under way'}${ev.fee ? ', has an entry fee' : ''}`);
       for (const e of ev.entries) {
-        const flags = [e.withdrawn ? 'withdrew' : null, e.confirmed ? null : 'not confirmed', ev.status === 'setup' ? (e.checkedIn ? 'checked in' : 'not checked in') : (e.inDraw ? 'in the draw' : 'missed the draw'),
+        const flags = [e.withdrawn ? 'withdrew' : null, e.confirmed ? null : 'not confirmed', e.solo ? 'looking for a partner' : null, ev.status === 'setup' ? (e.checkedIn ? 'checked in' : 'not checked in') : (e.inDraw ? 'in the draw' : 'missed the draw'),
           e.awaySince ? 'marked late' : null, ev.fee ? (['received', 'cash', 'waived', 'paid'].includes(e.feeStatus) ? 'paid' : 'fee due') : null].filter(Boolean);
         lines.push(`  Entry ${e.id}: ${e.name} (${flags.join(', ')})`);
       }
@@ -143,6 +149,25 @@ function createAssistant({ db, fail, ai, svc }) {
         const other = m.a.id === e.id ? m.b : m.a;
         return w.allowed ? { allowed: true, label: `Walkover to ${other.name}`, effect: `${who} didn't come`, why: w.why, winner: m.a.id === e.id ? 'b' : 'a' } : no(w.why);
       }
+      case 'pair_solos': {
+        const b = a.partnerId ? entryOf(a.partnerId) : null;
+        if (!e || !b || e.id === b.id) return no('Which two players? It wasn\'t clear');
+        if (evOf(b.id).id !== ev.id) return no(`${e.name} and ${b.name} are in different events`);
+        if (ev.status !== 'setup') return no('The draw has been made — add them as a new pair instead');
+        if (!e.solo || !b.solo) return no(`${!e.solo ? e.name : b.name} isn't looking for a partner`);
+        return { allowed: true, label: `Pair ${e.name} and ${b.name}`, effect: `${ev.name} · one entry, ${e.name} / ${b.name}` };
+      }
+      case 'replace': {
+        if (!e) return no('Not one of the entries');
+        if (!a.name || !a.name.trim()) return no('Who plays instead?');
+        if (ev.status === 'setup') return no('The draw hasn\'t been made — remove them and add the new player');
+        if (ev.status === 'completed') return no(`${ev.name} has finished`);
+        if (!policyOf(t.config.latePolicy).replaceNoShow) return no('Your policy doesn\'t let a walk-in take someone\'s place');
+        if (!e.inDraw || e.withdrawn) return no(`${who} isn't playing now`);
+        if ((ev.matches || []).some((m) => (m.a?.id === e.id || m.b?.id === e.id) && m.status !== 'bye' && (m.status === 'done' || m.rallies))) return no(`${who} has already played — they can withdraw instead`);
+        if (ev.entries.some((x) => x.id !== e.id && x.name.toLowerCase() === a.name.trim().toLowerCase())) return no(`${a.name} is already entered in ${ev.name}`);
+        return { allowed: true, label: `${a.name.trim()} plays instead of ${who}`, effect: `${ev.name} · same group and matches`, why: 'Your policy: a walk-in can take a no-show\'s place before their first match.' };
+      }
       default:
         return no('Not something the assistant can do');
     }
@@ -167,7 +192,7 @@ function createAssistant({ db, fail, ai, svc }) {
     const proposals = [];
     for (const a of (out.actions || []).slice(0, 30)) {
       const p = await preview(t, a, actor);
-      proposals.push({ key: crypto.randomBytes(4).toString('hex'), type: p.type || a.type, entryId: a.entryId, eventId: a.eventId, name: a.name, paidHow: a.paidHow, matchId: a.matchId, quote: a.quote, ...p });
+      proposals.push({ key: crypto.randomBytes(4).toString('hex'), type: p.type || a.type, entryId: a.entryId, eventId: a.eventId, name: a.name, paidHow: a.paidHow, matchId: a.matchId, partnerId: a.partnerId, quote: a.quote, ...p });
     }
     // Several latecomers into one event: each is placed in turn when applied,
     // so the ones after the first may go to a different group.
@@ -189,37 +214,89 @@ function createAssistant({ db, fail, ai, svc }) {
     const list = Array.isArray(input.proposals) ? input.proposals.slice(0, 30) : [];
     if (!list.length) fail(400, 'Nothing to apply');
     const results = [];
+    const batch = crypto.randomBytes(8).toString('hex');
     for (const a of list) {
       let ok = true;
       let result = 'done';
+      let undo = null;
       try {
         const p = await preview(await svc.getTournament(id, actor), a, actor); // checked again, just before
         if (!p.allowed) throw Object.assign(new Error(p.why || 'Not allowed'), { status: 409 });
         const type = p.type || a.type;
-        if (type === 'check_in') await svc.checkIn(id, actor, a.entryId, true);
-        else if (type === 'arrived') await svc.arrive(id, actor, a.entryId, p.group != null ? { group: p.group } : {});
-        else if (type === 'not_here') await svc.setAway(id, actor, a.entryId, true);
-        else if (type === 'here') await svc.setAway(id, actor, a.entryId, false);
+        const before = await svc.getTournament(id, actor);
+        const entryNow = (eid) => before.events.flatMap((x) => x.entries).find((x) => x.id === eid);
+        const added = async (eventId, name) => (await svc.getTournament(id, actor)).events.find((x) => x.id === eventId).entries.find((x) => x.name.toLowerCase() === name.toLowerCase());
+        if (type === 'check_in') { await svc.checkIn(id, actor, a.entryId, true); undo = { do: 'check_out', entryId: a.entryId }; }
+        else if (type === 'arrived') { await svc.arrive(id, actor, a.entryId, p.group != null ? { group: p.group } : {}); undo = { do: 'undo_late', entryId: a.entryId, mode: 'out' }; }
+        else if (type === 'not_here') { await svc.setAway(id, actor, a.entryId, true); undo = { do: 'away', entryId: a.entryId, away: false }; }
+        else if (type === 'here') { await svc.setAway(id, actor, a.entryId, false); undo = { do: 'away', entryId: a.entryId, away: true }; }
         else if (type === 'add_entry') {
           const target = t.events.find((x) => x.id === a.eventId);
           if (target.status === 'setup') {
             await svc.addEntries(id, actor, [a.name.trim()], { event: a.eventId });
-            if (a.paidHow && target.fee) {
-              const fresh = await svc.getTournament(id, actor);
-              const added = fresh.events.find((x) => x.id === a.eventId).entries.find((x) => x.name.toLowerCase() === a.name.trim().toLowerCase());
-              if (added) await svc.setEntryFee(id, actor, added.id, a.paidHow === 'upi' ? 'received' : 'cash');
-            }
-          } else await svc.lateEntry(id, actor, { name: a.name.trim(), event: a.eventId, ...(p.group != null && { group: p.group }) });
-        } else if (type === 'mark_paid') await svc.setEntryFee(id, actor, a.entryId, a.paidHow === 'upi' ? 'received' : 'cash');
-        else if (type === 'walkover') await svc.giveWalkover(id, actor, a.matchId, p.winner);
+            const e = await added(a.eventId, a.name.trim());
+            if (e && a.paidHow && target.fee) await svc.setEntryFee(id, actor, e.id, a.paidHow === 'upi' ? 'received' : 'cash');
+            if (e) undo = { do: 'remove', entryId: e.id };
+          } else {
+            await svc.lateEntry(id, actor, { name: a.name.trim(), event: a.eventId, ...(p.group != null && { group: p.group }) });
+            const e = await added(a.eventId, a.name.trim());
+            if (e) undo = { do: 'undo_late', entryId: e.id, mode: 'delete' };
+          }
+        } else if (type === 'mark_paid') {
+          const prev = entryNow(a.entryId).feeStatus || null;
+          await svc.setEntryFee(id, actor, a.entryId, a.paidHow === 'upi' ? 'received' : 'cash');
+          undo = { do: 'fee', entryId: a.entryId, status: prev };
+        } else if (type === 'walkover') await svc.giveWalkover(id, actor, a.matchId, p.winner); // no undo: walkovers stand
+        else if (type === 'pair_solos') {
+          await svc.pairSolos(id, actor, a.entryId, a.partnerId);
+          const [r] = await db.query('SELECT paired_into FROM entries WHERE id = $1', [a.entryId]);
+          if (r && r.paired_into) undo = { do: 'unpair', entryId: r.paired_into };
+        } else if (type === 'replace') {
+          const snap = await svc.entrySnapshot(a.entryId);
+          await svc.replaceEntry(id, actor, a.entryId, { name: a.name.trim() });
+          undo = { do: 'restore', entryId: a.entryId, snap };
+        }
         result = p.effect ? `${p.label} — ${p.effect.split(' · ').slice(1).join(' · ') || p.effect}` : p.label;
       } catch (err) {
         ok = false;
         result = err.message;
       }
-      results.push({ key: a.key, ok, result });
-      await db.query('INSERT INTO ai_actions (tournament_id, user_id, request, type, params, ok, result) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)',
-        [t.id, actor.user.id, String(input.request || '').slice(0, 2000), a.type, JSON.stringify({ entryId: a.entryId, eventId: a.eventId, name: a.name, paidHow: a.paidHow, matchId: a.matchId }), ok, String(result).slice(0, 300)]);
+      results.push({ key: a.key, ok, result, undoable: Boolean(undo) });
+      await db.query('INSERT INTO ai_actions (tournament_id, user_id, request, type, params, ok, result, batch, undo) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb)',
+        [t.id, actor.user.id, String(input.request || '').slice(0, 2000), a.type, JSON.stringify({ entryId: a.entryId, eventId: a.eventId, name: a.name, paidHow: a.paidHow, matchId: a.matchId, partnerId: a.partnerId }), ok, String(result).slice(0, 300),
+          batch, undo ? JSON.stringify(undo) : null]);
+    }
+    return { results, batch: results.some((r) => r.undoable) ? batch : null, undoMinutes: UNDO_MINUTES, tournament: await svc.getTournament(id, actor) };
+  }
+
+  // Takes back an Apply, within UNDO_MINUTES: each change reversed, last
+  // first, through the app's own actions; any that can't be (a catch-up
+  // match has been played since, say) are reported and left as they are.
+  async function undo(id, actor, input = {}) {
+    if (!actor?.user) fail(401, 'Sign in first');
+    const t = await svc.getTournament(id, actor);
+    if (!t.can.manage) fail(403, 'Only the tournament\'s organisers can undo changes');
+    const rows = await db.query(
+      `SELECT id, type, result, undo, created_at FROM ai_actions WHERE tournament_id = $1 AND batch = $2 AND ok AND undo IS NOT NULL AND undone_at IS NULL ORDER BY id DESC`,
+      [t.id, String(input.batch || '')]);
+    if (!rows.length) fail(404, 'Nothing to undo');
+    if (Date.now() - Date.parse(rows[0].created_at) > UNDO_MINUTES * 60000) fail(409, `Changes can be undone for ${UNDO_MINUTES} minutes — change them by hand now`);
+    const results = [];
+    for (const r of rows) {
+      const u = r.undo;
+      try {
+        if (u.do === 'check_out') await svc.checkIn(id, actor, u.entryId, false);
+        else if (u.do === 'away') await svc.setAway(id, actor, u.entryId, u.away);
+        else if (u.do === 'remove') await svc.removeEntry(id, actor, u.entryId);
+        else if (u.do === 'undo_late') await svc.undoLate(id, actor, u.entryId, u.mode);
+        else if (u.do === 'fee') await svc.setEntryFee(id, actor, u.entryId, u.status);
+        else if (u.do === 'unpair') await svc.unpair(id, actor, u.entryId);
+        else if (u.do === 'restore') await svc.restoreEntry(id, actor, u.entryId, u.snap);
+        await db.query('UPDATE ai_actions SET undone_at = now() WHERE id = $1', [r.id]);
+        results.push({ ok: true, result: `Undone: ${r.result}` });
+      } catch (err) {
+        results.push({ ok: false, result: err.message });
+      }
     }
     return { results, tournament: await svc.getTournament(id, actor) };
   }
@@ -234,7 +311,7 @@ function createAssistant({ db, fail, ai, svc }) {
     return { items: rows };
   }
 
-  return { propose, apply, log, version, context, TYPES };
+  return { propose, apply, undo, log, version, context, TYPES };
 }
 
 module.exports = { createAssistant, SYSTEM, SCHEMA, TYPES };

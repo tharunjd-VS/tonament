@@ -13,8 +13,8 @@ const { createApp } = require('../server/app');
 const G = (no, active, played, total) => ({ no, name: `Group ${'ABCD'[no]}`, active, played, total, pool: null });
 
 test('policy: defaults, cleaning, and in plain words', () => {
-  assert.deepEqual(policyOf(null), { lateUntil: 'groups', groupChoice: 'even', graceMinutes: 15 });
-  assert.deepEqual(policyOf({ lateUntil: 'nope', groupChoice: 'progress', graceMinutes: 500 }), { lateUntil: 'groups', groupChoice: 'progress', graceMinutes: 15 });
+  assert.deepEqual(policyOf(null), { lateUntil: 'groups', groupChoice: 'even', graceMinutes: 15, replaceNoShow: true });
+  assert.deepEqual(policyOf({ lateUntil: 'nope', groupChoice: 'progress', graceMinutes: 500 }), { lateUntil: 'groups', groupChoice: 'progress', graceMinutes: 15, replaceNoShow: true });
   assert.match(describe({ lateUntil: 'half' })[0], /until it is half played/);
   assert.match(describe({ graceMinutes: 20 })[1], /more than 20 minutes late/);
 });
@@ -60,7 +60,7 @@ test('the service follows the published policy, and offers the options', async (
     await svc.addEntries(id, org, ['A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'B4']);
     await svc.start(id, org);
     let t = await svc.getTournament(id, org);
-    assert.deepEqual(t.config.latePolicy, { lateUntil: 'half', groupChoice: 'even', graceMinutes: 10 });
+    assert.deepEqual(t.config.latePolicy, { lateUntil: 'half', groupChoice: 'even', graceMinutes: 10, replaceNoShow: true });
     // The 3-player group is recommended; options carry effects.
     const o = await svc.lateOptions(id, org, { kind: 'late' });
     assert.equal(o.allowed, true);

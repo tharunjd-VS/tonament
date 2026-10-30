@@ -29,6 +29,7 @@ const KINDS = {
   race: { label: 'Race results', email: true },
   edition: { label: 'Tournaments you played, back again', email: true },
   reminder: { label: 'Reminders the day before', email: true },
+  umpire_note: { label: 'Notes from your umpires', email: false },
 };
 const PAGE = 40;
 const DELIVERY_MS = 4000;

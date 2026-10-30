@@ -2752,8 +2752,8 @@
       ];
     }
     // Organisers: just the players and what to do with them. Settings are on the Setup tab.
-    if (!setup) return [assistantCard(t), paymentsToCheck(t), upgradeCard(t), teamEditCard(t), running ? lateEntryCard(t) : null, list, setupLink(t)];
-    return [setupChecklist(t), assistantCard(t), paymentsToCheck(t), upgradeCard(t), addEntriesForm(t, usingCheckIn), importCard(t), soloCard(t), teamEditCard(t), list, startCard(t), setupLink(t)];
+    if (!setup) return [nudgesCard(t), assistantCard(t), paymentsToCheck(t), upgradeCard(t), teamEditCard(t), running ? lateEntryCard(t) : null, list, setupLink(t)];
+    return [setupChecklist(t), nudgesCard(t), assistantCard(t), paymentsToCheck(t), upgradeCard(t), addEntriesForm(t, usingCheckIn), importCard(t), soloCard(t), teamEditCard(t), list, startCard(t), setupLink(t)];
   }
 
   // ---------- Google Form responses → entries: the CSV (or the published
@@ -3089,12 +3089,13 @@
   }
 
   // ---------- latecomers (server/latecomers.js): the published policy, and the fair options
-  const LATE_DEFAULT = { lateUntil: 'groups', groupChoice: 'even', graceMinutes: 15 };
+  const LATE_DEFAULT = { lateUntil: 'groups', groupChoice: 'even', graceMinutes: 15, replaceNoShow: true };
   const latePolicy = (t) => ({ ...LATE_DEFAULT, ...((t.config && t.config.latePolicy) || {}) });
   function lateWords(p) {
     const join = { groups: 'Late entries and players who miss the draw can join during the group stage', half: 'Late entries and players who miss the draw can join a group until it is half played', never: 'No one can join after the draw is made' }[p.lateUntil];
     const where = p.lateUntil === 'never' ? '' : p.groupChoice === 'even' ? ' — into the group with the fewest players, so groups stay even' : ' — into the group that has played the fewest matches, so there\'s time to catch up';
-    return [`${join}${where}.`, `A player more than ${p.graceMinutes} minutes late for a called match can be given a walkover.`];
+    return [`${join}${where}.`, `A player more than ${p.graceMinutes} minutes late for a called match can be given a walkover.`,
+      ...(p.replaceNoShow ? ['If someone doesn\'t turn up, a walk-in can take their place before their first match.'] : [])];
   }
   // Fetches the options and shows them; pick(option) applies the chosen one.
   async function lateOptionsSheet(t, title, query, pick) {
@@ -3127,9 +3128,92 @@
     document.addEventListener('keydown', onKey);
   }
 
+  // Has this entry started or finished a match (byes don't count)?
+  const hasPlayed = (t, eid) => t.matches.some((m) => (m.a?.id === eid || m.b?.id === eid) && m.status !== 'bye' && (m.status === 'done' || m.rallies));
+  // A walk-in takes a no-show's place (before the no-show has played).
+  const replaceNoShow = (t, e) => {
+    const name = prompt(`Who plays instead of ${e.name}? They take ${e.name}'s place and matches.`);
+    if (!name || !name.trim()) return;
+    act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/replace`, { name: name.trim() }, t.id); S.nudges = null; }, `${name.trim()} plays instead of ${e.name}`);
+  };
+
+  // "Needs a decision": what the late-arrival policy says is due now (no AI).
+  function nudgesCard(t) {
+    if (!t.can.manage || t.status === 'completed') return null;
+    const n = S.nudges && S.nudges.t === t.id ? S.nudges : null;
+    if (!n || Date.now() - n.at > 30000) {
+      if (!n || !n.loading) {
+        S.nudges = { t: t.id, at: Date.now(), loading: true, items: n ? n.items : [] };
+        api('GET', `${tPath(t)}/nudges`, undefined, t.id).then((r) => { S.nudges = { t: t.id, at: Date.now(), items: r.items }; render(); }).catch(() => { S.nudges = { t: t.id, at: Date.now(), items: [] }; });
+      }
+    }
+    const items = (n && n.items) || [];
+    const notes = S.aiEnabled ? [] : umpireNotes(t); // with AI on, they're in the assistant card
+    if (!items.length && !notes.length) return null;
+    const done = () => { S.nudges = null; };
+    const run = (x, a) => {
+      if (a.action === 'walkover') act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${a.matchId}/walkover`, { winner: a.winner }, t.id); done(); }, a.label);
+      else if (a.action === 'replace') replaceNoShow(t, { id: x.entryId, name: x.name });
+      else if (a.action === 'wait') { S.nudges.items = S.nudges.items.filter((y) => y !== x); S.nudges.at = Date.now() + 5 * 60000; render(); }
+      else if (a.action === 'pair') act(async () => { S.t = await api('POST', `${tPath(t)}/pairs`, { a: a.a, b: a.b }, t.id); done(); }, 'Paired');
+      else if (a.action === 'players') navigate(`/t/${t.id}/entries`);
+    };
+    return h('div', { class: 'card nudges' },
+      h('h2', {}, 'Needs a decision'),
+      h('ul', { class: 'plain-list' }, notes.map((x) => h('li', { class: 'nudge' },
+        h('strong', {}, `“${x.text}”`), h('small', { class: 'muted' }, `From ${x.by}`),
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-small btn-ghost', type: 'button', onclick: () => closeNote(t, x) }, 'Done')))),
+      items.map((x) => h('li', { class: 'nudge' },
+        h('strong', {}, x.text), x.why ? h('small', { class: 'muted' }, x.why) : null,
+        h('div', { class: 'actions' }, x.actions.map((a, i) => h('button', { class: `btn btn-small${i === 0 && a.action !== 'wait' ? ' btn-primary' : a.action === 'wait' ? ' btn-ghost' : ''}`, type: 'button', onclick: () => run(x, a) }, a.label)))))));
+  }
+
+  // Notes from umpires, for the organisers (refreshed every 30 seconds).
+  function umpireNotes(t) {
+    const n = S.assistNotes;
+    if (!n || n.t !== t.id || (Date.now() - n.at > 30000 && !n.loading)) {
+      S.assistNotes = { t: t.id, at: Date.now(), loading: true, items: (n && n.t === t.id && n.items) || [] };
+      api('GET', `${tPath(t)}/notes`, undefined, t.id).then((r) => { S.assistNotes = { t: t.id, at: Date.now(), items: r.items }; render(); }).catch(() => { S.assistNotes = { t: t.id, at: Date.now(), items: [] }; });
+    }
+    return S.assistNotes.items;
+  }
+  const closeNote = (t, x) => { api('POST', `${tPath(t)}/notes/${x.id}/done`, {}, t.id).catch(() => {}); S.assistNotes.items = S.assistNotes.items.filter((y) => y !== x); render(); };
+
+  // Umpires: a quick note to the organisers ("Court 2: Sanjay isn't here").
+  function umpireNoteCard(t) {
+    if (!t.can.score || t.can.manage || t.status === 'setup' || t.status === 'completed') return null;
+    const input = h('input', { name: 'note', maxlength: 300, placeholder: 'e.g. Court 2: Sanjay isn\'t here', 'aria-label': 'Note for the organisers', autocomplete: 'off' });
+    return h('form', { class: 'card umpire-note', onsubmit: (e) => {
+      e.preventDefault();
+      if (!input.value.trim()) return;
+      act(async () => { await api('POST', `${tPath(t)}/notes`, { text: input.value.trim() }, t.id); input.value = ''; }, 'Sent to the organisers');
+    } },
+    h('h2', {}, 'Tell the organiser'),
+    h('div', { class: 'team-form' }, input, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Send')));
+  }
+
   // The on-the-day assistant (server/assistant.js): the organiser says what's
   // happening; suggestions come back to tick and approve. Nothing changes
   // until Apply, and where latecomers go follows the late-arrival policy.
+  // Undoes the last Apply. From the toast's Undo (quiet), a partial undo
+  // throws, so the toast shows what couldn't be undone.
+  async function undoLast(t, quiet = false) {
+    const last = S.assistLast;
+    if (!last) return;
+    let message = 'Undone ✓';
+    let error = false;
+    try {
+      const r = await api('POST', `${tPath(t)}/assistant/undo`, { batch: last.batch }, t.id);
+      S.t = r.tournament;
+      S.assistLast = null;
+      S.nudges = null;
+      const bad = r.results.filter((x) => !x.ok);
+      if (bad.length) { message = `Undone, except: ${bad.map((x) => x.result).join('; ')}`; error = true; }
+    } catch (e) { message = e.message; error = true; }
+    if (quiet) { if (error) throw new Error(message); return; }
+    toast(message, error);
+    render();
+  }
   function assistantCard(t) {
     if (!S.aiEnabled || !t.can.manage || t.status === 'completed') return null;
     const d = (S.assist && S.assist.t === t.id) ? S.assist : (S.assist = { t: t.id, text: '', busy: false, result: null, off: new Set() });
@@ -3159,8 +3243,10 @@
         const r = await api('POST', `${tPath(t)}/assistant/apply`, { version: d.result.version, request: d.result.request, proposals: chosen }, t.id);
         S.t = r.tournament;
         const bad = r.results.filter((x) => !x.ok);
-        toast(bad.length ? `${r.results.length - bad.length} done · ${bad.length} couldn't be: ${bad.map((x) => x.result).join('; ')}` : `Done ✓ ${r.results.map((x) => x.result).join(' · ')}`, bad.length > 0);
+        S.assistLast = r.batch ? { t: t.id, batch: r.batch, until: Date.now() + r.undoMinutes * 60000 } : null;
+        toast(bad.length ? `${r.results.length - bad.length} done · ${bad.length} couldn't be: ${bad.map((x) => x.result).join('; ')}` : `Done ✓ ${r.results.map((x) => x.result).join(' · ')}`, bad.length > 0, r.batch ? () => undoLast(t, true) : null);
         S.assist = null;
+        S.nudges = null;
       } catch (e) {
         toast(e.message, true);
         if (e.code === 'stale') d.result = null;
@@ -3168,7 +3254,15 @@
       }
       render();
     };
-    const head = [h('h2', {}, 'Tell the assistant'), creditsLine(t.id, 'manage')];
+    const last = S.assistLast && S.assistLast.t === t.id && Date.now() < S.assistLast.until ? S.assistLast : null;
+    const notes = umpireNotes(t);
+    const head = [h('h2', {}, 'Tell the assistant'), creditsLine(t.id, 'manage'),
+      notes.length && !d.result ? h('div', { class: 'umpire-notes' }, h('strong', { class: 'small' }, `From umpires (${notes.length})`),
+        h('ul', { class: 'plain-list' }, notes.map((x) => h('li', {}, h('span', {}, `“${x.text}”`, h('small', { class: 'muted' }, ` — ${x.by}`)),
+          h('span', { class: 'actions' },
+            h('button', { class: 'btn btn-small', type: 'button', onclick: () => { d.text = [d.text, x.text].filter(Boolean).join('\n'); closeNote(t, x); } }, 'Ask the assistant'),
+            h('button', { class: 'btn btn-small btn-ghost', type: 'button', onclick: () => closeNote(t, x) }, 'Done')))))) : null,
+      last && !d.result ? h('p', { class: 'muted small' }, 'Last change applied · ', h('button', { class: 'link-btn', type: 'button', onclick: () => undoLast(t) }, 'Undo')) : null];
     if (d.busy) {
       return h('div', { class: 'card assistant reading' }, ...head, h('p', { class: 'muted small' }, d.result ? 'Making the changes…' : 'Working out what to do…'),
         h('div', { class: 'progress' }, h('span', { class: 'indeterminate' })));
@@ -3206,7 +3300,7 @@
   function latePolicyCard(t) {
     const p = latePolicy(t);
     const d = (S.lateDraft && S.lateDraft.t === t.id) ? S.lateDraft : (S.lateDraft = { t: t.id, ...p });
-    const save = () => act(async () => { S.t = await api('PATCH', tPath(t), { latePolicy: { lateUntil: d.lateUntil, groupChoice: d.groupChoice, graceMinutes: Number(d.graceMinutes) } }, t.id); S.lateDraft = null; }, 'Late-arrival policy saved');
+    const save = () => act(async () => { S.t = await api('PATCH', tPath(t), { latePolicy: { lateUntil: d.lateUntil, groupChoice: d.groupChoice, graceMinutes: Number(d.graceMinutes), replaceNoShow: Boolean(d.replaceNoShow) } }, t.id); S.lateDraft = null; }, 'Late-arrival policy saved');
     return h('div', { class: 'card' },
       h('h2', {}, 'Late arrivals'),
       h('p', { class: 'muted small' }, 'Decide now, before the day — it\'s shown to players on the tournament page, and the options you\'re offered on the day follow it.'),
@@ -3217,6 +3311,9 @@
         { value: 'even', label: 'Keep groups even' }, { value: 'progress', label: 'Most time to catch up' },
       ], onchange: (e) => { d.groupChoice = e.target.value; render(); } })) : null,
       field('Walkover after (minutes late)', h('input', { type: 'number', min: 5, max: 60, value: d.graceMinutes, oninput: (e) => { d.graceMinutes = e.target.value; } })),
+      h('label', { class: 'check-field switch-field' },
+        h('input', { type: 'checkbox', role: 'switch', checked: d.replaceNoShow, onchange: (e) => { d.replaceNoShow = e.target.checked; render(); } }),
+        h('span', {}, h('strong', {}, 'A walk-in can take a no-show\'s place'), h('small', {}, 'Before the no-show has played: same group and matches, the walk-in\'s name.'))),
       h('div', { class: 'banner info small late-words' }, lateWords({ ...d, graceMinutes: Number(d.graceMinutes) || 15 }).map((x) => h('p', {}, x))),
       !t.config.lateEntry ? h('p', { class: 'hint' }, 'Late entries (new players after the draw) are also switched on or off on the Players tab once it starts; players who entered but missed the draw follow this policy.') : null,
       h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'button', onclick: save }, 'Save')));
@@ -4018,6 +4115,8 @@
     return [
       championBanner(t),
       t.can.manage ? nextStepCard(t) : stageBanner(t),
+      nudgesCard(t),
+      umpireNoteCard(t),
       t.status !== 'setup' ? assistantCard(t) : null,
       matchSection(t, 'On court now', live, 'No matches in progress.', true),
       upcoming.length || t.status !== 'completed' ? matchSection(t, 'Up next', upcoming, 'Nothing scheduled right now.') : null,
@@ -4120,6 +4219,9 @@
                       }),
                     };
                   }) : []),
+                  ...(t.can.manage && latePolicy(t).replaceNoShow ? awayIn(x).filter((e) => !hasPlayed(t, e.id)).map((e) => ({
+                    label: `Someone else plays instead of ${e.name}`, hint: 'A walk-in takes their place and matches', onClick: () => replaceNoShow(t, e),
+                  })) : []),
                 ]))
               : null)))
           : h('p', { class: 'muted' }, find ? 'No matches for that name.' : 'Nothing waiting to be played.'),
@@ -4375,7 +4477,9 @@
       }
     } else {
       const live = ms.filter((m) => m.status === 'live');
-      const next = ms.filter((m) => m.status === 'scheduled' && m.a && m.b).sort((x, y) => Number(y.catchUp) - Number(x.catchUp) || byOrder(x, y))[0];
+      // Not a match waiting for someone marked late (Not here).
+      const away = new Set(t.entries.filter((e) => e.awaySince).map((e) => e.id));
+      const next = ms.filter((m) => m.status === 'scheduled' && m.a && m.b && !away.has(m.a.id) && !away.has(m.b.id)).sort((x, y) => Number(y.catchUp) - Number(x.catchUp) || byOrder(x, y))[0];
       title = next ? `Next match: ${vsName(next)}` : live.length ? `${live.length} match${live.length === 1 ? '' : 'es'} on now` : 'Waiting for the next round';
       text = next ? [matchLabel(next), live.length ? `${live.length} on now` : null].filter(Boolean).join(' · ') : null;
       action = next ? h('a', { class: 'btn btn-primary', href: `/t/${t.id}/m/${next.id}` }, 'Score it') : null;

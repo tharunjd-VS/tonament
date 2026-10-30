@@ -15,8 +15,9 @@
 //   groupChoice  'even'     — the group with the fewest players (then the fewest matches played)
 //                'progress' — the group least far along (most time to catch up)
 //   graceMinutes how late a player can be for a called match before a walkover is suggested
+//   replaceNoShow whether a walk-in can take a no-show's place before their first match
 
-const DEFAULT_POLICY = { lateUntil: 'groups', groupChoice: 'even', graceMinutes: 15 };
+const DEFAULT_POLICY = { lateUntil: 'groups', groupChoice: 'even', graceMinutes: 15, replaceNoShow: true };
 const LATE_UNTIL = ['groups', 'half', 'never'];
 const GROUP_CHOICE = ['even', 'progress'];
 
@@ -26,6 +27,7 @@ function policyOf(value) {
     lateUntil: LATE_UNTIL.includes(p.lateUntil) ? p.lateUntil : DEFAULT_POLICY.lateUntil,
     groupChoice: GROUP_CHOICE.includes(p.groupChoice) ? p.groupChoice : DEFAULT_POLICY.groupChoice,
     graceMinutes: Number.isInteger(p.graceMinutes) && p.graceMinutes >= 5 && p.graceMinutes <= 60 ? p.graceMinutes : DEFAULT_POLICY.graceMinutes,
+    replaceNoShow: typeof p.replaceNoShow === 'boolean' ? p.replaceNoShow : DEFAULT_POLICY.replaceNoShow,
   };
 }
 
@@ -40,7 +42,8 @@ function describe(policy) {
   const where = p.lateUntil === 'never' ? '' : p.groupChoice === 'even'
     ? ' — into the group with the fewest players, so groups stay even, with catch-up matches against everyone in it'
     : ' — into the group that has played the fewest matches, so there\'s time to catch up';
-  return [`${join}${where}.`, `A player more than ${p.graceMinutes} minutes late for a called match can be given a walkover.`];
+  return [`${join}${where}.`, `A player more than ${p.graceMinutes} minutes late for a called match can be given a walkover.`,
+    ...(p.replaceNoShow ? ['If someone doesn\'t turn up, a walk-in can take their place before their first match.'] : [])];
 }
 
 // groups: [{ no, name, active, played, total, pool }] — active players, league
