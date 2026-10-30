@@ -25,6 +25,7 @@ const KINDS = {
   club_result: { label: 'Club v club results', email: false },
   season: { label: 'Club seasons', email: false },
   club_run: { label: 'Club runs', email: false },
+  race: { label: 'Race results', email: true },
 };
 const PAGE = 40;
 const DELIVERY_MS = 4000;

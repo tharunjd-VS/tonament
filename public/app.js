@@ -667,6 +667,24 @@
           render();
           S.goals = await api('GET', '/goals').catch(() => ({ active: [], past: [] }));
         }
+      } else if (parts[0] === 'race' && /^\d+$/.test(parts[1] || '')) {
+        S.route = { name: 'race', id: Number(parts[1]) };
+        if (!S.race || S.race.id !== S.route.id) { S.race = null; S.raceTab = null; S.raceLast = null; S.raceAdd = null; }
+        render();
+        await loadRace();
+        return;
+      } else if (parts[0] === 'races') {
+        if (parts[1] === 'new') {
+          if (!S.me) { navigate(`/signin?next=${encodeURIComponent(location.pathname)}`, { replace: true }); return; }
+          S.route = { name: 'raceNew' };
+          render();
+          S.goalClubs = await api('GET', '/clubs/mine').catch(() => []);
+        } else {
+          S.route = { name: 'races' };
+          S.races = null;
+          render();
+          S.races = await api('GET', '/races').catch(() => ({ upcoming: [], past: [] }));
+        }
       } else if (parts[0] === 'runs') {
         if (!S.me) {
           navigate(`/signin?next=${encodeURIComponent(location.pathname)}`, { replace: true });
@@ -930,6 +948,9 @@
     else if (S.route.name === 'challenges') view = viewChallenges();
     else if (S.route.name === 'goals') view = viewGoals();
     else if (S.route.name === 'runs') view = viewRuns();
+    else if (S.route.name === 'races') view = viewRaces();
+    else if (S.route.name === 'raceNew') view = viewRaceNew();
+    else if (S.route.name === 'race') view = viewRace();
     else if (S.route.name === 'goalNew') view = viewGoalNew();
     else if (S.route.name === 'goal') view = viewGoal();
     else if (S.route.name === 'challengeNew') view = viewChallengeNew();
@@ -5125,6 +5146,7 @@
             h('a', { href: '/challenges', onclick: closeMenu }, 'Challenges'),
             h('a', { href: '/goals', onclick: closeMenu }, 'Goals'),
             h('a', { href: '/runs', onclick: closeMenu }, 'Runs'),
+            h('a', { href: '/races', onclick: closeMenu }, 'Races'),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
@@ -7105,6 +7127,158 @@
       V.admin && S.ccForm ? form() : null);
   }
 
+  // ---------- races: distances, bibs, times by bib, results
+  const raceWhen = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+  const ordinal = (n) => `${n}${[11, 12, 13].includes(n % 100) ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
+
+  function viewRaces() {
+    document.title = 'Races · Tonament';
+    const L = S.races;
+    const card = (r) => h('a', { class: 'card goal-card', href: `/race/${r.id}` },
+      h('p', { class: 'eyebrow' }, [raceWhen(r.startsAt), r.city].filter(Boolean).join(' · ')),
+      h('strong', { class: 'goal-title' }, r.name),
+      h('small', { class: 'muted' }, `${r.distances} · ${r.entries} in${r.mine ? ' · you\'re in ✓' : ''}${r.organiser ? ' · yours' : ''}${r.status === 'done' ? ' · results out' : ''}`));
+    return [
+      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Races'), S.me ? h('a', { class: 'btn btn-primary', href: '/races/new' }, 'Set up a race') : null),
+      h('p', { class: 'muted' }, 'Enter, get your bib, and see where you finished — overall, by gender and by age group. Your time goes straight onto your runs.'),
+      L == null ? loading() : [
+        L.upcoming.length ? h('section', { class: 'section' }, h('h2', {}, 'Coming up'), h('div', { class: 'card-list' }, L.upcoming.map(card))) : empty('No races coming up yet — set one up.'),
+        L.past.length ? h('section', { class: 'section' }, h('h2', {}, 'Results'), h('div', { class: 'card-list' }, L.past.map(card))) : null,
+      ],
+    ];
+  }
+
+  function viewRaceNew() {
+    document.title = 'New race · Tonament';
+    const d = (S.raceDraft ||= { name: '', when: '', place: '', city: '', distances: ['5k', '10k'], custom: '', club: '' });
+    const clubs = (S.goalClubs || []).filter((c) => c.role === 'admin' && c.status === 'active');
+    const form = h('form', {
+      class: 'card form new-flow',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const distances = [...d.distances, ...(d.custom ? d.custom.split(/[,\s]+/).filter(Boolean).map(Number) : [])];
+        act(async () => {
+          const r = await api('POST', '/races', { name: d.name, startsAt: new Date(`${d.when}:00+05:30`).toISOString(), place: d.place, city: d.city || null, distances, club: d.club || null });
+          S.raceDraft = null;
+          navigate(`/race/${r.id}`);
+        }, 'Race set up — share it so runners enter');
+      },
+    },
+    h('h1', {}, 'Set up a race'),
+    field('Name', h('input', { required: true, maxlength: 80, placeholder: 'Chennai Night Run', value: d.name, oninput: (e) => { d.name = e.target.value; } })),
+    field('Start (India time)', h('input', { type: 'datetime-local', required: true, value: d.when, oninput: (e) => { d.when = e.target.value; } })),
+    field('Start line', h('input', { required: true, maxlength: 80, placeholder: 'Island Grounds', value: d.place, oninput: (e) => { d.place = e.target.value; } })),
+    field('City', h('input', { maxlength: 60, placeholder: 'Chennai', value: d.city, oninput: (e) => { d.city = e.target.value; } })),
+    groupField('Distances', choiceGroup({ name: 'raceDist', label: 'Distances', multiple: true, value: d.distances, options: [['5k', '5K'], ['10k', '10K'], ['half', 'Half marathon'], ['full', 'Marathon']].map(([value, label]) => ({ value, label })),
+      onchange: (e) => { const v = e.target.value; d.distances = e.target.checked ? [...d.distances, v] : d.distances.filter((x) => x !== v); } })),
+    field('Other distances (km)', h('input', { maxlength: 40, placeholder: 'e.g. 3, 15', value: d.custom, oninput: (e) => { d.custom = e.target.value; } })),
+    clubs.length ? field('Put on by', h('select', { onchange: (e) => { d.club = e.target.value; } }, h('option', { value: '' }, 'Just me'), clubs.map((c) => h('option', { value: c.slug, selected: c.slug === d.club }, c.name))), null, 'Its admins can run the race with you, and it goes on the club\'s feed.') : null,
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Set it up')));
+    return form;
+  }
+
+  async function loadRace() {
+    try {
+      S.race = await api('GET', `/races/${S.route.id}`);
+      S.error = null;
+    } catch (e) {
+      S.error = e.message;
+    }
+    render();
+  }
+
+  function viewRace() {
+    const x = S.race;
+    if (!x || x.id !== S.route.id) return loading();
+    document.title = `${x.name} · Race`;
+    const post = (what, body, msg) => act(async () => { S.race = await api('POST', `/races/${x.id}/${what}`, body || {}); }, msg);
+    const share = () => shareSheet({ title: x.name, text: x.status === 'done' ? `${x.name} — results:` : `${x.name}, ${raceWhen(x.startsAt)} — enter on Tonament:`, url: `${location.origin}/race/${x.id}`, image: `/img/race/${x.id}.png` });
+    const tab = S.raceTab && x.events.some((e) => e.id === S.raceTab.ev) ? S.raceTab : { ev: (x.events.find((e) => e.finishers.length) || x.events[0]).id, filter: 'all' };
+    const ev = x.events.find((e) => e.id === tab.ev);
+    const enterForm = () => {
+      const d = (S.raceEnter ||= { event: x.events[0].id, gender: '', birthYear: '' });
+      return h('form', {
+        class: 'card form',
+        onsubmit: (e) => { e.preventDefault(); post('enter', { event: Number(d.event), gender: d.gender || 'x', birthYear: d.birthYear ? Number(d.birthYear) : null }, 'You\'re in — here\'s your bib 🏃'); S.raceEnter = null; },
+      },
+      h('h2', {}, 'Enter'),
+      groupField('Distance', choiceGroup({ name: 'raceEv', label: 'Distance', value: d.event, options: x.events.map((e) => ({ value: e.id, label: e.name })), onchange: (e) => { d.event = Number(e.target.value); } })),
+      groupField('Category', choiceGroup({ name: 'raceG', label: 'Category', value: d.gender, options: [{ value: 'f', label: 'Women' }, { value: 'm', label: 'Men' }, { value: 'x', label: 'Open' }], onchange: (e) => { d.gender = e.target.value; } })),
+      field('Year of birth', h('input', { type: 'number', min: 1920, max: new Date().getFullYear() - 5, inputmode: 'numeric', placeholder: '1990', value: d.birthYear, oninput: (e) => { d.birthYear = e.target.value; } }), null, 'For your age group'),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Enter the race')));
+    };
+    // The organisers' timing desk: bib and time, Enter, next.
+    const desk = () => {
+      const bib = h('input', { type: 'number', min: 1, required: true, inputmode: 'numeric', placeholder: 'Bib', 'aria-label': 'Bib', class: 'race-bib-in' });
+      const time = h('input', { required: true, placeholder: '41:12', inputmode: 'numeric', 'aria-label': 'Finish time' });
+      const f = h('form', {
+        class: 'race-desk',
+        onsubmit: (e) => {
+          e.preventDefault();
+          act(async () => {
+            const r = await api('POST', `/races/${x.id}/result`, { bib: Number(bib.value), time: time.value });
+            S.race = r.race; S.raceLast = r.saved;
+            setTimeout(() => { const el = document.querySelector('.race-bib-in'); if (el) el.focus(); }, 0);
+          });
+        },
+      }, bib, time, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save'));
+      const add = S.raceAdd;
+      return h('div', { class: 'card' },
+        h('div', { class: 'card-head' }, h('h2', {}, 'Timing'), h('span', { class: 'muted small' }, `${x.events.reduce((n, e) => n + e.finishers.length, 0)} of ${x.entries} in`)),
+        f,
+        S.raceLast ? h('p', { class: 'small' }, `✓ #${S.raceLast.bib} ${S.raceLast.name} — ${S.raceLast.dnf ? 'DNF' : S.raceLast.time || 'cleared'}`) : h('p', { class: 'muted small' }, 'Type the bib and the time as each runner finishes; Enter saves it.'),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn btn-small', onclick: () => { S.raceAdd = add ? null : { name: '', event: x.events[0].id, gender: 'x', birthYear: '' }; render(); } }, add ? 'Close' : '+ Add a runner'),
+          h('button', { class: 'btn btn-small btn-ghost', onclick: () => { const b = prompt('Bib that didn\'t finish (DNF)?'); if (b) act(async () => { const r = await api('POST', `/races/${x.id}/result`, { bib: Number(b), dnf: true }); S.race = r.race; S.raceLast = r.saved; }); } }, 'Mark a DNF'),
+          x.status === 'open' ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => post('status', { status: 'closed' }, 'Entries closed') }, 'Close entries') : x.status === 'closed' ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => post('status', { status: 'open' }, 'Entries open') }, 'Reopen entries') : null),
+        add ? h('form', {
+          class: 'form', style: 'margin-top:12px',
+          onsubmit: (e) => { e.preventDefault(); post('runners', { ...add, event: Number(add.event), birthYear: add.birthYear ? Number(add.birthYear) : null }, `${add.name} added`); S.raceAdd = { ...add, name: '', birthYear: '' }; },
+        },
+        field('Name', h('input', { required: true, maxlength: 60, value: add.name, oninput: (e) => { add.name = e.target.value; } })),
+        groupField('Distance', choiceGroup({ name: 'raceAddEv', label: 'Distance', value: add.event, options: x.events.map((e) => ({ value: e.id, label: e.name })), onchange: (e) => { add.event = Number(e.target.value); } })),
+        groupField('Category', choiceGroup({ name: 'raceAddG', label: 'Category', value: add.gender, options: [{ value: 'f', label: 'Women' }, { value: 'm', label: 'Men' }, { value: 'x', label: 'Open' }], onchange: (e) => { add.gender = e.target.value; } })),
+        field('Year of birth', h('input', { type: 'number', inputmode: 'numeric', value: add.birthYear, oninput: (e) => { add.birthYear = e.target.value; } })),
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add — next bib'))) : null,
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => confirm(x.status === 'done' ? 'Publish again with the latest times?' : 'Publish the results? Runners are told, and their times go on their runs.') && post('publish', {}, 'Results are out 🏁') }, x.status === 'done' ? 'Results are out ✓' : 'Publish results')),
+        x.runners.length ? h('details', { class: 'race-runners' }, h('summary', {}, `All runners (${x.runners.length})`),
+          h('table', {}, h('tbody', {}, x.runners.map((r) => h('tr', {}, h('td', { class: 'num' }, `#${r.bib}`), h('td', {}, r.name), h('td', { class: 'muted' }, r.event), h('td', { class: 'num' }, r.status === 'dnf' ? 'DNF' : r.time || '—')))))) : null);
+    };
+    const filtered = ev ? ev.finishers.filter((f) => tab.filter === 'all' || (tab.filter === 'm' || tab.filter === 'f' ? f.gender === tab.filter : f.ageGroup === tab.filter)) : [];
+    const groups = ev ? [...new Set(ev.finishers.map((f) => f.ageGroup).filter(Boolean))].sort((a, b) => x.ageGroups.indexOf(a) - x.ageGroups.indexOf(b)) : [];
+    const setTab = (t) => { S.raceTab = { ...tab, ...t }; render(); };
+    const r = x.me && x.me.result;
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: '/races' }, '← Races')),
+      h('div', { class: 'card challenge-head' },
+        h('p', { class: 'eyebrow' }, ['Race', x.events.map((e) => e.name).join(' · ')].join(' · ')),
+        h('h1', {}, x.name),
+        h('p', { class: 'muted small' }, [raceWhen(x.startsAt), [x.place, x.city].filter(Boolean).join(', '), x.club ? x.club.name : null].filter(Boolean).join(' · ')),
+        h('div', { class: 'actions' }, pill(...({ open: ['org', `${x.entries} in · entries open`], closed: ['waiting', `${x.entries} in · entries closed`], done: ['done', 'Results out'] }[x.status])), h('button', { class: 'btn btn-small', onclick: share }, 'Share'))),
+      // Organisers: the timing desk first.
+      x.can.manage ? desk() : null,
+      r ? h('div', { class: 'card cc-result' },
+        h('p', { class: 'eyebrow' }, `Your ${r.event}`),
+        h('div', { class: 'cc-score' }, h('strong', {}, `${ordinal(r.place)} of ${r.of}`), h('span', { class: 'cc-big' }, r.time)),
+        h('p', { class: 'muted small' }, [`${r.pace} /km`, r.genderName !== 'Open' ? `${ordinal(r.genderPlace)} of the ${r.genderName.toLowerCase()}` : null, r.groupPlace ? `${ordinal(r.groupPlace)} in ${r.ageGroup}` : null].filter(Boolean).join(' · ')),
+        r.post ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => shareSheet({ title: x.name, text: `${r.time} at ${x.name} (${r.event}) — ${ordinal(r.place)} of ${r.of} 🏁`, url: `${location.origin}/a/${r.post.id}`, image: r.post.public ? `/img/a/${r.post.id}.png` : null }) }, 'Share my result')) : null)
+        : x.me ? h('div', { class: 'card race-bib' }, h('p', { class: 'eyebrow' }, `You're in · ${x.me.event}`), h('div', { class: 'race-bib-no' }, `#${x.me.bib}`), h('p', { class: 'muted small' }, 'Your bib number. See you at the start.'),
+          x.can.withdraw ? h('button', { class: 'link-btn small', onclick: () => confirm('Withdraw from the race?') && post('withdraw', {}, 'You\'re out') }, 'Withdraw') : null)
+          : x.can.enter ? enterForm() : !S.me && x.status === 'open' ? h('div', { class: 'card' }, h('a', { class: 'btn btn-primary', href: `/signin?next=${encodeURIComponent(`/race/${x.id}`)}` }, 'Sign in to enter')) : null,
+      x.events.some((e) => e.finishers.length) ? h('div', { class: 'card' },
+        h('h2', {}, x.status === 'done' ? 'Results' : 'Results (only organisers see these until they\'re out)'),
+        x.events.length > 1 ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Distance' }, x.events.map((e) => h('button', { 'aria-pressed': String(e.id === tab.ev), onclick: () => setTab({ ev: e.id, filter: 'all' }) }, e.name))) : null,
+        h('div', { class: 'race-filters' }, [['all', 'All'], ['f', 'Women'], ['m', 'Men'], ...groups.map((g) => [g, g])].map(([v, l]) => h('button', { class: `btn btn-small${tab.filter === v ? ' btn-primary' : ' btn-ghost'}`, 'aria-pressed': String(tab.filter === v), onclick: () => setTab({ filter: v }) }, l))),
+        h('div', { class: 'table-wrap' }, h('table', { class: 'race-results' },
+          h('thead', {}, h('tr', {}, ['#', 'Runner', 'Time', 'Pace'].map((c, i) => h('th', { class: i > 1 ? 'num' : '' }, c)))),
+          h('tbody', {}, filtered.map((f) => h('tr', { class: S.me && x.me && x.me.bib === f.bib ? 'me' : '' },
+            h('td', {}, tab.filter === 'all' ? f.place : tab.filter === 'm' || tab.filter === 'f' ? f.genderPlace : f.groupPlace),
+            h('td', {}, f.handle ? h('a', { href: `/@${f.handle}` }, f.name) : f.name, h('small', { class: 'muted' }, ` · #${f.bib}${f.ageGroup ? ` · ${f.ageGroup}` : ''}`)),
+            h('td', { class: 'num' }, h('strong', {}, f.time)), h('td', { class: 'num muted' }, f.pace)))))),
+        ev && ev.dnf.length ? h('p', { class: 'muted small' }, `Did not finish: ${ev.dnf.map((d) => d.name).join(', ')}`) : null) : null,
+    ];
+  }
+
   // ---------- club runs: a club's weekly run, who's in, who ran
   const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const runWhen = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' }); // club run times are set in India time
@@ -7921,6 +8095,12 @@
       return d.winner
         ? ['🏆 ', club(d.winner, winSlug), ' beat ', club(d.loser, loseSlug), ' ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score), ` in a club v club ${d.kind === 'tie' ? 'tie' : 'friendly'}`]
         : ['🤝 ', club(d.from, d.fromSlug), ' and ', club(d.to, d.toSlug), ' drew ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score)];
+    }
+    if (x.verb === 'race') {
+      return ['🏁 ', who, ` finished the ${d.event} at `, h('a', { href: `/race/${d.race}` }, d.name), ' in ', h('span', { class: 'feed-score' }, d.time), ` — ${ordinal(d.place)} of ${d.of}`, d.groupPlace === 1 ? ` · 1st in ${d.ageGroup} 🥇` : ''];
+    }
+    if (x.verb === 'race_new') {
+      return ['🏁 ', who, ' put on ', h('a', { href: `/race/${d.race}` }, d.name), ` — ${d.distances.join(', ')}, ${raceWhen(d.at)}. Enter now.`];
     }
     if (x.verb === 'club_run') {
       const others = x.people.length - 1;
@@ -8859,7 +9039,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

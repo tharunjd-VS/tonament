@@ -829,11 +829,51 @@ CREATE TABLE IF NOT EXISTS club_run_people (
 );
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS club_run_id INTEGER;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS on_date DATE;
+-- v44: races. An organiser (or a club) sets up a race with distances;
+-- runners enter and get bibs; the organiser enters finish times by bib;
+-- publishing ranks them (overall, gender, age group), turns each finisher's
+-- time into a run and posts it to the feed.
+CREATE TABLE IF NOT EXISTS races (
+  id           SERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  org_id       INTEGER REFERENCES orgs(id) ON DELETE SET NULL,
+  starts_at    TIMESTAMPTZ NOT NULL,
+  place        TEXT NOT NULL,
+  city         TEXT,
+  visibility   TEXT NOT NULL DEFAULT 'public',   -- public | link
+  status       TEXT NOT NULL DEFAULT 'open',     -- open | closed | done
+  created_by   INTEGER NOT NULL,
+  published_at TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS race_events (
+  id         SERIAL PRIMARY KEY,
+  race_id    INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  distance_m INTEGER NOT NULL,
+  position   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS race_entries (
+  id         SERIAL PRIMARY KEY,
+  race_id    INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+  event_id   INTEGER NOT NULL REFERENCES race_events(id) ON DELETE CASCADE,
+  user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  name       TEXT NOT NULL,
+  gender     TEXT NOT NULL DEFAULT 'x',          -- m | f | x
+  birth_year INTEGER,
+  bib        INTEGER NOT NULL,
+  finish_s   INTEGER,
+  status     TEXT NOT NULL DEFAULT 'entered',    -- entered | finished | dnf
+  run_id     INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (race_id, bib)
+);
+CREATE INDEX IF NOT EXISTS race_entries_user ON race_entries(user_id);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 43;
+const SCHEMA_VERSION = 44;
 
 async function migrate(db) {
   try {

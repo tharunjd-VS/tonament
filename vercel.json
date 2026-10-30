@@ -72,6 +72,18 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/race/:id(\\d{1,12})",
+      "destination": "/api/index?__path=racepage/:id"
+    },
+    {
+      "source": "/races",
+      "destination": "/api/index?__path=app"
+    },
+    {
+      "source": "/races/new",
+      "destination": "/api/index?__path=app"
+    },
+    {
       "source": "/runs",
       "destination": "/api/index?__path=app"
     },
@@ -120,7 +132,7 @@
       "destination": "/api/index?__path=item/:id"
     },
     {
-      "source": "/img/:kind(a|club|p|t|ladder|goal|cc|season)/:file",
+      "source": "/img/:kind(a|club|p|t|ladder|goal|cc|season|race)/:file",
       "destination": "/api/index?__path=img/:kind/:file"
     },
     {

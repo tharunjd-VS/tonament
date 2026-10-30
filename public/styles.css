@@ -1621,3 +1621,14 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .run-stat strong { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
 .run-board li { display: flex; justify-content: space-between; gap: 8px; }
 .run-board li.me { background: var(--accent-soft); border-radius: 8px; }
+
+/* Races */
+.race-bib { text-align: center; }
+.race-bib-no { font-size: 3.5rem; font-weight: 800; letter-spacing: 0.02em; font-variant-numeric: tabular-nums; margin: 6px auto; padding: 8px 24px; display: inline-block; border-radius: 12px; background: var(--accent); color: var(--on-accent); }
+.race-desk { display: grid; grid-template-columns: 90px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.race-desk input { font-size: 1.2rem; font-variant-numeric: tabular-nums; }
+.race-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.race-results td:nth-child(2) { white-space: normal; width: 100%; }
+.race-results tr.me td { background: var(--accent-soft); }
+.race-runners { margin-top: 12px; }
+.race-runners summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
