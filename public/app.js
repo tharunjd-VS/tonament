@@ -429,7 +429,7 @@
   }
 
   const hasExtras = (t) => Boolean(t.notes || perkLabels(t).length || t.events.some((e) => (e.prizes || []).length));
-  const hasPage = (t) => Boolean(t.about || t.photos.length || Object.values(t.pageLinks || {}).some(Boolean) || hasExtras(t));
+  const hasPage = (t) => Boolean(t.about || t.photos.length || Object.values(t.pageLinks || {}).some(Boolean) || hasExtras(t) || (t.config && t.config.latePolicy));
 
   // ----- prizes, what's included and other details (for players)
   const PRIZE_ICON = { winner: '🥇', runner_up: '🥈', semis: '🥉', third: '🥉' };
@@ -461,7 +461,9 @@
     const L = t.pageLinks || {};
     const links = [['website', 'Website'], ['instagram', 'Instagram'], ['whatsapp', 'WhatsApp group']].filter(([k]) => L[k]);
     const photos = t.photos.filter((p) => !p.hidden);
+    const late = t.config && t.config.latePolicy ? h('div', { class: 'card' }, h('h2', {}, 'If you\'re late'), lateWords(latePolicy(t)).map((x) => h('p', { class: 'small' }, x))) : null;
     return [
+      late,
       t.about || links.length
         ? h('div', { class: 'card about-card' },
           h('h2', {}, 'About'),
@@ -3075,6 +3077,65 @@
       h('div', { class: 'actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: leave }, 'Withdraw my entry')));
   }
 
+  // ---------- latecomers (server/latecomers.js): the published policy, and the fair options
+  const LATE_DEFAULT = { lateUntil: 'groups', groupChoice: 'even', graceMinutes: 15 };
+  const latePolicy = (t) => ({ ...LATE_DEFAULT, ...((t.config && t.config.latePolicy) || {}) });
+  function lateWords(p) {
+    const join = { groups: 'Late entries and players who miss the draw can join during the group stage', half: 'Late entries and players who miss the draw can join a group until it is half played', never: 'No one can join after the draw is made' }[p.lateUntil];
+    const where = p.lateUntil === 'never' ? '' : p.groupChoice === 'even' ? ' — into the group with the fewest players, so groups stay even' : ' — into the group that has played the fewest matches, so there\'s time to catch up';
+    return [`${join}${where}.`, `A player more than ${p.graceMinutes} minutes late for a called match can be given a walkover.`];
+  }
+  // Fetches the options and shows them; pick(option) applies the chosen one.
+  async function lateOptionsSheet(t, title, query, pick) {
+    let r;
+    try { r = await api('GET', `${tPath(t)}/late-options?${new URLSearchParams(query)}`, undefined, t.id); } catch (e) { toast(e.message, true); return; }
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const effects = (o) => [
+      o.matchesAdded ? `+${o.matchesAdded} match${o.matchesAdded === 1 ? '' : 'es'}` : null,
+      o.extraMinutes ? `about ${o.extraMinutes} min more play` : null,
+      o.sizeAfter ? `group of ${o.sizeAfter}` : null,
+      o.total ? `${o.played} of ${o.total} played` : null,
+    ].filter(Boolean).join(' · ');
+    const box = h('div', { class: 'sheet-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': title, onclick: (e) => { if (e.target === box) close(); } },
+      h('div', { class: 'sheet action-sheet late-sheet' },
+        h('h2', {}, title),
+        r.options.length ? h('div', { class: 'sheet-actions' }, r.options.map((o) => h('button', {
+          type: 'button', class: `sheet-action late-option${o.recommended ? ' recommended' : ''}`, disabled: !o.allowed,
+          onclick: () => { close(); pick(o); },
+        },
+        h('span', {}, o.label, o.recommended ? [' ', pill('org', 'Recommended')] : null),
+        effects(o) ? h('small', { class: 'muted' }, effects(o)) : null,
+        o.why ? h('small', { class: o.allowed ? 'muted' : 'muted strike-why' }, o.why) : null,
+        (o.notes || []).length ? h('small', { class: 'muted' }, `Note: ${o.notes.join('; ')}`) : null))) : null,
+        !r.allowed && r.rule ? h('p', { class: 'banner info small' }, r.rule) : null,
+        h('details', { class: 'fold' }, h('summary', {}, h('span', {}, h('strong', {}, 'Your late-arrival policy'))), r.says.map((x) => h('p', { class: 'muted small' }, x)),
+          h('p', { class: 'muted small' }, 'Options are worked out from group sizes, matches played and time only — never who the players are. Change the policy in Setup › Late arrivals.')),
+        h('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel')));
+    document.body.append(box);
+    document.addEventListener('keydown', onKey);
+  }
+
+  // Setup › Late arrivals: the policy, in plain words, shown to players.
+  function latePolicyCard(t) {
+    const p = latePolicy(t);
+    const d = (S.lateDraft && S.lateDraft.t === t.id) ? S.lateDraft : (S.lateDraft = { t: t.id, ...p });
+    const save = () => act(async () => { S.t = await api('PATCH', tPath(t), { latePolicy: { lateUntil: d.lateUntil, groupChoice: d.groupChoice, graceMinutes: Number(d.graceMinutes) } }, t.id); S.lateDraft = null; }, 'Late-arrival policy saved');
+    return h('div', { class: 'card' },
+      h('h2', {}, 'Late arrivals'),
+      h('p', { class: 'muted small' }, 'Decide now, before the day — it\'s shown to players on the tournament page, and the options you\'re offered on the day follow it.'),
+      groupField('Who can join after the draw', choiceGroup({ name: 'lateUntil', label: 'Who can join after the draw', value: d.lateUntil, options: [
+        { value: 'groups', label: 'During the group stage' }, { value: 'half', label: 'Until a group is half played' }, { value: 'never', label: 'No one' },
+      ], onchange: (e) => { d.lateUntil = e.target.value; render(); } })),
+      d.lateUntil !== 'never' ? groupField('Which group', choiceGroup({ name: 'groupChoice', label: 'Which group', value: d.groupChoice, options: [
+        { value: 'even', label: 'Keep groups even' }, { value: 'progress', label: 'Most time to catch up' },
+      ], onchange: (e) => { d.groupChoice = e.target.value; render(); } })) : null,
+      field('Walkover after (minutes late)', h('input', { type: 'number', min: 5, max: 60, value: d.graceMinutes, oninput: (e) => { d.graceMinutes = e.target.value; } })),
+      h('div', { class: 'banner info small late-words' }, lateWords({ ...d, graceMinutes: Number(d.graceMinutes) || 15 }).map((x) => h('p', {}, x))),
+      !t.config.lateEntry ? h('p', { class: 'hint' }, 'Late entries (new players after the draw) are also switched on or off on the Players tab once it starts; players who entered but missed the draw follow this policy.') : null,
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'button', onclick: save }, 'Save')));
+  }
+
   function lateEntryCard(t) {
     const setLate = (on) => act(async () => { S.t = await api('PATCH', tPath(t), withEv(t, { lateEntry: on }), t.id); }, on ? 'Late entries allowed' : 'Late entries switched off');
     if (!t.config.lateEntry) {
@@ -3091,9 +3152,6 @@
         : 'They join the smallest group (or the one you pick) and get catch-up matches against everyone in it.'
       : knockoutOnly ? 'They take a first-round bye and play the seed who had it.' : null;
     const input = h('input', { name: 'name', required: true, maxlength: 60, placeholder: 'Player or pair name', autocomplete: 'off' });
-    const pick = groupsStage ? h('select', { name: 'group', 'aria-label': 'Group' },
-      h('option', { value: '' }, poolsOn(t) ? 'Group: by level' : 'Group: smallest'),
-      t.groups.map((g) => h('option', { value: g.no }, `${g.name}${g.pool ? ` · ${g.pool}` : ''}`))) : null;
     const lv = groupsStage && poolsOn(t) ? h('select', { name: 'level', 'aria-label': 'Level' },
       h('option', { value: '' }, 'Level'), playerLevels(t).map((l) => h('option', { value: l }, l))) : null;
     return h('div', { class: 'card' },
@@ -3105,11 +3163,16 @@
           class: 'team-form',
           onsubmit: (e) => {
             e.preventDefault();
-            const name = input.value;
-            const extra = { ...(pick && pick.value !== '' && { group: Number(pick.value) }), ...(lv && lv.value && { level: lv.value }) };
-            act(async () => { S.t = await api('POST', `${tPath(t)}/late-entry`, withEv(t, { name, ...extra }), t.id); }, `${name} added`);
+            const name = input.value.trim();
+            if (!name) return;
+            const level = lv && lv.value ? { level: lv.value } : {};
+            // The fair options under the policy; the organiser picks one.
+            lateOptionsSheet(t, `Where should ${name} go?`, { kind: 'late', event: t.eventId, ...level }, (o) => act(async () => {
+              S.t = await api('POST', `${tPath(t)}/late-entry`, withEv(t, { name, ...level, ...(o.action === 'group' && { group: o.group }) }), t.id);
+              input.value = '';
+            }, `${name} added${o.label ? ` — ${o.label}` : ''}`));
           },
-        }, input, pick, lv, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add late entry'))
+        }, input, lv, h('button', { class: 'btn btn-primary', type: 'submit' }, 'See options'))
         : null,
       h('p', { class: 'muted small', style: 'margin:8px 0 0' },
         how || 'The knockout has started — late entries could only join during the group stage.'),
@@ -3165,24 +3228,11 @@
   }
   // Entered, but missed the draw: into a group with catch-up matches (or a bye).
   function arrivedPicker(t, e) {
-    if (S.arriving !== e.id) {
-      return h('button', { class: 'btn btn-small btn-primary', onclick: () => { S.arriving = e.id; render(); } }, 'Arrived');
-    }
-    const league = t.status === 'league';
-    const pick = league ? h('select', { 'aria-label': 'Group' },
-      h('option', { value: '' }, poolsOn(t) && e.level ? `By level (${e.level})` : 'Smallest group'),
-      t.groups.map((g) => h('option', { value: g.no }, `${g.name}${g.pool ? ` · ${g.pool}` : ''}`))) : null;
-    return h('span', { class: 'arrive-form' }, pick,
-      h('button', {
-        class: 'btn btn-small btn-primary',
-        onclick: () => act(async () => {
-          S.t = await api('POST', `${tPath(t)}/entries/${e.id}/arrive`, pick && pick.value !== '' ? { group: Number(pick.value) } : {}, t.id);
-          S.arriving = null;
-        }, league ? `${e.name} added — catch-up matches are in the order of play` : `${e.name} added to the draw`),
-      }, 'Add to draw'),
-      h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.arriving = null; render(); } }, 'Cancel'));
+    // The fair options under the late-arrival policy, then the organiser's pick.
+    return h('button', { class: 'btn btn-small btn-primary', onclick: () => lateOptionsSheet(t, `${e.name} has arrived`, { kind: 'arrive', entry: e.id }, (o) => act(async () => {
+      S.t = await api('POST', `${tPath(t)}/entries/${e.id}/arrive`, o.action === 'group' ? { group: o.group } : {}, t.id);
+    }, t.status === 'league' ? `${e.name} is in ${o.label} — catch-up matches are in the order of play` : `${e.name} added to the draw`)) }, 'Arrived');
   }
-
   function withdrawEntry(t, e) {
     if (!confirm(`Withdraw ${e.name}? Their remaining matches become walkovers. This can't be undone.`)) return;
     act(async () => { S.t = await api('POST', `${tPath(t)}/entries/${e.id}/withdraw`, {}, t.id); }, `${e.name} withdrawn`);
@@ -3751,6 +3801,7 @@
     ['prizes', 'Prizes'],
     ['events', 'Events'],
     ['page', 'Public page'],
+    ['late', 'Late arrivals'],
     ['team', 'Team & links'],
   ];
   const SETUP_PER_EVENT = ['format', 'prizes'];
@@ -3772,6 +3823,8 @@
       body = [prizeSettingsCard(t)];
     } else if (section === 'events') {
       body = panelEvents(t);
+    } else if (section === 'late') {
+      body = [latePolicyCard(t)];
     } else if (section === 'page') {
       open('page');
       body = [pageCard(t)];
@@ -3972,9 +4025,12 @@
                     : { label: 'Unpin', hint: 'Back in the usual order', onClick: () => pin(x.match, false) },
                   ...(t.can.manage ? awayIn(x).map((e) => {
                     const other = x.match.a && x.match.a.id === e.id ? x.match.b : x.match.a;
+                    const walkover = () => act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${x.match.id}/walkover`, { winner: other.id === x.match.a.id ? 'a' : 'b' }, t.id); }, `Walkover to ${other.name}`);
                     return {
-                      label: `Walkover to ${other.name}`, hint: `${e.name} never came`, danger: true,
-                      onClick: () => confirm(`${e.name} never came? Give the match to ${other.name} as a walkover.`) && act(async () => { S.t = await api('POST', `${tPath(t)}/matches/${x.match.id}/walkover`, { winner: other.id === x.match.a.id ? 'a' : 'b' }, t.id); }, `Walkover to ${other.name}`),
+                      label: `${e.name} is late — what now?`, hint: 'Wait, or a walkover, by your policy',
+                      onClick: () => lateOptionsSheet(t, `${e.name} hasn't come`, { kind: 'noshow', match: x.match.id, entry: e.id }, (o) => {
+                        if (o.action === 'walkover') walkover();
+                      }),
                     };
                   }) : []),
                 ]))

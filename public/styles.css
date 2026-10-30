@@ -1823,3 +1823,10 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .credits-line { margin: 0; }
 .credits-line.low, .muted.low { color: var(--accent-text); font-weight: 600; }
 .plain-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+
+/* ---------- latecomers: the options under the policy */
+.late-sheet .sheet-actions { max-height: 60vh; overflow: auto; }
+.late-option { text-align: left; }
+.late-option.recommended { box-shadow: inset 3px 0 0 var(--accent); }
+.late-option:disabled { opacity: 0.6; }
+.late-words p { margin: 0 0 4px; }

@@ -303,6 +303,8 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
     ['POST', `${T}/entries/${N}/leave`, (c, id, eid) => svc.leave(id, c.actor, eid)],
     ['POST', `${T}/entries/${N}/withdraw`, (c, id, eid) => svc.withdraw(id, c.actor, eid)],
     ['POST', `${T}/late-entry`, (c, id) => svc.lateEntry(id, c.actor, { ...c.body, event: ev(c) })],
+    // The fair options for a latecomer or a no-show, under the late-arrival policy.
+    ['GET', `${T}/late-options`, (c, id) => svc.lateOptions(id, c.actor, { kind: c.query.get('kind'), entry: c.query.get('entry'), event: c.query.get('event') || undefined, match: c.query.get('match'), level: c.query.get('level') })],
     ['POST', `${T}/redraw`, (c, id) => svc.redraw(id, c.actor, { event: ev(c) })],
     ['PUT', `${T}/entries/order`, (c, id) => svc.reorderEntries(id, c.actor, c.body.ids, { event: ev(c) })],
     ['DELETE', `${T}/entries/${N}`, (c, id, eid) => svc.removeEntry(id, c.actor, eid)],

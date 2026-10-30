@@ -35,6 +35,7 @@ const { createMeets } = require('./meets');
 const { createChamps } = require('./champs');
 const { createHonours } = require('./honours');
 const rallyTimes = require('./rally-times');
+const latecomers = require('./latecomers');
 const R = require('./rankings');
 const { createGoals } = require('./goals');
 const { createTies } = require('./ties');
@@ -52,7 +53,7 @@ const MAX_ENTRIES = 128;
 const VISIBILITY = ['private', 'link', 'public'];
 // Settings that belong to the tournament as a whole; everything else in a
 // config (format details, scoring, caps) belongs to each event.
-const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt'];
+const TOURNAMENT_KEYS = ['selfEntry', 'entriesCloseAt', 'latePolicy'];
 const EVENT_KEYS = ['tie', 'format', 'groups', 'groupSize', 'qualifiers', 'scoring', 'maxEntries', 'lateEntry', 'fee', 'partners', 'balancePairs', 'prizes', 'leagueDraws', 'discipline', 'gender', 'age', 'level', 'ranked', 'dupr', 'duprMin', 'duprMax', 'pools', 'poolOrder', 'feePer'];
 // Event settings that can still change once the event has started.
 const LIVE_EVENT_KEYS = ['lateEntry', 'prizes', 'ranked', 'poolOrder', 'fee', 'feePer'];
@@ -1392,6 +1393,8 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
       const config = { ...t.config };
       if (input.selfEntry !== undefined) config.selfEntry = Boolean(input.selfEntry);
       if (input.entriesCloseAt !== undefined) config.entriesCloseAt = closeTime(input.entriesCloseAt);
+      // The late-arrival policy (latecomers.js), shown to players.
+      if (input.latePolicy !== undefined) config.latePolicy = latecomers.policyOf(input.latePolicy);
       await q('UPDATE tournaments SET name = $1, config = $2::jsonb WHERE id = $3', [name, JSON.stringify(config), t.id]);
       t.config = config;
       await saveDetails(q, t, details);
@@ -2652,6 +2655,56 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     });
   }
 
+  // The group-stage options for a latecomer: sizes, progress, time, policy.
+  async function lateGroupOptions(q, t, all, level = null) {
+    const counts = await q(
+      `SELECT group_no, COUNT(*) FILTER (WHERE status = 'done')::int AS played, COUNT(*) FILTER (WHERE status <> 'bye')::int AS total
+       FROM matches WHERE event_id = $1 AND stage = 'league' GROUP BY group_no`, [t.eventId]);
+    const gp = t.config.groupPools || [];
+    const groups = Array.from({ length: t.config.groups }, (_, g) => {
+      const c = counts.find((r) => r.group_no === g) || { played: 0, total: 0 };
+      return { no: g, name: `Group ${String.fromCharCode(65 + g)}`, active: all.filter((e) => e.group_no === g && e.in_draw && !e.withdrawn).length, played: c.played, total: c.total, pool: (gp[g] || {}).label || null };
+    });
+    return latecomers.groupOptions({
+      groups, policy: t.config.latePolicy, level, poolsOn: gp.length > 0,
+      matchMinutes: (t.courts && t.courts.minutes) || 20, courts: (t.courts && t.courts.names && t.courts.names.length) || 1,
+    });
+  }
+
+  // What can be done for a latecomer (kind 'late' or 'arrive', with entry),
+  // or a player missing from a called match (kind 'noshow', with match and
+  // side): the options with their effects, best first, and the policy.
+  async function lateOptions(id, actor, input = {}) {
+    return db.tx(async (q) => {
+      const { t: row } = await lockWith(q, id, actor, 'manage');
+      const policy = latecomers.policyOf(row.config.latePolicy);
+      const out = { policy, says: latecomers.describe(policy) };
+      if (input.kind === 'noshow') {
+        const [m] = await q('SELECT * FROM matches WHERE id = $1 AND tournament_id = $2', [Number(input.match) || 0, row.id]);
+        if (!m) fail(404, 'Match not found');
+        // Late since they were marked "Not here", else since the match was called.
+        const [e] = input.entry ? await q('SELECT away_since FROM entries WHERE id = $1 AND tournament_id = $2', [Number(input.entry), row.id]) : [];
+        const since = e && e.away_since ? Date.parse(e.away_since) : m.called_at ? Date.parse(m.called_at) : null;
+        const minutesLate = since ? Math.max(0, Math.floor((Date.now() - since) / 60000)) : 0;
+        return { ...out, minutesLate, ...latecomers.noShowOptions({ minutesLate, policy }) };
+      }
+      let t;
+      if (input.entry) t = await eventOfEntry(q, row, input.entry);
+      else t = await eventFor(q, row, input.event);
+      if (t.status === 'setup') return { ...out, allowed: true, rule: 'The draw hasn\'t been made — just add them to the entries.', options: [] };
+      const all = await entriesOf(q, t);
+      if (t.status === 'league') {
+        let level = null;
+        if (input.entry) level = ((await q('SELECT level FROM entries WHERE id = $1', [Number(input.entry)]))[0] || {}).level || null;
+        else if (input.level) level = levelIn(t, input.level);
+        return { ...out, ...(await lateGroupOptions(q, t, all, level)) };
+      }
+      if (t.format !== 'knockout') return { ...out, allowed: false, rule: 'The knockout has started — latecomers can only join during the group stage.', options: [] };
+      const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM matches m WHERE m.event_id = $1 AND m.stage = 'knockout' AND m.round = 1 AND m.status = 'bye'`, [t.eventId]);
+      return { ...out, ...latecomers.byeOptions({ byes: n, policy }) };
+    });
+  }
+
   // Puts a latecomer into the event: in the league, a group (the one picked,
   // else their level's pool, else the smallest) with catch-up matches against
   // everyone in it; in a knockout-only event, a first-round bye.
@@ -2659,31 +2712,25 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
   async function placeLate(q, t, all, input, place) {
     const wanted = given(input.group) ? Number(input.group) : null;
     if (t.status === 'league') {
-      const done = new Map(
-        (await q(
-          `SELECT group_no, COUNT(*)::int AS n FROM matches WHERE event_id = $1 AND stage = 'league' AND status = 'done' GROUP BY group_no`,
-          [t.eventId],
-        )).map((r) => [r.group_no, r.n]),
-      );
       const groups = Array.from({ length: t.config.groups }, (_, g) => ({
         g,
         members: all.filter((e) => e.group_no === g && e.in_draw),
       }));
-      const active = (x) => x.members.filter((e) => !e.withdrawn).length;
-      groups.sort((x, y) => active(x) - active(y) || (done.get(x.g) || 0) - (done.get(y.g) || 0) || x.g - y.g);
       const level = levelIn(t, input.level);
       const gp = t.config.groupPools || [];
+      // The options under the tournament's late-arrival policy (latecomers.js):
+      // the organiser's pick if the policy allows it, else the recommended one.
+      const { options, rule } = await lateGroupOptions(q, t, all, level);
       let choice;
       if (wanted !== null) {
-        // The organiser's pick (a spot entry put where they belong).
+        const o = options.find((x) => x.group === wanted);
+        if (!o) fail(400, 'Pick one of the groups');
+        if (!o.allowed) fail(409, o.why);
         choice = groups.find((x) => x.g === wanted);
-        if (!choice) fail(400, 'Pick one of the groups');
-      } else if (level && gp.length) {
-        // Their level's pool: its smallest group.
-        choice = groups.find((x) => (gp[x.g] || {}).label && gp[x.g].label.split(' & ').includes(level));
-        if (!choice) fail(400, `There's no ${level} pool — pick a group for them`);
       } else {
-        choice = groups[0];
+        const best = options.find((x) => x.recommended);
+        if (!best) fail(409, rule || 'No group can take them');
+        choice = groups.find((x) => x.g === best.group);
       }
       const { g, members } = choice;
       const ownLevel = level || (gp[g] && !gp[g].label.includes(' & ') ? gp[g].label : null);
@@ -2703,6 +2750,7 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     }
 
     if (t.format !== 'knockout') fail(409, 'The knockout has started — latecomers can only join during the group stage');
+    if (latecomers.policyOf(t.config.latePolicy).lateUntil === 'never') fail(409, 'Your policy: no one joins after the draw.');
     const byes = await q(
       `SELECT * FROM matches WHERE event_id = $1 AND stage = 'knockout' AND round = 1 AND status = 'bye' ORDER BY slot`,
       [t.eventId],
@@ -4482,6 +4530,7 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     matchCard,
     eventCard,
     saveTemplate,
+    lateOptions,
     createFromDraft,
     importPreview,
     importEntries,
