@@ -858,6 +858,17 @@
         if (qs && !params.toString()) history.replaceState(null, '', `/?${qs}`); // remembered search
         render();
         if (S.me) api('GET', '/feed').then((f) => { S.feed = f; if (S.route.name === 'home') render(); }, () => { S.feed = { items: [] }; });
+        // What the signed-in home needs to know: are you new, what's next, what's near.
+        if (S.me) {
+          Promise.all([
+            api('GET', '/me/groups').catch(() => []), api('GET', '/clubs/mine').catch(() => []), api('GET', '/runs').catch(() => null),
+            api('GET', '/goals').catch(() => null), api('GET', '/me/profile').catch(() => null), api('GET', '/races').catch(() => null),
+            api('GET', '/meets').catch(() => null), api('GET', '/clubs').catch(() => []), api('GET', '/challenges').catch(() => null),
+          ]).then(([groups, clubs, runs, goals, profile, races, meets, clubsFound, challenges]) => {
+            S.homeData = { groups, clubs, runs, goals, profile, races, meets, clubsFound, challenges };
+            if (S.route.name === 'home') render();
+          });
+        }
         [S.list, S.mine, S.myEntries, S.interest, S.places] = await Promise.all([
           api('GET', `/tournaments?${filterQuery(S.filters, true)}`).catch((e) => { S.error = e.message; return []; }),
           S.me ? api('GET', '/me/tournaments').catch(() => []) : null,
@@ -1064,6 +1075,7 @@
     applyBranding(['tournament', 'match', 'display'].includes(S.route.name) && S.t && !S.error ? S.t.branding : null);
     renderNav();
     renderHubs();
+    renderSidebar();
     refreshBell();
   }
 
@@ -1125,7 +1137,11 @@
     const ch = P && P.challenges;
     const goals = P && P.goals ? P.goals.active : [];
     const needs = ch ? [...ch.incoming.map((x) => [x, 'Answer']), ...ch.toPlay.map((x) => [x, 'Play']), ...(ch.toConfirm || []).map((x) => [x, 'Confirm'])] : [];
-    return [
+    const needsCard = needs.length ? railCard('Needs you',
+      h('ul', { class: 'rail-list' }, needs.slice(0, 6).map(([x, what]) => h('li', {}, h('span', { 'aria-hidden': 'true' }, '⚔️'),
+        h('a', { href: `/c/${x.id}` }, `${sideNames(x.a)} v ${sideNames(x.b)}`), h('small', { class: 'muted' }, `${x.sport.name} · ${what}`))))) : null;
+    const goalsCard = goals.length ? railCard('Your goals', h('div', { class: 'card-list' }, goals.slice(0, 3).map(goalCard)), h('a', { class: 'btn btn-small btn-ghost', href: '/goals' }, 'All')) : null;
+    return withRail([
       h('h1', {}, 'Play'),
       h('p', { class: 'muted' }, 'Keep playing between events — with your regulars, your friends and your club. Every game counts towards your rating, goals and profile.'),
       h('div', { class: 'hub-grid' },
@@ -1133,14 +1149,10 @@
         hubTile('⚔️', 'Challenges', 'Take on a friend; the loser confirms and ratings move', ch ? `${ch.incoming.length} to answer · ${ch.toPlay.length} to play` : null, '/challenges'),
         hubTile('🎯', 'Goals', '30 games this month, 100 km — alone, with friends or your club', P && P.goals ? `${goals.length} on` : null, '/goals'),
         hubTile('🏃', 'Runs', 'Log runs, beat your bests, top the week with friends', P && P.runs ? `${P.runs.week.km} km this week` : null, '/runs')),
-      needs.length ? h('section', { class: 'section' }, h('h2', {}, 'Needs you'),
-        h('ul', { class: 'card cc-list' }, needs.slice(0, 6).map(([x, what]) => h('li', {},
-          h('a', { href: `/c/${x.id}` }, h('strong', {}, `${sideNames(x.a)} v ${sideNames(x.b)}`)), h('span', { class: 'muted small' }, ` · ${x.sport.name}`), pill('org', what))))) : null,
-      goals.length ? h('section', { class: 'section' }, h('h2', {}, 'Your goals'), h('div', { class: 'card-list' }, goals.slice(0, 3).map(goalCard))) : null,
       P && P.groups.length ? h('section', { class: 'section' }, h('h2', {}, 'Your groups'),
         h('ul', { class: 'card cc-list' }, P.groups.slice(0, 6).map((g) => h('li', {}, h('a', { href: `/g/${g.slug}` }, h('strong', {}, g.name)), h('span', { class: 'muted small' }, ` · ${g.sportName}${g.city ? ` · ${g.city}` : ''} · ${g.members} members`))))) : null,
       P == null ? loading() : null,
-    ];
+    ], [needsCard, goalsCard]);
   }
 
   function viewCompete() {
@@ -1150,10 +1162,6 @@
     const go = (t) => navigate(t === 'tournaments' ? '/compete' : `/compete?tab=${t}`);
     const body = {
       tournaments: () => [
-        S.me && S.myEntries && S.myEntries.length ? h('section', { class: 'section' }, h('h2', {}, 'My entries'), h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
-        S.me && S.mine && S.mine.length ? h('section', { class: 'section' },
-          h('div', { class: 'card-head' }, h('h2', {}, 'Tournaments I run'), h('a', { class: 'btn btn-small btn-primary', href: '/new' }, '+ Tournament')),
-          h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role])))) : null,
         findSection(),
         S.me && S.mine && !S.mine.length ? h('div', { class: 'card hub-cta' }, h('strong', {}, 'Run your own tournament'), h('p', { class: 'muted small' }, 'Entries and UPI fees, groups and knockouts, an order of play and live scores. Free for up to 16 entries.'), h('a', { class: 'btn btn-primary', href: '/new' }, 'Create a tournament')) : null,
       ],
@@ -1161,34 +1169,49 @@
       meets: () => viewMeets(true),
       racing: () => viewChamps(true),
     }[tab]();
-    return [
+    const mineRail = tab === 'tournaments' && S.me ? [
+      S.myEntries && S.myEntries.length ? railCard('My entries', h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
+      S.mine && S.mine.length ? railCard('Tournaments I run', h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role]))), h('a', { class: 'btn btn-small btn-primary', href: '/new' }, '+ Tournament')) : null,
+    ] : null;
+    return withRail([
       h('h1', {}, 'Compete'),
       h('p', { class: 'muted' }, 'Find an event and enter, follow it live, or run your own — tournaments, races, track and pool meets, and racing.'),
       h('div', { class: 'seg hub-seg', role: 'group', 'aria-label': 'Kind of event' }, tabs.map(([id, label]) => h('button', { 'aria-pressed': String(tab === id), onclick: () => go(id) }, label))),
       body,
-    ];
+    ], mineRail);
   }
 
+  // The account's links: the avatar menu and the You page share them.
+  function accountItems() {
+    const me = S.me;
+    return [
+      [
+        { href: '/me/profile', label: 'Your profile', hint: 'Results, ratings, the club you represent' },
+        { href: '/notifications', label: 'Notifications', hint: 'What\'s new, and how you\'re told' },
+        { href: '/compete', label: 'My entries and tournaments', hint: 'Everything you\'ve entered or run' },
+      ],
+      [
+        ...(S.myOrgs || []).map((o) => ({ href: `/@${o.slug}/edit`, label: o.name, hint: o.live ? 'Your public page' : 'Your page (draft)' })),
+        S.billing && S.billing.enabled ? { href: '/invite', label: 'Invite organisers 🎁', hint: 'Their first tournament free; a free upgrade for you' } : null,
+        me.isAdmin ? { href: '/admin', label: 'Admin', hint: 'Site administration' } : null,
+      ].filter(Boolean),
+      [
+        canInstall() ? { label: 'Install the app', hint: 'On your home screen, works offline', onClick: () => installApp() } : null,
+        { label: 'Sign out', onClick: signOut },
+      ].filter(Boolean),
+    ].filter((g) => g.length);
+  }
   function viewYou() {
     document.title = 'You · Tonament';
     const me = S.me;
-    const row = (href, label, hint, onClick) => h(href ? 'a' : 'button', { class: 'you-row', ...(href ? { href } : { type: 'button', onclick: onClick }) }, h('span', {}, label), hint ? h('small', { class: 'muted' }, hint) : null);
+    const row = (it) => h(it.href ? 'a' : 'button', { class: 'you-row', ...(it.href ? { href: it.href } : { type: 'button', onclick: it.onClick }) }, h('span', {}, it.label), it.hint ? h('small', { class: 'muted' }, it.hint) : null);
+    const groups = accountItems();
     return [
       h('div', { class: 'card you-head' },
-        h('span', { class: 'avatar big', 'aria-hidden': 'true' }, me.name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()),
+        h('span', { class: 'avatar big', 'aria-hidden': 'true' }, initialsOf(me.name)),
         h('div', {}, h('h1', {}, me.name), h('p', { class: 'muted small' }, me.email))),
-      h('div', { class: 'card you-list' },
-        row('/me/profile', 'Your profile', 'Results, ratings, the club you represent'),
-        row('/notifications', 'Notifications', 'What\'s new, and how you\'re told'),
-        row('/compete', 'My entries and tournaments', 'Everything you\'ve entered or run')),
-      (S.myOrgs || []).length || me.isAdmin || (S.billing && S.billing.enabled) ? h('div', { class: 'card you-list' },
-        (S.myOrgs || []).map((o) => row(`/@${o.slug}/edit`, o.name, o.live ? 'Your public page' : 'Your page (draft)')),
-        S.billing && S.billing.enabled ? row('/invite', 'Invite organisers 🎁', 'Their first tournament free; a free upgrade for you') : null,
-        me.isAdmin ? row('/admin', 'Admin', 'Site administration') : null) : null,
-      h('div', { class: 'card you-list' },
-        h('div', { class: 'you-row' }, h('span', {}, 'Theme'), themeSwitch()),
-        canInstall() ? row(null, 'Install the app', 'On your home screen, works offline', () => installApp()) : null,
-        row(null, 'Sign out', null, signOut)),
+      groups.slice(0, -1).map((g) => h('div', { class: 'card you-list' }, g.map(row))),
+      h('div', { class: 'card you-list' }, h('div', { class: 'you-row' }, h('span', {}, 'Theme'), themeSwitch()), groups[groups.length - 1].map(row)),
       h('p', { class: 'muted small center' }, h('a', { href: '/features' }, 'Features'), ' · ', h('a', { href: '/faq' }, 'Help'), ' · ', h('a', { href: '/contact' }, 'Contact')),
     ];
   }
@@ -1198,18 +1221,87 @@
     return S.me ? homeSignedIn() : landing();
   }
 
-  // Signed in: what's next for you, quick ways in, and your feed.
+  // Signed in: brand-new people get a way in ("Get going"); everyone else
+  // their feed, with what's next, goals and what's on near them alongside.
+  const CHECK_KEY = 'tonament:checklist-hidden';
+  function homeChecklist(D) {
+    const p = D.profile || {};
+    const items = [
+      [Boolean(p.city && (p.sportIds || []).length), 'Add your city and sports', 'So we can show what\'s near you', '/me/profile'],
+      [D.clubs.some((c) => c.status === 'active'), 'Join or start a club', 'Club v club, seasons, runs — and a feed', '/clubs'],
+      [Boolean((D.runs && D.runs.recent.length) || D.groups.length || (D.challenges && D.challenges.played && D.challenges.played.length)), 'Play a game or log a run', 'A challenge, a group game or a run', '/play'],
+      [Boolean((S.myEntries || []).length || (S.mine || []).length), 'Enter or run an event', 'Tournaments, races, meets, racing', '/compete'],
+      [Boolean(D.goals && D.goals.active.length), 'Set a goal', '30 games, 100 km — alone or with friends', '/goals/new'],
+    ];
+    const done = items.filter((x) => x[0]).length;
+    let hidden = false;
+    try { hidden = localStorage.getItem(CHECK_KEY) === '1'; } catch { /* fine */ }
+    if (done === items.length || hidden) return null;
+    return railCard(`Getting started · ${done} of ${items.length}`,
+      [h('span', { class: 'progress start-progress' }, h('span', { style: `width:${(done / items.length) * 100}%` })),
+        h('ul', { class: 'start-list' }, items.map(([ok, label, hint, href]) => h('li', { class: ok ? 'done' : '' },
+          h('span', { class: 'tick', 'aria-hidden': 'true' }, ok ? '✓' : ''),
+          ok ? h('span', {}, label) : h('a', { href }, h('strong', {}, label), h('small', { class: 'muted' }, hint))))),
+        h('button', { class: 'link-btn small', onclick: () => { try { localStorage.setItem(CHECK_KEY, '1'); } catch { /* fine */ } render(); } }, 'Hide this')]);
+  }
+  // Upcoming public events, near you first (by your profile's city).
+  function nearYou(D) {
+    const city = ((D.profile && D.profile.city) || '').toLowerCase();
+    const list = [
+      ...(S.list || []).map((t) => ({ kind: '🏆', name: t.name, when: t.startsOn, city: t.city, href: `/t/${t.id}` })),
+      ...((D.races && D.races.upcoming) || []).map((r) => ({ kind: '🏃', name: r.name, when: r.startsAt, city: r.city, href: `/race/${r.id}` })),
+      ...((D.meets && D.meets.upcoming) || []).map((m) => ({ kind: '🏅', name: m.name, when: m.startsAt, city: m.city, href: `/meet/${m.id}` })),
+    ];
+    const near = city ? list.filter((x) => (x.city || '').toLowerCase() === city) : [];
+    const shown = (near.length ? near : list).sort((a, b) => String(a.when || '9').localeCompare(String(b.when || '9'))).slice(0, 5);
+    return railCard(near.length ? `Near you · ${D.profile.city}` : 'Coming up',
+      shown.length ? h('ul', { class: 'rail-list' }, shown.map((x) => h('li', {}, h('span', { 'aria-hidden': 'true' }, x.kind), h('a', { href: x.href }, x.name), h('small', { class: 'muted' }, [x.when ? fmtDates(String(x.when).slice(0, 10)) : null, x.city].filter(Boolean).join(' · ')))))
+        : h('p', { class: 'muted small' }, 'Nothing listed yet — be the first to put one on.'),
+      h('a', { class: 'btn btn-small btn-ghost', href: '/compete' }, 'All'));
+  }
   function homeSignedIn() {
+    const D = S.homeData;
+    if (!D) return [installBanner(), loading()];
     const first = S.me.name.split(' ')[0];
+    const isNew = !D.clubs.length && !D.groups.length && !(D.runs && D.runs.recent.length) && !(S.myEntries || []).length && !(S.mine || []).length
+      && !(D.challenges && [...D.challenges.incoming, ...D.challenges.outgoing, ...D.challenges.toPlay, ...D.challenges.played].length);
+    const goalsRail = D.goals && D.goals.active.length ? railCard('Your goals', h('div', { class: 'card-list' }, D.goals.active.slice(0, 2).map(goalCard)), h('a', { class: 'btn btn-small btn-ghost', href: '/goals' }, 'All')) : null;
+    const upNext = (S.myEntries || []).length ? railCard('Up next', h('ul', { class: 'rail-list' }, S.myEntries.slice(0, 4).map((t) => h('li', {}, h('span', { 'aria-hidden': 'true' }, '🎟️'), h('a', { href: `/t/${t.id}` }, t.name), h('small', { class: 'muted' }, [t.entry.eventName, t.startsOn ? fmtDates(String(t.startsOn).slice(0, 10)) : null].filter(Boolean).join(' · '))))), h('a', { class: 'btn btn-small btn-ghost', href: '/compete' }, 'All')) : null;
+    const rail = [homeChecklist(D), upNext, goalsRail, nearYou(D)];
+    if (isNew) {
+      const intent = (emoji, title, desc, actions) => h('div', { class: 'card intent-card' },
+        h('span', { class: 'hub-emoji', 'aria-hidden': 'true' }, emoji), h('h3', {}, title), h('p', { class: 'muted small' }, desc),
+        h('div', { class: 'actions' }, actions.map(([label, href, primary]) => (typeof href === 'function'
+          ? h('button', { type: 'button', class: `btn btn-small${primary ? ' btn-primary' : ''}`, onclick: href }, label)
+          : h('a', { class: `btn btn-small${primary ? ' btn-primary' : ''}`, href }, label)))));
+      const clubs = (D.clubsFound || []).slice(0, 4);
+      return [
+        installBanner(),
+        withRail([
+          h('section', { class: 'hero welcome-hero' },
+            h('p', { class: 'eyebrow' }, 'Welcome to Tonament'),
+            h('h1', {}, `Hi ${first} — what would you like to do?`),
+            h('p', { class: 'lead' }, 'Pick a way in. You can do all of it, any time, from the + New button.')),
+          h('div', { class: 'intent-grid' },
+            intent('🏆', 'Run an event', 'A tournament, a race, a track or pool meet, or a racing championship — entries, fees and live scores.', [['Tournament', '/new', true], ['Race', '/races/new'], ['More…', createSheet]]),
+            intent('🏸', 'Play regularly', 'Weekly games with your regulars, and challenges to friends. Your rating moves with every game.', [['Start a group', '/groups/new', true], ['Challenge a friend', '/challenges/new']]),
+            intent('🏠', 'Join or start a club', 'Members, a feed, club v club, seasons and club runs — all free.', [['Find a club', '/clubs', true], ['Start one', '/clubs/new']]),
+            intent('🏃', 'Run & race', 'Log your runs, beat your 5K and 10K bests, and enter races and meets.', [['Log a run', '/runs', true], ['Find a race', '/compete?tab=races']])),
+          clubs.length ? h('section', { class: 'section' }, h('div', { class: 'card-head' }, h('h2', {}, 'Clubs to join'), h('a', { class: 'btn btn-small btn-ghost', href: '/clubs' }, 'All clubs')),
+            h('div', { class: 'card-list' }, clubs.map((c) => h('a', { class: 'card club-card', href: `/club/${c.slug}` },
+              h('span', { class: 'club-icon' }, icon(KIND_ICON[c.kind] || 'club')),
+              h('span', { class: 'club-card-text' }, h('strong', {}, c.name), h('small', { class: 'muted' }, [c.kindName, c.city, `${c.members} member${c.members === 1 ? '' : 's'}`].filter(Boolean).join(' · '))))))) : null,
+        ], rail),
+      ];
+    }
     const quick = [['⏱️', 'Log a run', '/runs'], ['⚔️', 'Challenge someone', '/challenges/new'], ['🔎', 'Find an event', '/compete'], ['🏠', 'Your clubs', '/clubs']];
     return [
       installBanner(),
-      h('div', { class: 'home-hello' }, h('h1', {}, `Hi, ${first}`)),
-      h('div', { class: 'quick-row' }, quick.map(([e, label, href]) => h('a', { class: 'quick-chip', href }, h('span', { 'aria-hidden': 'true' }, e), label))),
-      S.myEntries && S.myEntries.length ? h('section', { class: 'section' },
-        h('div', { class: 'card-head' }, h('h2', {}, 'Up next'), h('a', { class: 'btn btn-small btn-ghost', href: '/compete' }, 'All')),
-        h('div', { class: 'card-list' }, S.myEntries.slice(0, 3).map(myEntryCard))) : null,
-      homeFeed(),
+      withRail([
+        h('div', { class: 'home-hello' }, h('h1', {}, `Hi, ${first}`)),
+        h('div', { class: 'quick-row' }, quick.map(([e, label, href]) => h('a', { class: 'quick-chip', href }, h('span', { 'aria-hidden': 'true' }, e), label))),
+        homeFeed(),
+      ], rail),
     ];
   }
 
@@ -1247,7 +1339,9 @@
             h('a', { class: 'btn btn-primary btn-lg', href: go }, S.me ? 'Create a tournament' : 'Get started — it\'s free'),
             h('a', { class: 'btn btn-lg btn-ghost', href: '#all-tournaments', onclick: find }, 'Find an event')),
           h('p', { class: 'muted small' }, `${liveSports().length || 18} sports · tournaments, races, meets and racing · used by clubs, academies and venues`)),
-        h('div', { class: 'landing-visual' }, h('img', { src: '/guide/umpire-dark.jpg', alt: 'Scoring a badminton match point by point on a phone', width: 390, loading: 'eager' }))),
+        h('div', { class: 'landing-visuals' },
+          h('div', { class: 'landing-visual back' }, h('img', { src: '/guide/pools-dark.jpg', alt: 'Groups by level with live standings', width: 390, loading: 'eager' })),
+          h('div', { class: 'landing-visual' }, h('img', { src: '/guide/umpire-dark.jpg', alt: 'Scoring a badminton match point by point on a phone', width: 390, loading: 'eager' })))),
       h('section', { class: 'section' },
         h('h2', { class: 'landing-h2' }, 'What you can do'),
         h('div', { class: 'role-grid' }, roles.map(([e, who, promise, list, href]) => h('div', { class: 'card role-card' },
@@ -5152,20 +5246,44 @@
     const who = S.me ? `${S.me.id}` : '';
     if (!nav || navFor === who) return; // re-rendering would close an open menu
     navFor = who;
-    const initials = (name) => name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+    const find = h('form', {
+      class: 'top-search', role: 'search',
+      onsubmit: (e) => { e.preventDefault(); const q = e.target.q.value.trim(); navigate(`/compete${q ? `?q=${encodeURIComponent(q)}` : ''}`); },
+    }, h('input', { name: 'q', type: 'search', placeholder: 'Find tournaments, races, meets…', 'aria-label': 'Find events' }));
     nav.replaceChildren(...(S.me
       ? [
-        // The hubs (on wide screens; phones get the bar at the bottom).
-        h('div', { class: 'top-hubs' }, HUBS.map(([id, label, , href]) => h('a', { href, 'data-hub': id }, label))),
+        find,
         h('button', { class: 'btn btn-small btn-primary nav-new', type: 'button', 'aria-haspopup': 'dialog', onclick: createSheet }, '+ New'),
         h('a', { class: 'bell', href: '/notifications', 'aria-label': 'Notifications', title: 'Notifications' }, '🔔', h('span', { class: 'bell-count', hidden: true })),
-        h('a', { class: 'avatar', href: '/you', title: S.me.name, 'aria-label': 'You — your profile and settings', 'data-hub': 'you' }, initials(S.me.name)),
+        accountMenu(),
       ]
       : [
         h('a', { class: 'nav-link', href: '/signin' }, 'Sign in'),
         h('a', { class: 'btn btn-small btn-primary', href: '/signup' }, 'Sign up'),
       ]).filter(Boolean));
   }
+
+  // The avatar's menu: your profile and pages, settings, sign out.
+  function accountMenu() {
+    const me = S.me;
+    const item = (it) => (it.href
+      ? h('a', { href: it.href, onclick: closeMenu }, it.label)
+      : h('button', { type: 'button', onclick: (e) => { closeMenu(e); it.onClick(); } }, it.label));
+    const groups = accountItems();
+    return h('details', { class: 'menu' },
+      h('summary', { class: 'avatar', title: me.name, 'aria-label': 'Account menu', 'data-hub': 'you' }, initialsOf(me.name)),
+      h('div', { class: 'menu-panel' },
+        h('div', { class: 'menu-head' }, h('strong', {}, me.name), h('div', { class: 'muted small' }, me.email)),
+        groups.slice(0, -1).map((g) => [g.map(item), h('hr')]),
+        h('div', { class: 'menu-theme' }, 'Theme', themeSwitch()),
+        groups[groups.length - 1].map(item)));
+  }
+  function closeMenu(e) {
+    e.target.closest('details')?.removeAttribute('open');
+  }
+  // Escape or a click elsewhere closes it.
+  document.addEventListener('click', (e) => { for (const d of document.querySelectorAll('details.menu[open]')) if (!d.contains(e.target)) d.removeAttribute('open'); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') for (const d of document.querySelectorAll('details.menu[open]')) d.removeAttribute('open'); });
 
   // ---------- the five hubs: Home · Play · Compete · Clubs · You
   const HUBS = [['home', 'Home', 'hub-home', '/'], ['play', 'Play', 'hub-play', '/play'], ['compete', 'Compete', 'hub-compete', '/compete'], ['clubs', 'Clubs', 'hub-clubs', '/clubs'], ['you', 'You', 'hub-you', '/you']];
@@ -5193,6 +5311,59 @@
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     }
   }
+
+  // ---------- the desktop shell: a sidebar with every part of every hub
+  // The sidebar item a page belongs to.
+  function sideKey() {
+    const r = S.route;
+    const by = {
+      groups: 'groups', groupNew: 'groups', group: 'groups', groupGame: 'groups',
+      challenges: 'challenges', challengeNew: 'challenges', challenge: 'challenges',
+      goals: 'goals', goalNew: 'goals', goal: 'goals', runs: 'runs',
+      new: 'tournaments', tournament: 'tournaments', match: 'tournaments',
+      races: 'races', raceNew: 'races', race: 'races', meets: 'meets', meetNew: 'meets', meet: 'meets', champs: 'racing', champNew: 'racing', champ: 'racing',
+      clubRankings: 'rankings', orgNew: 'newclub',
+    };
+    if (r.name === 'compete') return r.tab;
+    if (r.name === 'club') return `club:${r.slug}`;
+    return by[r.name] || r.name;
+  }
+  let sidebar = null;
+  let sidebarFor = '';
+  const ensureMyClubs = () => {
+    if (!S.me || S.myClubsFor === S.me.id) return;
+    S.myClubsFor = S.me.id;
+    api('GET', '/clubs/mine').then((list) => { S.myClubs = list.filter((c) => c.status === 'active'); sidebarFor = ''; render(); }, () => {});
+  };
+  function renderSidebar() {
+    const show = Boolean(S.me) && !NO_HUBS.includes(S.route.name);
+    document.body.classList.toggle('has-sidebar', show);
+    if (!show) { if (sidebar) sidebar.hidden = true; return; }
+    ensureMyClubs();
+    const key = `${S.me.id}:${(S.myClubs || []).map((c) => c.slug).join(',')}`;
+    if (!sidebar || sidebarFor !== key) {
+      sidebarFor = key;
+      const item = (k, label, href) => h('a', { class: 'side-item', href, 'data-side': k }, label);
+      const head = (id) => { const [, label, ic, href] = HUBS.find((x) => x[0] === id); return h('a', { class: 'side-hub', href, 'data-hub': id, 'data-side': id }, icon(ic), h('span', {}, label)); };
+      const next = h('aside', { class: 'sidebar', 'aria-label': 'Sections' },
+        h('a', { href: '/', class: 'side-brand', 'aria-label': 'Tonament home' }, h('img', { src: '/brand/logo-white.svg', alt: 'Tonament', width: 160, height: 22 })),
+        h('nav', {},
+          head('home'),
+          head('play'), item('groups', 'Groups', '/groups'), item('challenges', 'Challenges', '/challenges'), item('goals', 'Goals', '/goals'), item('runs', 'Runs', '/runs'),
+          head('compete'), item('tournaments', 'Tournaments', '/compete'), item('races', 'Races', '/compete?tab=races'), item('meets', 'Meets', '/compete?tab=meets'), item('racing', 'Racing', '/compete?tab=racing'),
+          head('clubs'), (S.myClubs || []).slice(0, 8).map((c) => item(`club:${c.slug}`, c.name, `/club/${c.slug}`)),
+          item('rankings', 'Club rankings', '/clubs/rankings'), item('newclub', '+ Start a club', '/clubs/new')),
+        h('div', { class: 'side-foot' }, h('button', { class: 'btn btn-primary', type: 'button', onclick: createSheet }, '+ Start something')));
+      if (sidebar) sidebar.replaceWith(next); else document.body.append(next);
+      sidebar = next;
+    }
+    sidebar.hidden = false;
+    const k = sideKey();
+    for (const a of sidebar.querySelectorAll('[data-side]')) a.classList.toggle('current', a.dataset.side === k);
+  }
+  // A page with a column on the side (wide screens; below the page on narrow ones).
+  const withRail = (main, rail) => h('div', { class: 'with-rail' }, h('div', { class: 'rail-main' }, main), rail && [rail].flat(Infinity).filter(Boolean).length ? h('aside', { class: 'rail' }, rail) : null);
+  const railCard = (title, body, link) => h('section', { class: 'card rail-card' }, h('div', { class: 'card-head' }, h('h2', {}, title), link || null), body);
 
   // + New: everything you can start, grouped.
   function createSheet() {
@@ -6974,7 +7145,7 @@
         h('small', { class: 'muted' }, [c.kindName, c.city, `${c.members} member${c.members === 1 ? '' : 's'}`, c.status === 'requested' ? 'request sent' : null].filter(Boolean).join(' · '))));
     const mine = S.clubsMine || [];
     const others = (S.clubsFound || []).filter((c) => !mine.some((m) => m.slug === c.slug));
-    return [
+    const main = [
       h('div', { class: 'card-head page-head' }, h('h1', {}, 'Clubs'), h('a', { class: 'btn btn-primary', href: S.me ? '/clubs/new' : '/signin?next=/clubs/new' }, 'Start a club')),
       h('p', { class: 'muted' }, 'Your club, team, academy, company or school on Tonament — free. Members share results, climb the club leaderboard and take on other clubs.'),
       h('p', {}, h('a', { class: 'btn btn-small', href: '/clubs/rankings' }, '🏆 Club rankings')),
@@ -6983,6 +7154,12 @@
       h('section', { class: 'section' }, h('h2', {}, 'Clubs on Tonament'),
         S.clubsFound == null ? loading() : others.length ? h('div', { class: 'card-list' }, others.map(card)) : empty('No clubs yet — start the first one.')),
     ];
+    if (S.railRankings === undefined) { S.railRankings = null; api('GET', '/club-rankings').then((r) => { S.railRankings = r.items; render(); }, () => { S.railRankings = []; }); }
+    const top = S.railRankings || [];
+    return withRail(main, [
+      top.length ? railCard('Club rankings', h('ol', { class: 'rail-list ranked' }, top.slice(0, 5).map((r) => h('li', {}, h('span', { class: 'muted' }, r.place), h('a', { href: `/club/${r.slug}?tab=ladder` }, r.name), h('small', { class: 'muted' }, `${r.points} pts`)))), h('a', { class: 'btn btn-small btn-ghost', href: '/clubs/rankings' }, 'All')) : null,
+      railCard('Start a club', [h('p', { class: 'muted small' }, 'Free: members, a feed and a leaderboard — then take on other clubs, run seasons and weekly club runs.'), h('a', { class: 'btn btn-primary btn-small', href: S.me ? '/clubs/new' : '/signin?next=/clubs/new' }, 'Start a club')]),
+    ]);
   }
 
   function viewClub() {

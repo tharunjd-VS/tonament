@@ -5,7 +5,7 @@
 // - Scripts and styles: the network first (so a deploy shows at once), the cache offline.
 // - Fonts, images, icons: the cache first (they rarely change), refreshed in the background.
 // Bump VERSION to drop old caches.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = `tonament-${VERSION}`;
 const SHELL = [
   '/offline', '/styles.css', '/app.js', '/site.js', '/formats.js', '/schedule.js', '/regions.js', '/icons.svg',
