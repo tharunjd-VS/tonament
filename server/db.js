@@ -744,11 +744,37 @@ CREATE TABLE IF NOT EXISTS rubbers (
   finished_at  TIMESTAMPTZ,
   UNIQUE (match_id, position)
 );
+-- v40: club v club. One club challenges another to a one-off team match: a
+-- tie (racket sports) or a friendly (team sports). Accepting it makes a small
+-- link-only tournament (two club entries, one match) that's scored as usual;
+-- when it's finished the result goes on both clubs' records and feeds.
+CREATE TABLE IF NOT EXISTS club_challenges (
+  id            SERIAL PRIMARY KEY,
+  from_org      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  to_org        INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  sport         TEXT NOT NULL,
+  tie           JSONB,                            -- the tie format; null for a friendly
+  play_at       TIMESTAMPTZ,
+  place         TEXT,
+  message       TEXT,
+  status        TEXT NOT NULL DEFAULT 'sent',     -- sent | accepted | declined | cancelled | expired | played
+  tournament_id TEXT,
+  winner_org    INTEGER,                          -- null when played: a draw
+  score         TEXT,                             -- the winner's side first, e.g. 2-1
+  created_by    INTEGER NOT NULL,
+  responded_by  INTEGER,
+  responded_at  TIMESTAMPTZ,
+  played_at     TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS club_challenges_from ON club_challenges(from_org, created_at DESC);
+CREATE INDEX IF NOT EXISTS club_challenges_to ON club_challenges(to_org, created_at DESC);
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS club_challenge_id INTEGER;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 39;
+const SCHEMA_VERSION = 40;
 
 async function migrate(db) {
   try {

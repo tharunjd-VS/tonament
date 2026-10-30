@@ -32,7 +32,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|notifications|goals|goals\/new|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|notifications|goals|goals\/new|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -428,6 +428,13 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `/api/goals/${N}/join`, (c, id) => svc.goals.join(id, c.actor)],
     ['POST', `/api/goals/${N}/leave`, (c, id) => svc.goals.leave(id, c.actor)],
     ['GET', `${C}/goals`, (c, slug) => svc.goals.forClub(slug, c.actor)],
+    // Club v club
+    ['GET', `${C}/club-challenges`, (c, slug) => svc.clubChallenges.forClub(slug, c.actor)],
+    ['POST', `${C}/club-challenges`, (c, slug) => svc.clubChallenges.create(slug, c.actor, c.body)],
+    ['GET', `/api/club-challenges/${N}`, (c, id) => svc.clubChallenges.view(id, c.actor)],
+    ['POST', `/api/club-challenges/${N}/respond`, (c, id) => svc.clubChallenges.respond(id, c.actor, c.body)],
+    ['POST', `/api/club-challenges/${N}/cancel`, (c, id) => svc.clubChallenges.cancel(id, c.actor)],
+    ['POST', `/api/club-challenges/${N}/team`, (c, id) => svc.clubChallenges.setTeam(id, c.actor, c.body)],
     // Club ladders
     ['GET', `${C}/ladders`, (c, slug) => svc.ladders.forClub(slug, c.actor)],
     ['POST', `${C}/ladders`, (c, slug) => svc.ladders.create(slug, c.actor, c.body)],
@@ -551,6 +558,14 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     return sharedAppPage(req, res, {
       path: `/goals/${g.id}`, title: g.title, image: `/img/goal/${g.id}.png`,
       description: `${what} · ${g.ended ? 'finished' : `${g.daysLeft} days left`}. Every game counts — join in on Tonament.`,
+    });
+  }
+  async function ccPage(req, res, id) {
+    const card = await svc.clubChallenges.card(id).catch(() => null);
+    if (!card) return sharedAppPage(req, res, { path: `/cc/${id}`, title: 'Club v club — Tonament', description: 'Clubs challenge each other on Tonament.', image: '/brand/og.png' });
+    return sharedAppPage(req, res, {
+      path: `/cc/${id}`, title: `${card.title} — ${card.eyebrow}`, image: `/img/cc/${id}.png`,
+      description: `${card.subtitle}${card.big && card.big !== 'VS' ? ` · ${card.big}` : ''}. Club v club on Tonament.`,
     });
   }
   async function itemPage(req, res, id) {
@@ -872,11 +887,13 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         return res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Emails · Tonament</title><link rel="stylesheet" href="/styles.css"><main class="doc" style="padding:48px 16px"><h1>${done ? 'Done' : 'Hmm'}</h1><p>${msg}</p><p><a href="/">Open Tonament</a></p></main>`);
       }
       // Share cards: /img/<kind>/<id>.png (?size=story for 1080×1920).
-      const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t|ladder|goal)\/([A-Za-z0-9-]{1,100})\.png$/);
+      const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t|ladder|goal|cc)\/([A-Za-z0-9-]{1,100})\.png$/);
       if (imgPath && read) return await shareImage(req, res, imgPath[1], imgPath[2], url.searchParams.get('size'));
       // A club's app page, and one feed item, with link previews for WhatsApp.
       const clubPath = pathname.match(/^\/(?:club|api\/clubpage)\/([a-z0-9-]{3,30})\/?$/);
       if (clubPath && read) return await clubPage(req, res, clubPath[1]);
+      const ccPath = pathname.match(/^\/(?:cc|api\/ccpage)\/(\d{1,12})\/?$/);
+      if (ccPath && read) return await ccPage(req, res, ccPath[1]);
       const goalPath = pathname.match(/^\/(?:goals|api\/goalpage)\/(\d{1,12})\/?$/);
       if (goalPath && read) return await goalPage(req, res, goalPath[1]);
       const itemPath = pathname.match(/^\/(?:a|api\/item)\/(\d{1,12})\/?$/);

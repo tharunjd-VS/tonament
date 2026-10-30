@@ -684,6 +684,13 @@
           render();
           S.challenges = await api('GET', '/challenges').catch(() => ({ incoming: [], outgoing: [], toPlay: [], toConfirm: [], played: [] }));
         }
+      } else if (parts[0] === 'cc' && /^\d+$/.test(parts[1] || '')) {
+        S.route = { name: 'clubChallenge', id: Number(parts[1]) };
+        if (!S.cc || S.cc.id !== S.route.id) S.cc = null;
+        S.ccPick = null;
+        render();
+        await loadClubChallenge();
+        return;
       } else if (parts[0] === 'c' && /^\d+$/.test(parts[1] || '')) {
         S.route = { name: 'challenge', id: Number(parts[1]) };
         if (!S.challenge || S.challenge.id !== S.route.id) S.challenge = null;
@@ -904,6 +911,7 @@
     else if (S.route.name === 'goal') view = viewGoal();
     else if (S.route.name === 'challengeNew') view = viewChallengeNew();
     else if (S.route.name === 'challenge') view = viewChallenge();
+    else if (S.route.name === 'clubChallenge') view = viewClubChallenge();
     else if (S.route.name === 'profile') view = viewProfile();
     else if (S.route.name === 'groups') view = viewGroups();
     else if (S.route.name === 'groupNew') view = viewGroupNew();
@@ -6822,6 +6830,7 @@
     const { slug, join } = S.route;
     S.clubLadders = null; // positions move: fetch them fresh
     S.clubGoalsList = null;
+    S.clubVersus = null;
     try {
       S.club = await api('GET', `${clubPath(slug)}${join ? `?join=${encodeURIComponent(join)}` : ''}`);
       S.error = null;
@@ -6873,7 +6882,7 @@
     }, c.open || c.inviteOk ? `Welcome to ${c.name}!` : 'Request sent to the club\'s admins');
     const follow = () => act(async () => { c.follow = await api('POST', '/follow', { kind: 'club', id: c.id, on: !c.follow.following }); });
     const invite = () => shareSheet({ title: `Invite to ${c.name}`, text: `Join ${c.name} on Tonament — results, the club leaderboard and challenges:`, url: clubUrl(c), image: `/img/club/${c.slug}.png` });
-    const tabs = [['feed', 'Feed', 'tab-live'], ['members', 'Members', 'tab-players'], ['leaderboard', 'Leaderboard', 'tab-board'], ['ladder', 'Ladder', 'tab-draw'],
+    const tabs = [['feed', 'Feed', 'tab-live'], ['members', 'Members', 'tab-players'], ['leaderboard', 'Leaderboard', 'tab-board'], ['ladder', 'Compete', 'tab-draw'],
       ...(c.can.admin ? [['page', 'Page', 'tab-setup']] : [])];
     const tab = tabs.some(([id]) => id === S.route.tab) ? S.route.tab : 'feed';
     const head = h('header', { class: 'club-head' },
@@ -6898,7 +6907,7 @@
       feed: () => [clubGoals(c), feedList(S.clubFeed, member ? 'Nothing here yet. Results, titles and new members show up here.' : 'Nothing public here yet.')],
       members: () => clubMembers(c),
       leaderboard: () => clubLeaderboard(c),
-      ladder: () => clubLadders(c),
+      ladder: () => [clubVersus(c), clubLadders(c)],
       page: () => clubPageCard(c),
     }[tab]();
     return [head,
@@ -7001,6 +7010,151 @@
         L.admin ? null : h('p', { class: 'muted small' }, 'A club admin can start one.')) : null,
       L.admin ? (S.ladderForm || h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: start }, L.ladders.length ? 'Start another ladder' : 'Start a ladder'))) : null,
       !L.member && S.me ? h('p', { class: 'muted small' }, 'Join the club to get on its ladder.') : null,
+    ];
+  }
+
+  // ---------- club v club: a tie (racket sports) or a friendly (team sports)
+  const CC_STATUS = { sent: ['waiting', 'Waiting for an answer'], accepted: ['org', 'On'], played: ['done', 'Played'], declined: ['', 'Declined'], cancelled: ['', 'Called off'], expired: ['', 'Expired'] };
+  const ccKind = (x) => (x.kind === 'tie' ? 'tie' : 'friendly');
+
+  // The club's record against other clubs, its challenges, and (for admins) a new one.
+  function clubVersus(c) {
+    const V = S.clubVersus;
+    if (!V || V.slug !== c.slug) {
+      S.clubVersus = { slug: c.slug, loading: true };
+      api('GET', `${clubPath(c.slug)}/club-challenges`).then((r) => { S.clubVersus = { slug: c.slug, ...r }; render(); }, () => { S.clubVersus = { slug: c.slug, items: [], record: { played: 0 }, sports: [] }; render(); });
+      return loading();
+    }
+    if (V.loading) return loading();
+    const rec = V.record;
+    const row = (x) => h('li', {},
+      h('a', { href: `/cc/${x.id}` }, h('strong', {}, `${x.incoming ? '← ' : ''}v ${x.rival.name}`)),
+      h('span', { class: 'muted small' }, ` · ${x.sport.name} ${ccKind(x)}${x.playAt ? ` · ${fmtWhen(x.playAt)}` : ''}`),
+      x.status === 'played' ? h('span', { class: `pill ${x.won ? 'org' : ''}` }, `${x.won ? 'Won' : x.won === false ? 'Lost' : 'Drew'} ${x.score}`)
+        : x.status === 'sent' && x.incoming && V.admin ? pill('org', 'Answer')
+          : pill(...(CC_STATUS[x.status] || ['', x.status])));
+    const sportsFor = V.sports.length ? V.sports
+      : (S.sports || []).filter((x) => x.status === 'live' && (CAT.isTeamSport(x.id) || CAT.hasTies(x.id))).map((x) => ({ id: x.id, name: x.name, kind: CAT.isTeamSport(x.id) ? 'friendly' : 'tie' }));
+    const form = () => {
+      const d = (S.ccDraft ||= { sport: (sportsFor[0] || {}).id || '', format: '2s1d' });
+      const kind = (sportsFor.find((x) => x.id === d.sport) || {}).kind;
+      if (S.clubsFound == null) { S.clubsFound = []; api('GET', '/clubs').then((r) => { S.clubsFound = r; render(); }, () => {}); }
+      const f = h('form', {
+        class: 'card form',
+        onsubmit: (e) => {
+          e.preventDefault();
+          const fd = new FormData(f);
+          const when = fd.get('when');
+          act(async () => {
+            const x = await api('POST', `${clubPath(c.slug)}/club-challenges`, {
+              to: fd.get('to'), sport: d.sport, ...(kind === 'tie' && { tie: { format: d.format } }),
+              playAt: when ? new Date(when).toISOString() : null, place: fd.get('place') || null, message: fd.get('message') || null,
+            });
+            S.ccForm = false; S.ccDraft = null; S.clubVersus = null; S.cc = x;
+            navigate(`/cc/${x.id}`);
+          }, 'Challenge sent — their admins have been told ⚔️');
+        },
+      },
+      h('h2', {}, 'Challenge another club'),
+      field('Their club', h('input', { name: 'to', required: true, list: 'cc-clubs', placeholder: 'Club address, e.g. velachery-smashers', autocomplete: 'off', value: d.to || '', oninput: (e) => { d.to = e.target.value; } }), null, 'The address from their club link: tonament.com/club/…'),
+      h('datalist', { id: 'cc-clubs' }, (S.clubsFound || []).filter((o) => o.slug !== c.slug).map((o) => h('option', { value: o.slug }, o.name))),
+      sportsFor.length ? groupField('Sport', choiceGroup({ name: 'ccSport', label: 'Sport', value: d.sport, options: sportsFor.map((x) => ({ value: x.id, label: x.name, hint: x.kind === 'tie' ? 'Team tie' : 'Friendly' })), onchange: (e) => { d.sport = e.target.value; render(); } }))
+        : h('p', { class: 'muted' }, 'Add a racket or team sport to the club first.'),
+      kind === 'tie' ? groupField('The tie', choiceGroup({ name: 'ccFormat', label: 'The tie', value: d.format, options: Object.entries(TonamentTie.FORMATS).map(([value, x]) => ({ value, label: x.name, hint: x.hint })), onchange: (e) => { d.format = e.target.value; render(); } }), null, 'Each club picks who plays which match. Line-ups stay sealed until both are in.') : null,
+      field('When', h('input', { name: 'when', type: 'datetime-local', value: d.when || '', oninput: (e) => { d.when = e.target.value; } }), null, 'Optional — agree it in the message if you like'),
+      field('Where', h('input', { name: 'place', maxlength: 80, placeholder: 'Your courts, theirs, or neutral', value: d.place || '', oninput: (e) => { d.place = e.target.value; } })),
+      field('Message', h('textarea', { name: 'message', maxlength: 280, rows: 2, placeholder: 'Fancy a match? Loser buys the chai.', value: d.message || '', oninput: (e) => { d.message = e.target.value; } })),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit', disabled: !d.sport }, 'Send the challenge'), h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { S.ccForm = false; render(); } }, 'Cancel')));
+      return f;
+    };
+    return h('section', { class: 'section club-versus' },
+      h('div', { class: 'card' },
+        h('div', { class: 'card-head' }, h('h2', {}, 'Club v club'),
+          rec.played ? h('span', { class: 'cc-record' }, h('strong', {}, `${rec.won}–${rec.lost}${rec.drawn ? `–${rec.drawn}` : ''}`), h('small', { class: 'muted' }, rec.drawn ? ' won–lost–drawn' : ' won–lost')) : null),
+        V.items.length ? h('ul', { class: 'cc-list' }, V.items.map(row))
+          : h('p', { class: 'muted' }, 'Take on another club: a team tie in racket sports, or a friendly in team sports. Results go on both clubs\' records and feeds.'),
+        V.admin && !S.ccForm ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => { S.ccForm = true; render(); } }, '⚔️ Challenge a club')) : null),
+      V.admin && S.ccForm ? form() : null);
+  }
+
+  async function loadClubChallenge() {
+    try {
+      S.cc = await api('GET', `/club-challenges/${S.route.id}`);
+      S.error = null;
+    } catch (e) {
+      S.error = e.message;
+    }
+    render();
+  }
+  // While it's on, the score follows along.
+  setInterval(() => {
+    if (S.route.name === 'clubChallenge' && S.cc && ['sent', 'accepted'].includes(S.cc.status) && !document.hidden && !isEditing()) loadClubChallenge();
+  }, 8000);
+
+  function viewClubChallenge() {
+    const x = S.cc;
+    if (!x || x.id !== S.route.id) return loading();
+    const A = x.a.club;
+    const B = x.b.club;
+    document.title = `${A.name} v ${B.name} · Club v club`;
+    const post = (what, body, msg) => act(async () => { S.cc = await api('POST', `/club-challenges/${x.id}/${what}`, body || {}); }, msg);
+    const [cls, label] = CC_STATUS[x.status] || ['', x.status];
+    const share = () => shareSheet({
+      title: `${A.name} v ${B.name}`,
+      text: x.result ? (x.result.winner ? `${x.result.winner === 'a' ? A.name : B.name} beat ${x.result.winner === 'a' ? B.name : A.name} ${x.result.score} — club v club ${x.sport.name.toLowerCase()} on Tonament` : `${A.name} v ${B.name}: ${x.result.score}`)
+        : `${A.name} v ${B.name} — a club v club ${x.sport.name.toLowerCase()} ${ccKind(x)} on Tonament`,
+      url: `${location.origin}/cc/${x.id}`, image: `/img/cc/${x.id}.png`,
+    });
+    const team = (side) => {
+      const s = x[side];
+      const picking = S.ccPick && S.ccPick.side === side;
+      if (picking) {
+        const chosen = S.ccPick.ids;
+        const toggle = (id) => { const i = chosen.indexOf(id); if (i >= 0) chosen.splice(i, 1); else chosen.push(id); render(); };
+        return h('div', { class: 'card cc-team' },
+          h('h3', {}, `Pick ${s.club.name}'s team`),
+          h('p', { class: 'muted small' }, `At least ${x.need}. The first one you tick is the captain${x.kind === 'tie' ? ' — they set the line-up' : ''}.`),
+          h('ul', { class: 'cc-pick' }, s.members.map((p) => h('li', {}, h('label', { class: 'check-field' },
+            h('input', { type: 'checkbox', checked: chosen.includes(p.id), onchange: () => toggle(p.id) }),
+            h('span', {}, p.name), chosen[0] === p.id ? h('small', { class: 'muted' }, ' · captain') : null)))),
+          h('div', { class: 'actions' },
+            h('button', { class: 'btn btn-primary', disabled: chosen.length < x.need, onclick: () => act(async () => { S.cc = await api('POST', `/club-challenges/${x.id}/team`, { side, members: chosen }); S.ccPick = null; }, 'Team saved') }, `Save the team (${chosen.length})`),
+            h('button', { class: 'btn btn-ghost', onclick: () => { S.ccPick = null; render(); } }, 'Cancel')));
+      }
+      return h('div', { class: 'card cc-team' },
+        h('h3', {}, h('a', { href: `/club/${s.club.slug}` }, s.club.name)),
+        s.team.length ? h('ol', { class: 'cc-roster' }, s.team.map((p) => h('li', {}, p.handle ? h('a', { href: `/@${p.handle}` }, p.name) : p.name, p.captain ? h('small', { class: 'muted' }, ' · captain') : null)))
+          : h('p', { class: 'muted small' }, x.status === 'accepted' ? 'Team not picked yet.' : '—'),
+        x.can.pick && s.members ? h('div', { class: 'actions' }, h('button', { class: s.team.length ? 'btn btn-small' : 'btn btn-primary', onclick: () => { S.ccPick = { side, ids: s.team.length ? s.members.filter((m) => s.team.some((p) => p.name === m.name)).map((m) => m.id) : [] }; render(); } }, s.team.length ? 'Change the team' : 'Pick your team')) : null);
+    };
+    const winnerName = x.result && x.result.winner ? x[x.result.winner].club.name : null;
+    const matchUrl = x.match ? `/t/${x.tournamentId}/m/${x.match.id}` : null;
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: `/club/${(x.a.admin || !x.b.admin ? A : B).slug}?tab=ladder` }, '← Compete')),
+      h('div', { class: 'card challenge-head cc-head' },
+        h('p', { class: 'eyebrow' }, ['Club v club', x.sport.name, x.tie ? x.tie.name : 'Friendly'].join(' · ')),
+        h('h1', {}, h('a', { href: `/club/${A.slug}` }, A.name), h('span', { class: 'muted' }, ' v '), h('a', { href: `/club/${B.slug}` }, B.name)),
+        h('p', { class: 'muted small' }, [x.playAt ? fmtWhen(x.playAt) : null, x.place].filter(Boolean).join(' · ') || null),
+        x.message ? h('p', { class: 'challenge-message' }, `“${x.message}”`) : null,
+        h('div', { class: 'actions' }, pill(cls, label), h('button', { class: 'btn btn-small', onclick: share }, 'Share'))),
+      x.result ? h('div', { class: 'card cc-result' },
+        h('p', { class: 'eyebrow' }, 'Final'),
+        h('div', { class: 'cc-score' }, h('strong', {}, winnerName ? `${winnerName} won` : 'A draw'), h('span', { class: 'cc-big' }, x.result.score)),
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: share }, 'Share the result'), matchUrl ? h('a', { class: 'btn', href: matchUrl }, 'See the matches') : null)) : null,
+      x.status === 'sent' ? h('div', { class: 'card' },
+        x.can.respond ? [h('h2', {}, `${A.name} challenges you`), h('p', { class: 'muted small' }, `A ${x.sport.name.toLowerCase()} ${ccKind(x)}${x.tie ? ` — ${x.tie.name}` : ''}. Accept, then pick your team.`),
+          h('div', { class: 'actions' },
+            h('button', { class: 'btn btn-primary btn-lg', onclick: () => post('respond', { accept: true }, 'Challenge accepted ⚔️ — pick your team') }, 'Accept'),
+            h('button', { class: 'btn btn-lg', onclick: () => post('respond', { accept: false }, 'Declined') }, 'Not this time'))]
+          : h('p', { style: 'margin:0' }, `Waiting for ${B.name}'s admins to answer.`)) : null,
+      x.status === 'accepted' && x.match ? h('div', { class: 'card cc-match' },
+        h('div', { class: 'card-head' }, x.match.status === 'live' ? pill('live', 'Live') : h('h2', {}, 'The match'), x.match.summary && x.match.status !== 'scheduled' ? h('span', { class: 'cc-big' }, x.match.summary) : null),
+        h('p', { class: 'muted small' }, x.kind === 'tie'
+          ? 'Once both teams are picked, each captain sets their line-up on the match page — sealed until both are in. Then score each match there.'
+          : 'Score it live or enter the final score on the match page.'),
+        h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary', href: matchUrl }, x.kind === 'tie' ? 'Open the tie →' : 'Open the match →'))) : null,
+      ['accepted', 'played'].includes(x.status) ? h('div', { class: 'cc-teams' }, team('a'), team('b')) : null,
+      x.can.cancel ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-ghost', onclick: () => confirm('Call off this challenge?') && post('cancel', {}, 'Called off') }, 'Call it off')) : null,
     ];
   }
 
@@ -7422,6 +7576,17 @@
     }
     if (x.verb === 'ladder') {
       return ['🪜 ', who, ` climbed to #${d.to} on the `, h('a', { href: `/club/${d.slug}?tab=ladder` }, d.ladder), d.forfeit ? ` — ${d.beat} didn't answer in time` : [` — beat ${d.beat} `, h('span', { class: 'feed-score' }, d.score)]];
+    }
+    if (x.verb === 'club_v_club') {
+      const club = (name, slug) => h('a', { href: `/club/${slug}` }, name);
+      const winSlug = d.winner === d.from ? d.fromSlug : d.toSlug;
+      const loseSlug = d.winner === d.from ? d.toSlug : d.fromSlug;
+      return d.winner
+        ? ['🏆 ', club(d.winner, winSlug), ' beat ', club(d.loser, loseSlug), ' ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score), ` in a club v club ${d.kind === 'tie' ? 'tie' : 'friendly'}`]
+        : ['🤝 ', club(d.from, d.fromSlug), ' and ', club(d.to, d.toSlug), ' drew ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score)];
+    }
+    if (x.verb === 'club_challenge') {
+      return ['⚔️ ', h('a', { href: `/club/${d.fromSlug}` }, d.from), ' v ', h('a', { href: `/club/${d.toSlug}` }, d.to), ` is on — a ${d.kind === 'tie' ? 'team tie' : 'friendly'}`, d.playAt ? `, ${fmtWhen(d.playAt)}` : '', '. ', h('a', { href: `/cc/${d.id}` }, 'See the teams')];
     }
     if (x.verb === 'joined') return [who, ' joined ', h('a', { href: `/club/${d.slug}` }, d.club)];
     if (x.verb === 'club') return [who, ' started ', h('a', { href: `/club/${d.slug}` }, d.club), d.city ? ` in ${d.city}` : ''];
@@ -8336,7 +8501,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|goals(?:\/new|\/\d+)?$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|goals(?:\/new|\/\d+)?$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

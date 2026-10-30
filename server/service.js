@@ -21,6 +21,7 @@ const { createCards } = require('./cards');
 const { createNotify } = require('./notify');
 const { createChallenges } = require('./challenges');
 const { createLadders } = require('./ladders');
+const { createClubChallenges } = require('./club-challenges');
 const { createGoals } = require('./goals');
 const { createTies } = require('./ties');
 const TIE = require('../public/sports/tie');
@@ -224,6 +225,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   let profiles;
   let social;
   let goalsRef = null;
+  let clubChallengesRef = null;
   let referrals;
 
   // ---------- queries (q is db.query or a transaction's query)
@@ -394,6 +396,33 @@ function createService(db, { mailer, fetchImpl } = {}) {
       await profiles.clearEvent(q, t.eventId);
       await social.forget(q, 'event', t.eventId);
     }
+    await clubMatchStatus(q, t, status === 'completed');
+  }
+  // A club v club match (club-challenges.js) finished, or reopened by an undo.
+  async function clubMatchStatus(q, t, done) {
+    const [row] = await q('SELECT club_challenge_id FROM tournaments WHERE id = $1', [t.id]);
+    if (!row || !row.club_challenge_id || !clubChallengesRef) return;
+    if (!done) return clubChallengesRef.reopened(q, row.club_challenge_id);
+    const [m] = await q('SELECT * FROM matches WHERE event_id = $1 ORDER BY id LIMIT 1', [t.eventId]);
+    if (!m) return;
+    const score = scoreOf(t, m);
+    const people = async (entryId) => (await q(
+      'SELECT DISTINCT u.id FROM entry_players p JOIN users u ON u.email = p.email WHERE p.entry_id = $1', [entryId],
+    )).map((r) => r.id);
+    // Side a is the challenging club (it's entered first).
+    const [first] = await q('SELECT id FROM entries WHERE event_id = $1 ORDER BY seed, id LIMIT 1', [t.eventId]);
+    const flip = first && first.id !== m.a_id;
+    const side = (s) => (flip ? (s === 'a' ? 'b' : 'a') : s);
+    const won = score.winner ? side(score.winner) : null;
+    // Goals (or the tie's matches) for one-game sports, else games won.
+    const g = score.single ? score.games[0] : score.gamesWon;
+    const [ga, gb] = [g.a, g.b];
+    await clubChallengesRef.finished(q, row.club_challenge_id, {
+      winner: won,
+      a: flip ? gb : ga,
+      b: flip ? ga : gb,
+      players: { a: await people(flip ? m.b_id : m.a_id), b: await people(flip ? m.a_id : m.b_id) },
+    });
   }
 
   // Writes each linked player's finish, points and matches for a finished event.
@@ -411,8 +440,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // ones to followers; private ones not at all).
   async function podiumActivity(q, t) {
     await social.forget(q, 'event', t.eventId);
-    const [row] = await q('SELECT visibility, name FROM tournaments WHERE id = $1', [t.id]);
-    if (!row || row.visibility === 'private') return;
+    const [row] = await q('SELECT visibility, name, club_challenge_id FROM tournaments WHERE id = $1', [t.id]);
+    // Club v club matches post their own result (club-challenges.js).
+    if (!row || row.visibility === 'private' || row.club_challenge_id) return;
     const podium = await q(
       `SELECT u.id, u.profile_public, r.finish, r.entries, e.org_id FROM event_results r JOIN users u ON u.email = r.email
        JOIN entries e ON e.id = r.entry_id WHERE r.event_id = $1 AND r.finish IN ('W', 'F')`,
@@ -1234,7 +1264,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return rows.map(cardOf);
   }
 
-  async function createTournament(actor, input = {}) {
+  async function createTournament(actor, input = {}, { gift: giftOk = true } = {}) {
     if (!actor.user) fail(401, 'Sign in to create a tournament');
     const name = text(input.name, 'Tournament name');
     const details = detailsOf(input);
@@ -1273,7 +1303,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       for (const [i, e] of events.entries()) await insertEvent(q, id, i, e, eventConfigOf(config));
       await q(`INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, 'owner')`, [id, actor.user.email]);
       // Invited by a friend? Their first tournament starts on the Club plan.
-      gift = await referrals.useWelcome(q, actor.user, id);
+      if (giftOk) gift = await referrals.useWelcome(q, actor.user, id);
     });
     return { id, ...(gift && { gift }) };
   }
@@ -3669,8 +3699,81 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const goals = createGoals({ db, fail, text, social, notify });
   const ties = createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, requireStageOpen });
   goalsRef = goals;
+  const clubChallenges = createClubChallenges({
+    db, fail, text, social, notify,
+    match: { create: makeClubMatch, roster: clubRoster, info: clubMatchInfo },
+  });
+  clubChallengesRef = clubChallenges;
   // (the goal card asks the goals module for a goal when it's drawn)
-  const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null) });
+  const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null), clubChallengeCard: (id) => clubChallenges.card(id) });
+
+  // ---------- club v club matches (club-challenges.js)
+
+  // A link-only tournament for the match: one team event (a tie in racket
+  // sports), the two clubs entered (challenger first) with their admins as
+  // captains, both clubs' admins as organisers, and the draw made.
+  async function makeClubMatch({ actor, challengeId, name, sport, tie, playAt, place, sides, organisers }) {
+    const when = playAt ? new Date(playAt) : null;
+    const day = when ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(when) : undefined;
+    const { id } = await createTournament(actor, {
+      name: name.slice(0, 80), sport, format: 'league', visibility: 'link',
+      events: [{ discipline: 'team', gender: 'open' }],
+      ...(day && { startsOn: day }), ...(place && { venue: place.slice(0, 80) }),
+    }, { gift: false });
+    try {
+      const ev = (await eventsOf(db.query, id))[0].id;
+      await updateEvent(id, actor, ev, { ...(tie && { tie }), groups: 1 });
+      await addEntries(id, actor, sides.map((s) => s.name), { event: ev });
+      await db.tx(async (q) => {
+        const entries = await q('SELECT id FROM entries WHERE event_id = $1 ORDER BY seed, id', [ev]);
+        for (const [i, s] of sides.entries()) await q('UPDATE entries SET org_id = $1, user_id = $2 WHERE id = $3', [s.orgId, s.userId, entries[i].id]);
+        for (const email of organisers) {
+          await q(`INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, 'organiser') ON CONFLICT (tournament_id, email) DO NOTHING`, [id, email]);
+        }
+        await q('UPDATE tournaments SET club_challenge_id = $1 WHERE id = $2', [challengeId, id]);
+      });
+      await startEvent(id, actor, { event: ev });
+    } catch (err) {
+      await db.query('DELETE FROM tournaments WHERE id = $1', [id]).catch(() => {});
+      throw err;
+    }
+    return id;
+  }
+  // A club's team: its entry's roster ('a' is the challenger's entry).
+  async function clubRoster(tid, side, players) {
+    await db.tx(async (q) => {
+      const tournament = await load(q, tid, { lock: true });
+      const entries = await q('SELECT * FROM entries WHERE tournament_id = $1 ORDER BY seed, id', [tournament.id]);
+      const e = entries[side === 'a' ? 0 : 1];
+      const t = await eventFor(q, tournament, e.event_id);
+      if ((await clubMatchInfo(q, tid)).locked) fail(409, 'The line-ups are in — the team can\'t change now');
+      await saveRoster(q, t, e, players);
+    });
+  }
+  // The match: its id, status and score, each club's team, and whether it's under way.
+  async function clubMatchInfo(q, tid) {
+    const [m] = await q('SELECT * FROM matches WHERE tournament_id = $1 ORDER BY id LIMIT 1', [tid]);
+    const entries = await q('SELECT id FROM entries WHERE tournament_id = $1 ORDER BY seed, id', [tid]);
+    if (!m || entries.length < 2) return null;
+    const team = async (entryId) => (await q(
+      'SELECT p.name, p.captain, u.handle FROM entry_players p LEFT JOIN users u ON u.email = p.email WHERE p.entry_id = $1 ORDER BY p.slot', [entryId],
+    )).map((p) => ({ name: p.name, captain: p.captain, handle: p.handle || null }));
+    const [lineup] = await q('SELECT 1 FROM lineups WHERE match_id = $1 LIMIT 1', [m.id]);
+    const started = m.status !== 'scheduled' || Boolean(m.rallies);
+    const tournament = await load(q, tid);
+    const t = await eventFor(q, tournament, m.event_id);
+    const score = scoreOf(t, m);
+    const flip = entries[0].id !== m.a_id;
+    const raw = t.sportDef.summary(score);
+    return {
+      matchId: m.id,
+      status: m.status,
+      summary: flip && /^\d+[–-]\d+$/.test(raw) ? raw.split(/[–-]/).reverse().join('–') : raw,
+      started,
+      locked: started || Boolean(lineup),
+      teams: { a: await team(entries[0].id), b: await team(entries[1].id) },
+    };
+  }
 
   referrals = createReferrals({ db, fail, mailer: mailer?.enabled ? mailer : null, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, ''), confirmWaiting });
 
@@ -3695,6 +3798,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     ladders,
     goals,
     ties,
+    clubChallenges,
     referrals,
     useCredit,
     takeOverScoring,

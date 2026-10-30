@@ -21,6 +21,8 @@ const KINDS = {
   challenge_reply: { label: 'Replies to your challenges', email: false },
   ladder: { label: 'Ladder moves', email: false },
   goal: { label: 'Goals reached', email: false },
+  club_challenge: { label: 'Challenges to your club', email: true },
+  club_result: { label: 'Club v club results', email: false },
 };
 const PAGE = 40;
 const DELIVERY_MS = 4000;

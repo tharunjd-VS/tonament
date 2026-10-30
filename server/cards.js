@@ -128,7 +128,7 @@ function render(card, size = 'og') {
   return r.render().asPng();
 }
 
-function createCards({ db, goalsView = null }) {
+function createCards({ db, goalsView = null, clubChallengeCard = null }) {
   const minorYear = () => new Date().getFullYear() - MINOR_AGE;
   const sportName = (id) => (sports.get(id) || sports.info(id) || {}).name || '';
   const FINISH = { W: 'Champion', F: 'Finalist' };
@@ -161,6 +161,11 @@ function createCards({ db, goalsView = null }) {
     }
     if (a.verb === 'ladder') {
       return { eyebrow: `${d.ladder} · ${sportName(a.sport)}`, title: who ? who.name : 'A climber', subtitle: d.forfeit ? `took #${d.to} from ${d.beat} by default` : `beat ${d.beat} to climb from #${d.from}`, big: `#${d.to}`, bigLabel: d.score || null };
+    }
+    if (a.verb === 'club_v_club') {
+      const kind = d.kind === 'tie' ? 'tie' : 'match';
+      if (!d.winner) return { eyebrow: `Club v club · ${sportName(a.sport)}`, title: `${d.from} v ${d.to}`, subtitle: `A drawn ${kind}`, big: d.score, bigLabel: 'Final' };
+      return { eyebrow: `Club v club · ${sportName(a.sport)}`, title: d.winner, subtitle: `beat ${d.loser} in a ${sportName(a.sport).toLowerCase()} ${kind}`, big: d.score, bigLabel: 'Final' };
     }
     if (a.verb === 'joined' || a.verb === 'club') {
       return { eyebrow: a.verb === 'club' ? 'New club' : 'Joined the club', title: d.club, subtitle: `${who ? who.name : 'Someone'} ${a.verb === 'club' ? 'started it' : 'is in'} — join them on Tonament` };
@@ -248,7 +253,8 @@ function createCards({ db, goalsView = null }) {
     };
   }
 
-  const KINDS = { a: activity, club, p: player, t: tournament, ladder, goal };
+  const cc = async (id) => (clubChallengeCard ? clubChallengeCard(id) : null);
+  const KINDS = { a: activity, club, p: player, t: tournament, ladder, goal, cc };
   // The PNG for /img/<kind>/<id>.png, or null.
   async function image(kind, id, size) {
     const make = KINDS[kind];

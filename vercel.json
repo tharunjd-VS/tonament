@@ -88,6 +88,10 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/cc/:id(\\d{1,12})",
+      "destination": "/api/index?__path=ccpage/:id"
+    },
+    {
       "source": "/c/:id(\\d{1,12})",
       "destination": "/api/index?__path=app"
     },
@@ -104,7 +108,7 @@
       "destination": "/api/index?__path=item/:id"
     },
     {
-      "source": "/img/:kind(a|club|p|t|ladder|goal)/:file",
+      "source": "/img/:kind(a|club|p|t|ladder|goal|cc)/:file",
       "destination": "/api/index?__path=img/:kind/:file"
     },
     {
