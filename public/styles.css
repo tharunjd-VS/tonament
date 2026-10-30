@@ -1645,3 +1645,8 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .kart-sheet .meet-mark { width: 64px; }
 .kart-sheet .meet-status { margin-left: 0; }
 .kart-pos { width: 44px; padding: 6px 4px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Club honours */
+.club-honours { margin-bottom: 16px; }
+.honours-list li { flex-wrap: nowrap; align-items: baseline; }
+.honours-list li > a { min-width: 0; }

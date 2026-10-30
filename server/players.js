@@ -380,9 +380,12 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
        WHERE ep.email = $1 AND ev.status <> 'completed' AND NOT e.withdrawn ORDER BY e.id DESC LIMIT 20`,
       [u.email, u.id],
     );
+    const [rep] = u.rep_org_id ? await db.query('SELECT slug, name FROM orgs WHERE id = $1', [u.rep_org_id]) : [];
     return {
       ...profileFields(u),
       public: u.profile_public,
+      represents: rep || null,
+      clubs: await clubsOf(u.id),
       sportIds: u.sports || [],
       duprConnect: dupr.enabled(),
       results,
@@ -419,6 +422,15 @@ function createPlayers({ db, fail, text, imageType, maxImageBytes, mediaUrl, mai
       set.sports = [...new Set(input.sports.filter((id) => sports.get(id)))];
     }
     if (has('public')) set.profile_public = Boolean(input.public);
+    // The club I represent: one I'm an active member of (or none).
+    if (has('represents')) {
+      if (!input.represents) set.rep_org_id = null;
+      else {
+        const [o] = await db.query(`SELECT o.id FROM orgs o JOIN club_members m ON m.org_id = o.id WHERE o.slug = $1 AND m.user_id = $2 AND m.status = 'active'`, [String(input.represents), u.id]);
+        if (!o) fail(400, 'Represent a club you\'re a member of');
+        set.rep_org_id = o.id;
+      }
+    }
     if (has('duprId')) {
       set.dupr_id = input.duprId ? dupr.checkId(input.duprId, fail) : null;
       if (set.dupr_id !== u.dupr_id) set.dupr_verified = false;

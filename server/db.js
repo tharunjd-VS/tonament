@@ -965,11 +965,15 @@ CREATE TABLE IF NOT EXISTS champ_results (
   fastest    BOOLEAN NOT NULL DEFAULT false,
   PRIMARY KEY (round_id, driver_id)
 );
+-- v47: the club a player represents (shown on race results, the default
+-- when entering meets), and a race entry's club.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS rep_org_id INTEGER;
+ALTER TABLE race_entries ADD COLUMN IF NOT EXISTS team TEXT;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 46;
+const SCHEMA_VERSION = 47;
 
 async function migrate(db) {
   try {

@@ -351,7 +351,11 @@ function createMeets({ db, fail, text, social, notify }) {
       [m.id],
     );
     const [club] = m.org_id ? await q('SELECT name, slug FROM orgs WHERE id = $1', [m.org_id]) : [];
-    const myClubs = me ? await q(`SELECT o.name, o.slug FROM club_members c JOIN orgs o ON o.id = c.org_id WHERE c.user_id = $1 AND c.status = 'active' ORDER BY o.name`, [me]) : [];
+    const myClubs = me ? await q(
+      `SELECT o.name, o.slug, (o.id = u.rep_org_id) AS rep FROM club_members c JOIN orgs o ON o.id = c.org_id JOIN users u ON u.id = c.user_id
+       WHERE c.user_id = $1 AND c.status = 'active' ORDER BY (o.id = u.rep_org_id) DESC, o.name`,
+      [me],
+    ) : [];
     const person = (x, kind) => ({
       id: x.id, name: x.name, team: x.team, handle: x.profile_public ? x.handle : null, me: x.user_id === me,
       heat: x.heat, heatLane: x.heat_lane, heatMark: showMark(kind, x.heat_mark), lane: x.lane, mark: showMark(kind, x.mark),

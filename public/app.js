@@ -773,6 +773,11 @@
         render();
         await loadChallenge();
         return;
+      } else if (parts[0] === 'clubs' && parts[1] === 'rankings') {
+        S.route = { name: 'clubRankings', city: params.get('city') || '', kind: params.get('kind') || '' };
+        S.clubRankings = null;
+        render();
+        S.clubRankings = await api('GET', `/club-rankings?city=${encodeURIComponent(S.route.city)}&kind=${encodeURIComponent(S.route.kind)}`).catch(() => ({ items: [], cities: [] }));
       } else if (parts[0] === 'clubs') {
         S.route = { name: 'clubs' };
         render();
@@ -993,6 +998,7 @@
     else if (S.route.name === 'champs') view = viewChamps();
     else if (S.route.name === 'champNew') view = viewChampNew();
     else if (S.route.name === 'champ') view = viewChamp();
+    else if (S.route.name === 'clubRankings') view = viewClubRankings();
     else if (S.route.name === 'goalNew') view = viewGoalNew();
     else if (S.route.name === 'goal') view = viewGoal();
     else if (S.route.name === 'challengeNew') view = viewChallengeNew();
@@ -6797,7 +6803,7 @@
       onsubmit: (e) => {
         e.preventDefault();
         const fd = new FormData(details);
-        save(details, { name: fd.get('name'), handle: fd.get('handle'), city: fd.get('city'), region: fd.get('region'), sports: fd.getAll('sports'), bio: fd.get('bio') }, 'Profile saved');
+        save(details, { name: fd.get('name'), handle: fd.get('handle'), city: fd.get('city'), region: fd.get('region'), sports: fd.getAll('sports'), bio: fd.get('bio'), ...((p.clubs || []).length && { represents: fd.get('represents') || null }) }, 'Profile saved');
       },
     },
     field('Name', h('input', { name: 'name', required: true, maxlength: 60, value: p.name, autocomplete: 'name' }), null, 'As it appears on entry lists and rankings.'),
@@ -6809,6 +6815,7 @@
     h('datalist', { id: 'profile-states' }, (REGIONS.regionsFor(REGIONS.defaultCountry) || []).map((c) => h('option', { value: c }))),
     groupField('Sports you play', choiceGroup({ name: 'sports', label: 'Sports', value: p.sportIds, multiple: true, options: S.sports.map((x) => ({ value: x.id, label: x.name, icon: x.id })) })),
     field('About you', h('textarea', { name: 'bio', rows: 3, maxlength: 600, value: p.bio || '', placeholder: 'Club, coach, favourite event, achievements…' })),
+    (p.clubs || []).length ? field('I represent', h('select', { name: 'represents' }, h('option', { value: '' }, 'No club'), p.clubs.map((c) => h('option', { value: c.slug, selected: p.represents && p.represents.slug === c.slug }, c.name))), null, 'The club next to your name in race results and meets. Your wins count for it.') : null,
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
 
     const upload = (files) => {
@@ -6925,6 +6932,7 @@
     S.clubVersus = null;
     S.clubSeasons = null;
     S.clubRuns = null;
+    S.clubHonours = null;
     try {
       S.club = await api('GET', `${clubPath(slug)}${join ? `?join=${encodeURIComponent(join)}` : ''}`);
       S.error = null;
@@ -6956,6 +6964,7 @@
     return [
       h('div', { class: 'card-head page-head' }, h('h1', {}, 'Clubs'), h('a', { class: 'btn btn-primary', href: S.me ? '/clubs/new' : '/signin?next=/clubs/new' }, 'Start a club')),
       h('p', { class: 'muted' }, 'Your club, team, academy, company or school on Tonament — free. Members share results, climb the club leaderboard and take on other clubs.'),
+      h('p', {}, h('a', { class: 'btn btn-small', href: '/clubs/rankings' }, '🏆 Club rankings')),
       S.me ? h('section', { class: 'section' }, h('h2', {}, 'Your clubs'),
         S.clubsMine == null ? loading() : mine.length ? h('div', { class: 'card-list' }, mine.map(card)) : empty('You\'re not in a club yet — join one below, or start your own.')) : null,
       h('section', { class: 'section' }, h('h2', {}, 'Clubs on Tonament'),
@@ -7001,7 +7010,7 @@
       feed: () => [clubRunsCard(c), clubGoals(c), feedList(S.clubFeed, member ? 'Nothing here yet. Results, titles and new members show up here.' : 'Nothing public here yet.')],
       members: () => clubMembers(c),
       leaderboard: () => clubLeaderboard(c),
-      ladder: () => [clubVersus(c), clubSeasons(c), clubLadders(c)],
+      ladder: () => [clubHonours(c), clubVersus(c), clubSeasons(c), clubLadders(c)],
       page: () => clubPageCard(c),
     }[tab]();
     return [head,
@@ -7444,7 +7453,7 @@
     };
     const enterBox = () => {
       if (!x.can.enter || ev.stage !== 'entries' || ev.mine) return null;
-      const d = (S.meetEnter ||= { club: '' });
+      const d = (S.meetEnter ||= { club: (x.myClubs.find((c) => c.rep) || {}).slug || '' });
       return h('div', { class: 'card' }, h('h2', {}, 'Enter this event'),
         x.myClubs.length ? field('For', h('select', { onchange: (e) => { d.club = e.target.value; } }, h('option', { value: '' }, 'No team'), x.myClubs.map((c) => h('option', { value: c.slug, selected: c.slug === d.club }, c.name)))) : null,
         h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => act(async () => { S.meet = await api('POST', `/meets/${x.id}/enter`, { event: ev.id, club: d.club || null }); }, 'You\'re in') }, 'Enter')));
@@ -7592,6 +7601,7 @@
           onsubmit: (e) => { e.preventDefault(); post('runners', { ...add, event: Number(add.event), birthYear: add.birthYear ? Number(add.birthYear) : null }, `${add.name} added`); S.raceAdd = { ...add, name: '', birthYear: '' }; },
         },
         field('Name', h('input', { required: true, maxlength: 60, value: add.name, oninput: (e) => { add.name = e.target.value; } })),
+        field('Club', h('input', { maxlength: 60, placeholder: 'Optional', value: add.team || '', oninput: (e) => { add.team = e.target.value; } })),
         groupField('Distance', choiceGroup({ name: 'raceAddEv', label: 'Distance', value: add.event, options: x.events.map((e) => ({ value: e.id, label: e.name })), onchange: (e) => { add.event = Number(e.target.value); } })),
         groupField('Category', choiceGroup({ name: 'raceAddG', label: 'Category', value: add.gender, options: [{ value: 'f', label: 'Women' }, { value: 'm', label: 'Men' }, { value: 'x', label: 'Open' }], onchange: (e) => { add.gender = e.target.value; } })),
         field('Year of birth', h('input', { type: 'number', inputmode: 'numeric', value: add.birthYear, oninput: (e) => { add.birthYear = e.target.value; } })),
@@ -7629,9 +7639,58 @@
           h('thead', {}, h('tr', {}, ['#', 'Runner', 'Time', 'Pace'].map((c, i) => h('th', { class: i > 1 ? 'num' : '' }, c)))),
           h('tbody', {}, filtered.map((f) => h('tr', { class: S.me && x.me && x.me.bib === f.bib ? 'me' : '' },
             h('td', {}, tab.filter === 'all' ? f.place : tab.filter === 'm' || tab.filter === 'f' ? f.genderPlace : f.groupPlace),
-            h('td', {}, f.handle ? h('a', { href: `/@${f.handle}` }, f.name) : f.name, h('small', { class: 'muted' }, ` · #${f.bib}${f.ageGroup ? ` · ${f.ageGroup}` : ''}`)),
+            h('td', {}, f.handle ? h('a', { href: `/@${f.handle}` }, f.name) : f.name, h('small', { class: 'muted' }, ` · #${f.bib}${f.team ? ` · ${f.team}` : ''}${f.ageGroup ? ` · ${f.ageGroup}` : ''}`)),
             h('td', { class: 'num' }, h('strong', {}, f.time)), h('td', { class: 'num muted' }, f.pace)))))),
         ev && ev.dnf.length ? h('p', { class: 'muted small' }, `Did not finish: ${ev.dnf.map((d) => d.name).join(', ')}`) : null) : null,
+    ];
+  }
+
+  // ---------- club honours and the club rankings
+  const HONOUR_ICON = { versus: '⚔️', season: '🏆', meet: '🏅', racing: '🏁', goal: '🎯', member: '⭐' };
+  function clubHonours(c) {
+    const H = S.clubHonours;
+    if (!H || H.slug !== c.slug) {
+      S.clubHonours = { slug: c.slug, loading: true };
+      api('GET', `${clubPath(c.slug)}/honours`).then((r) => { S.clubHonours = { slug: c.slug, ...r }; render(); }, () => { S.clubHonours = { slug: c.slug, trophies: [], members: [], points: 0 }; render(); });
+      return loading();
+    }
+    if (H.loading) return loading();
+    const row = (x) => h('li', {}, h('span', { 'aria-hidden': 'true' }, HONOUR_ICON[x.kind] || '⭐'), ' ', h('a', { href: x.url }, x.title), h('small', { class: 'muted' }, ` · ${x.detail || ''}`), h('small', { class: 'muted', style: 'margin-left:auto' }, `+${x.points}`));
+    const share = () => shareSheet({ title: `${c.name}'s honours`, text: H.rank ? `${c.name}: #${H.rank.place} in the club rankings with ${H.points} points this year 🏆` : `${c.name} on Tonament`, url: `${location.origin}/club/${c.slug}?tab=ladder`, image: `/img/club/${c.slug}.png` });
+    return h('div', { class: 'card club-honours' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Honours'), H.rank ? h('a', { class: 'pill org', href: '/clubs/rankings' }, `#${H.rank.place} of ${H.rank.of}`) : null),
+      h('div', { class: 'run-stats' },
+        h('div', { class: 'run-stat' }, h('small', { class: 'muted' }, 'Points this year'), h('strong', {}, H.points)),
+        h('div', { class: 'run-stat' }, h('small', { class: 'muted' }, 'Trophies'), h('strong', {}, H.trophies.length)),
+        h('div', { class: 'run-stat' }, h('small', { class: 'muted' }, 'Members\' wins'), h('strong', {}, H.members.length))),
+      H.trophies.length ? h('ul', { class: 'cc-list honours-list' }, H.trophies.slice(0, 8).map(row)) : null,
+      H.members.length ? h('details', { class: 'race-runners' }, h('summary', {}, `Members' wins (${H.members.length})`), h('ul', { class: 'cc-list honours-list' }, H.members.map(row))) : null,
+      !H.trophies.length && !H.members.length ? h('p', { class: 'muted' }, 'Nothing yet. Beat another club, win a season or a meet\'s team title — and members\' titles, podiums and medals count too.') : null,
+      h('div', { class: 'actions' }, h('a', { class: 'btn btn-small', href: '/clubs/rankings' }, 'Club rankings'), H.points ? h('button', { class: 'btn btn-small btn-ghost', onclick: share }, 'Share') : null));
+  }
+
+  function viewClubRankings() {
+    document.title = 'Club rankings · Tonament';
+    const L = S.clubRankings;
+    const go = (city, kind) => navigate(`/clubs/rankings${city || kind ? `?${new URLSearchParams({ ...(city && { city }), ...(kind && { kind }) })}` : ''}`);
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: '/clubs' }, '← Clubs')),
+      h('h1', {}, 'Club rankings'),
+      h('p', { class: 'muted' }, 'Clubs, academies and venues by what they and their members won in the last 12 months — club v club, seasons, team titles, and members\' titles, podiums and medals.'),
+      L == null ? loading() : [
+        h('div', { class: 'race-filters' },
+          [['', 'All'], ['club', 'Clubs'], ['academy', 'Academies'], ['venue', 'Venues'], ['team', 'Teams']].map(([v, l]) => h('button', { class: `btn btn-small${S.route.kind === v ? ' btn-primary' : ' btn-ghost'}`, 'aria-pressed': String(S.route.kind === v), onclick: () => go(S.route.city, v) }, l)),
+          L.cities.length ? h('select', { 'aria-label': 'City', onchange: (e) => go(e.target.value, S.route.kind) }, h('option', { value: '' }, 'Every city'), L.cities.map((c) => h('option', { value: c, selected: c === S.route.city }, c))) : null),
+        L.items.length ? h('div', { class: 'card' }, h('table', { class: 'season-table' },
+          h('thead', {}, h('tr', {}, ['#', 'Club', 'Trophies', 'Pts'].map((c, i) => h('th', { class: i > 1 ? 'num' : '' }, c)))),
+          h('tbody', {}, L.items.map((r) => h('tr', {}, h('td', {}, r.place),
+            h('td', {}, h('a', { href: `/club/${r.slug}?tab=ladder` }, r.name), h('small', { class: 'muted' }, ` · ${[r.kindName, r.city].filter(Boolean).join(' · ')}`)),
+            h('td', { class: 'num' }, r.trophies), h('td', { class: 'num' }, h('strong', {}, r.points)))))))
+          : empty('No clubs here yet — win something!'),
+        h('details', { class: 'card race-runners' }, h('summary', {}, 'How points work'),
+          h('p', { class: 'small' }, 'The club\'s own: club v club win 3 (draw 1) · season title 10 · team title at a meet or a racing championship 8 · club v club goal won 3.'),
+          h('p', { class: 'small' }, 'Its members\' (while they\'re in the club): tournament title 2, final 1 · race podium 2/1/1 · meet medal 2/1/1 · racing round win 2.')),
+      ],
     ];
   }
 
@@ -9407,7 +9466,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|meets(?:\/new)?$|meet\/\d+$|champs(?:\/new)?$|champ\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new|\/rankings)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|meets(?:\/new)?$|meet\/\d+$|champs(?:\/new)?$|champ\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

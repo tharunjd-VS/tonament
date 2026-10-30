@@ -32,7 +32,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|notifications|goals|goals\/new|runs|races|races\/new|meets|meets\/new|champs|champs\/new|club-run\/\d{1,12}|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|season\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|notifications|goals|goals\/new|runs|races|races\/new|meets|meets\/new|champs|champs\/new|club-run\/\d{1,12}|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|season\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|clubs\/rankings|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -428,6 +428,9 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `/api/goals/${N}/join`, (c, id) => svc.goals.join(id, c.actor)],
     ['POST', `/api/goals/${N}/leave`, (c, id) => svc.goals.leave(id, c.actor)],
     ['GET', `${C}/goals`, (c, slug) => svc.goals.forClub(slug, c.actor)],
+    // Club honours and rankings
+    ['GET', `${C}/honours`, (c, slug) => svc.honours.forClub(slug)],
+    ['GET', '/api/club-rankings', (c) => svc.honours.rankings(Object.fromEntries(c.query))],
     // Club v club
     ['GET', `${C}/club-challenges`, (c, slug) => svc.clubChallenges.forClub(slug, c.actor)],
     ['POST', `${C}/club-challenges`, (c, slug) => svc.clubChallenges.create(slug, c.actor, c.body)],

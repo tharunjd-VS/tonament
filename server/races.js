@@ -127,7 +127,10 @@ function createRaces({ db, fail, text, social, notify }) {
       if (r.status !== 'open') fail(409, 'Entries are closed');
       const [already] = await q('SELECT 1 FROM race_entries WHERE race_id = $1 AND user_id = $2', [r.id, me.id]);
       if (already) fail(409, 'You\'re already in');
-      await addEntry(q, r, { eventId: input.event, userId: me.id, name: me.name, gender: input.gender, birthYear: input.birthYear });
+      // The club they represent (if they're still in it).
+      const [rep] = await q(`SELECT o.name FROM users u JOIN orgs o ON o.id = u.rep_org_id JOIN club_members m ON m.org_id = o.id AND m.user_id = u.id AND m.status = 'active' WHERE u.id = $1`, [me.id]);
+      const e = await addEntry(q, r, { eventId: input.event, userId: me.id, name: me.name, gender: input.gender, birthYear: input.birthYear });
+      if (rep) await q('UPDATE race_entries SET team = $1 WHERE id = $2', [rep.name, e.id]);
       if (input.birthYear) await q('UPDATE users SET birth_year = COALESCE(birth_year, $1) WHERE id = $2', [Number(input.birthYear), me.id]);
     });
     return get(id, actor);
@@ -147,7 +150,9 @@ function createRaces({ db, fail, text, social, notify }) {
       const r = await manage(q, id, actor, { lock: true });
       if (r.status === 'done') fail(409, 'The results are out');
       const name = text(input.name, 'Name', { max: 60 });
-      await addEntry(q, r, { eventId: input.event, name, gender: input.gender, birthYear: input.birthYear });
+      const e = await addEntry(q, r, { eventId: input.event, name, gender: input.gender, birthYear: input.birthYear });
+      const team = text(input.team, 'Club', { max: 60, optional: true });
+      if (team) await q('UPDATE race_entries SET team = $1 WHERE id = $2', [team, e.id]);
     });
     return get(id, actor);
   }
@@ -192,7 +197,7 @@ function createRaces({ db, fail, text, social, notify }) {
       const finishers = done.map((e, i) => {
         const group = ageGroup(e.birth_year, r.starts_at);
         return {
-          id: e.id, bib: e.bib, name: e.name, handle: e.profile_public ? e.handle : null, userId: e.user_id,
+          id: e.id, bib: e.bib, name: e.name, team: e.team, handle: e.profile_public ? e.handle : null, userId: e.user_id,
           gender: e.gender, genderName: GENDERS[e.gender], ageGroup: group,
           time: clock(e.finish_s), seconds: e.finish_s, pace: clock(e.finish_s / (ev.distance_m / 1000)),
           place: i + 1, genderPlace: place(`g:${e.gender}`), groupPlace: group ? place(`a:${e.gender}:${group}`) : null,

@@ -28,6 +28,7 @@ const { createClubRuns } = require('./club-runs');
 const { createRaces } = require('./races');
 const { createMeets } = require('./meets');
 const { createChamps } = require('./champs');
+const { createHonours } = require('./honours');
 const { createGoals } = require('./goals');
 const { createTies } = require('./ties');
 const TIE = require('../public/sports/tie');
@@ -3715,6 +3716,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const races = createRaces({ db, fail, text, social, notify });
   const meets = createMeets({ db, fail, text, social, notify });
   const champs = createChamps({ db, fail, text, social, notify });
+  const honours = createHonours({ db, fail });
   const ties = createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, requireStageOpen });
   goalsRef = goals;
   const clubChallenges = createClubChallenges({
@@ -3900,6 +3902,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     races,
     meets,
     champs,
+    honours,
     referrals,
     useCredit,
     takeOverScoring,
