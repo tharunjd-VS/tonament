@@ -6814,7 +6814,7 @@
       me && me.status !== 'out' && !me.checkedIn ? etaPicker(g, s) : null,
       h('p', { class: 'muted small rsvp-count' }, `${going.length} in${g.settings.maxPlayers ? ` of ${g.settings.maxPlayers}` : ''}${waiting.length ? ` · ${waiting.length} waiting` : ''}${s.out.length ? ` · ${s.out.length} can't make it` : ''}`),
       arrivalsLine(s),
-      going.length ? h('p', { class: 'rsvp-names' }, going.map(nameChip)) : null,
+      going.length ? h('p', { class: 'rsvp-names' }, going.map((p) => nameChip(p, g.settings.time))) : null,
       waiting.length ? h('p', { class: 'rsvp-names muted small' }, 'Waitlist: ', waiting.map((p) => p.name).join(', ')) : null);
   }
 
@@ -6824,7 +6824,7 @@
     const sel = h('select', {
       'aria-label': 'Coming at',
       onchange: (e) => groupAct(() => api('POST', `${gPath(g.slug)}/sessions/${s.id}/rsvp`, { eta: e.target.value || null }), e.target.value ? `See you at ${fmtClock(e.target.value)}` : 'See you at the start'),
-    }, h('option', { value: '', selected: !me.eta }, 'From the start'),
+    }, h('option', { value: '', selected: !me.eta }, g.settings.time ? `From the start (${fmtClock(g.settings.time)})` : 'From the start'),
     etaOptions(g.settings).map((o) => h('option', { value: o.value, selected: me.eta === o.value }, o.label)));
     return h('label', { class: 'eta-field' }, h('span', {}, 'Coming at'), sel);
   }
@@ -6832,7 +6832,17 @@
   const arrivalsLine = (s) => (s.arrivals && s.arrivals.length
     ? h('p', { class: 'arrivals small' }, s.arrivals.map((a, i) => [i ? ' · ' : 'By ', h('strong', {}, fmtClock(a.time)), ` ${a.count}`]))
     : null);
-  const nameChip = (p) => h('span', { class: `name-chip${p.checkedIn ? ' here' : ''}` }, p.name, p.eta ? h('small', {}, ` ${fmtClock(p.eta)}`) : null);
+  // When someone who's in (and not here yet) is coming: their time, or the start.
+  const comingAt = (p, start) => (p.status === 'in' && !p.checkedIn ? p.eta || start || null : null);
+  // Minutes from the start to a "HH:MM" time (past midnight counts as later).
+  const afterStart = (hm, start) => {
+    const m = (x) => { const [hh, mm] = String(x || '00:00').split(':').map(Number); return hh * 60 + mm; };
+    return hm ? (m(hm) - m(start) + 1440) % 1440 : 0;
+  };
+  const nameChip = (p, start) => {
+    const at = comingAt(p, start);
+    return h('span', { class: `name-chip${p.checkedIn ? ' here' : ''}` }, p.name, at ? h('small', {}, ` ${fmtClock(at)}`) : null);
+  };
   // The session for the WhatsApp group: when, how many are going, spots left.
   function shareSession(g, s) {
     const going = s.players.filter((p) => p.status === 'in').length;
@@ -6877,7 +6887,7 @@
       here ? h('p', { class: 'small', style: 'margin:0' }, '✓ You\'re checked in — you\'ll be picked for games fairly.') : null,
       s.started && !here && me && me.status === 'in' ? etaPicker(g, s) : null,
       s.started ? arrivalsLine(s) : null,
-      s.started && s.players.some((p) => p.status === 'in' && !p.checkedIn && p.eta) ? h('p', { class: 'rsvp-names small' }, 'On the way: ', s.players.filter((p) => p.status === 'in' && !p.checkedIn).map(nameChip)) : null));
+      s.started && s.players.some((p) => p.status === 'in' && !p.checkedIn) ? h('p', { class: 'rsvp-names small' }, 'On the way: ', s.players.filter((p) => p.status === 'in' && !p.checkedIn).map((p) => nameChip(p, g.settings.time))) : null));
     // 2. Courts.
     const free = s.courts.filter((c) => !c.gameId);
     const sug = s.suggestion;
@@ -7053,9 +7063,13 @@
     const inSession = new Map(s.players.map((p) => [p.id, p]));
     const people = g.leaderboard.map((r) => ({ id: r.id, name: r.name, guest: r.guest, ...(inSession.get(r.id) || {}) }));
     const here = people.filter((p) => p.checkedIn);
-    const said = people.filter((p) => !p.checkedIn && p.status === 'in');
+    // Said they're in: by when they're coming (the start, or the time they picked).
+    const start = g.settings.time;
+    const said = people.filter((p) => !p.checkedIn && p.status === 'in')
+      .sort((a, b) => afterStart(comingAt(a, start), start) - afterStart(comingAt(b, start), start) || a.name.localeCompare(b.name));
     const rest = people.filter((p) => !p.checkedIn && p.status !== 'in');
-    const row = (p, on) => h('li', { 'data-name': p.name.toLowerCase() }, h('span', {}, p.name, p.guest ? h('small', { class: 'muted' }, ' · added by name') : null),
+    const row = (p, on) => h('li', { 'data-name': p.name.toLowerCase() }, h('span', {}, p.name, p.guest ? h('small', { class: 'muted' }, ' · added by name') : null,
+      comingAt(p, start) ? h('small', { class: 'muted' }, ` · ${fmtClock(comingAt(p, start))}`) : null),
       on ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => checkIn(false, p.id) }, 'Not here')
         : h('button', { class: 'btn btn-small btn-primary', onclick: () => checkIn(true, p.id) }, 'Here'));
     const section = (title, list, on) => (list.length
