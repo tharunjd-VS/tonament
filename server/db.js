@@ -969,11 +969,17 @@ CREATE TABLE IF NOT EXISTS champ_results (
 -- when entering meets), and a race entry's club.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS rep_org_id INTEGER;
 ALTER TABLE race_entries ADD COLUMN IF NOT EXISTS team TEXT;
+-- v48: when each rally was scored (milliseconds, beside the rallies string;
+-- see server/rally-times.js), for video, highlights and stats later.
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS rally_times JSONB;
+ALTER TABLE rubbers ADD COLUMN IF NOT EXISTS rally_times JSONB;
+ALTER TABLE challenges ADD COLUMN IF NOT EXISTS rally_times JSONB;
+ALTER TABLE group_games ADD COLUMN IF NOT EXISTS rally_times JSONB;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 47;
+const SCHEMA_VERSION = 48;
 
 async function migrate(db) {
   try {

@@ -29,6 +29,7 @@ const { createRaces } = require('./races');
 const { createMeets } = require('./meets');
 const { createChamps } = require('./champs');
 const { createHonours } = require('./honours');
+const rallyTimes = require('./rally-times');
 const { createGoals } = require('./goals');
 const { createTies } = require('./ties');
 const TIE = require('../public/sports/tie');
@@ -2918,21 +2919,23 @@ function createService(db, { mailer, fetchImpl } = {}) {
       await claimMatch(q, m, actor);
       checkAt(m, at);
 
-      const tap = sports.tapFor(scoreOf(t, m), { ...extra, side });
+      const { t: tapAt, ...how } = extra;
+      const tap = sports.tapFor(scoreOf(t, m), { ...how, side });
       if (tap.error) fail(400, tap.error);
-      return saveRallies(q, tournament, t, m, m.rallies + tap.ch);
+      return saveRallies(q, tournament, t, m, m.rallies + tap.ch, tapAt);
     });
   }
 
   // A match's points, saved; when that finishes it, the bracket moves on,
   // the event may complete and the court calls its next match.
-  async function saveRallies(q, tournament, t, m, rallies) {
+  async function saveRallies(q, tournament, t, m, rallies, tapAt) {
     const score = scoreOf(t, m, rallies);
     const winnerId = score.winner ? (score.winner === 'a' ? m.a_id : m.b_id) : null;
     const over = league.finished(score); // won, or drawn in a 2-game league match
+    const times = rallyTimes.nextTimes(m.rallies, m.rally_times, rallies, tapAt);
     const [row] = await q(
-      `UPDATE matches SET rallies = $1, status = $2, winner_id = $3, updated_at = now() WHERE id = $4 RETURNING *`,
-      [rallies, over ? 'done' : 'live', winnerId, m.id],
+      `UPDATE matches SET rallies = $1, status = $2, winner_id = $3, rally_times = $5::jsonb, updated_at = now() WHERE id = $4 RETURNING *`,
+      [rallies, over ? 'done' : 'live', winnerId, m.id, rallyTimes.json(times)],
     );
     if (tournament.season_id && seasonsRef && (over || m.status === 'done')) {
       const g = score.single ? score.games[0] : score.gamesWon;
@@ -2966,7 +2969,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
       const built = fromScores((log) => scoreOf(t, m, log), games);
       if (built.error) fail(400, built.error);
       if (!league.finished(built.score)) fail(400, `That doesn't finish the match — enter every ${(built.score.unit || 'game').toLowerCase()} played`);
-      return saveRallies(q, tournament, t, m, built.rallies);
+      return saveRallies(q, tournament, t, m, built.rallies, rallyTimes.REPLACED);
     });
   }
   async function setResult(id, actor, mid, games, at) {
@@ -3019,8 +3022,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
       }
       // Undoing a retirement reopens the match with its points; otherwise the last point goes.
       const [row] = await q(
-        `UPDATE matches SET rallies = $1, status = 'live', winner_id = NULL, retired = NULL, updated_at = now() WHERE id = $2 RETURNING *`,
-        [m.retired ? m.rallies : m.rallies.slice(0, -1), m.id],
+        `UPDATE matches SET rallies = $1, status = 'live', winner_id = NULL, retired = NULL, rally_times = $3::jsonb, updated_at = now() WHERE id = $2 RETURNING *`,
+        [m.retired ? m.rallies : m.rallies.slice(0, -1), m.id, rallyTimes.json(rallyTimes.nextTimes(m.rallies, m.rally_times, m.retired ? m.rallies : m.rallies.slice(0, -1)))],
       );
       if (m.status === 'done' && tournament.season_id && seasonsRef) await seasonsRef.matchChanged(q, tournament.season_id, row, false);
       return viewOfRow(q, t, row);

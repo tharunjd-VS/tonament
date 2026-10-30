@@ -4162,7 +4162,7 @@
   const tieQueue = [];
   let tieSending = false;
   function tieTap(t, mid, n, extra) {
-    tieQueue.push({ n, extra });
+    tieQueue.push({ n, extra: { ...extra, t: Date.now() } });
     render();
     if (tieSending) return;
     tieSending = true;
@@ -4612,12 +4612,13 @@
     const tap = TonamentRally.tapFor(shown.score, { ...extra, side });
     if (tap.error) return toast(tap.error, true);
     if (navigator.vibrate) navigator.vibrate(12);
-    enqueue(t, m.id, { type: 'rally', side, ...extra, ch: tap.ch });
+    enqueue(t, m.id, { type: 'rally', side, ...extra, ch: tap.ch, t: Date.now() });
     const after = withPending(t, confirmedMatch(m.id) || m);
     if (after.status === 'done') toast(after.draw ? `🤝 Match drawn ${after.summary}` : `🏸 ${after[after.score.winner].name} wins ${after.summary}`);
   }
   // What a queued tap sends: the side, plus points / foul / end when set.
-  const tapBody = (op, at) => ({ side: op.side, points: op.points, foul: op.foul, end: op.end, at });
+  // t: when the tap happened (queued taps keep their own time; see server/rally-times.js).
+  const tapBody = (op, at) => ({ side: op.side, points: op.points, foul: op.foul, end: op.end, at, t: op.t });
 
   function undo(t, m) {
     const shown = withPending(t, confirmedMatch(m.id) || m);
@@ -6731,7 +6732,7 @@
     if (op.type === 'rally') {
       const tap = TonamentRally.tapFor(groupGameNow(g, x).score || {}, op);
       if (tap.error) return toast(tap.error, true);
-      op = { ...op, ch: tap.ch };
+      op = { ...op, ch: tap.ch, t: Date.now() };
     }
     gQueues.set(x.id, [...(gQueues.get(x.id) || []), op]);
     render();
@@ -8329,7 +8330,7 @@
   const chQueue = [];
   let chSending = false;
   function challengeTap(id, extra) {
-    chQueue.push(extra);
+    chQueue.push({ ...extra, t: Date.now() });
     render();
     if (!chSending) sendChallengeTaps(id);
   }

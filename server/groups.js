@@ -6,6 +6,7 @@
 // live and the losing side confirms; confirmed games move ratings.
 
 const crypto = require('node:crypto');
+const rallyTimes = require('./rally-times');
 const sports = require('./sports');
 const L = require('./group-logic');
 const { courtWord, levelsFor } = require('../public/sports/events');
@@ -546,13 +547,14 @@ function createGroups({ db, fail, text, orgs, social = null, notify = null, rati
       if (x.status !== 'live') fail(409, 'This game is over');
       if (x.final) fail(409, 'This game was entered as a final score');
       if (at !== undefined && Number(at) !== x.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
-      const tap = sports.tapFor(scoreOf(g, x, x.rallies), { ...extra, side });
+      const { t: tapAt, ...how } = extra;
+      const tap = sports.tapFor(scoreOf(g, x, x.rallies), { ...how, side });
       if (tap.error) fail(400, tap.error);
       const rallies = x.rallies + tap.ch;
       const sc = scoreOf(g, x, rallies);
       const [row] = await q(
-        `UPDATE group_games SET rallies = $1, status = $2, winner = $3, ended_at = $4 WHERE id = $5 RETURNING *`,
-        [rallies, sc.winner ? 'done' : 'live', sc.winner || null, sc.winner ? new Date().toISOString() : null, x.id],
+        `UPDATE group_games SET rallies = $1, status = $2, winner = $3, ended_at = $4, rally_times = $6::jsonb WHERE id = $5 RETURNING *`,
+        [rallies, sc.winner ? 'done' : 'live', sc.winner || null, sc.winner ? new Date().toISOString() : null, x.id, rallyTimes.json(rallyTimes.nextTimes(x.rallies, x.rally_times, rallies, tapAt))],
       );
       if (row.status === 'done') await askToConfirm(q, g, row, actor.user.id);
       return gameView(q, g, row, m, actor);
@@ -567,7 +569,8 @@ function createGroups({ db, fail, text, orgs, social = null, notify = null, rati
       if (!canScore(m, actor, x)) fail(403, 'Only the players in this game can score it');
       if (!['live', 'done'].includes(x.status) || !x.rallies) fail(409, 'Nothing to undo');
       if (at !== undefined && Number(at) !== x.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
-      const [row] = await q(`UPDATE group_games SET rallies = $1, status = 'live', winner = NULL, ended_at = NULL WHERE id = $2 RETURNING *`, [x.rallies.slice(0, -1), x.id]);
+      const [row] = await q(`UPDATE group_games SET rallies = $1, status = 'live', winner = NULL, ended_at = NULL, rally_times = $3::jsonb WHERE id = $2 RETURNING *`,
+        [x.rallies.slice(0, -1), x.id, rallyTimes.json(rallyTimes.nextTimes(x.rallies, x.rally_times, x.rallies.slice(0, -1)))]);
       return gameView(q, g, row, m, actor);
     });
   }
@@ -583,7 +586,7 @@ function createGroups({ db, fail, text, orgs, social = null, notify = null, rati
       const a = Number(input.a);
       const b = Number(input.b);
       if (![a, b].every((n) => Number.isInteger(n) && n >= 0 && n <= 99) || a === b) fail(400, 'Enter both scores, like 21 and 17');
-      await q(`UPDATE group_games SET final = $1::jsonb, rallies = '', status = 'done', winner = $2, ended_at = now() WHERE id = $3`,
+      await q(`UPDATE group_games SET final = $1::jsonb, rallies = '', rally_times = NULL, status = 'done', winner = $2, ended_at = now() WHERE id = $3`,
         [JSON.stringify({ a, b }), a > b ? 'a' : 'b', x.id]);
       const done = await gameOf(q, g, x.id);
       await askToConfirm(q, g, done, actor.user.id);

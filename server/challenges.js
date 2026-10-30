@@ -12,6 +12,7 @@
 const sports = require('./sports');
 const EVENTS = require('../public/sports/events');
 const L = require('./group-logic');
+const rallyTimes = require('./rally-times');
 
 const AUTO_CONFIRM_HOURS = 24;
 const EXPIRE_DAYS = 14;
@@ -275,7 +276,7 @@ function createChallenges({ db, fail, text, social, notify }) {
     if (!['accepted', 'live'].includes(x.status)) fail(409, x.status === 'sent' ? 'Waiting for them to accept' : 'This game is over');
     return x;
   }
-  async function rally(id, actor, { side, at, ...extra } = {}) {
+  async function rally(id, actor, { side, at, t: tapAt, ...extra } = {}) {
     await db.tx(async (q) => {
       const x = await playing(q, id, actor);
       if (x.final) fail(409, 'This game was entered as a final score');
@@ -284,8 +285,8 @@ function createChallenges({ db, fail, text, social, notify }) {
       if (tap.error) fail(400, tap.error);
       const rallies = x.rallies + tap.ch;
       const sc = scoreOf(x, rallies);
-      await q('UPDATE challenges SET rallies = $1, status = $2, winner = $3, ended_at = $4 WHERE id = $5',
-        [rallies, sc.winner ? 'done' : 'live', sc.winner || null, sc.winner ? new Date().toISOString() : null, x.id]);
+      await q('UPDATE challenges SET rallies = $1, status = $2, winner = $3, ended_at = $4, rally_times = $6::jsonb WHERE id = $5',
+        [rallies, sc.winner ? 'done' : 'live', sc.winner || null, sc.winner ? new Date().toISOString() : null, x.id, rallyTimes.json(rallyTimes.nextTimes(x.rallies, x.rally_times, rallies, tapAt))]);
       if (sc.winner) await askToConfirm(q, { ...x, rallies, winner: sc.winner }, actor.user.id);
     });
     return get(id, actor);
@@ -297,7 +298,8 @@ function createChallenges({ db, fail, text, social, notify }) {
       if (!sideOf(x, me.id)) fail(403, 'Only the players can score this game');
       if (!['live', 'done'].includes(x.status) || !x.rallies || x.final) fail(409, 'Nothing to undo');
       if (at !== undefined && Number(at) !== x.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
-      await q(`UPDATE challenges SET rallies = $1, status = 'live', winner = NULL, ended_at = NULL WHERE id = $2`, [x.rallies.slice(0, -1), x.id]);
+      await q(`UPDATE challenges SET rallies = $1, status = 'live', winner = NULL, ended_at = NULL, rally_times = $3::jsonb WHERE id = $2`,
+        [x.rallies.slice(0, -1), x.id, rallyTimes.json(rallyTimes.nextTimes(x.rallies, x.rally_times, x.rallies.slice(0, -1)))]);
     });
     return get(id, actor);
   }
@@ -308,7 +310,7 @@ function createChallenges({ db, fail, text, social, notify }) {
       const b = Number(input.b);
       if (![a, b].every((v) => Number.isInteger(v) && v >= 0 && v <= 99) || a === b) fail(400, 'Enter both scores, like 21 and 17');
       const winner = a > b ? 'a' : 'b';
-      await q(`UPDATE challenges SET final = $1::jsonb, rallies = '', status = 'done', winner = $2, ended_at = now() WHERE id = $3`, [JSON.stringify({ a, b }), winner, x.id]);
+      await q(`UPDATE challenges SET final = $1::jsonb, rallies = '', rally_times = NULL, status = 'done', winner = $2, ended_at = now() WHERE id = $3`, [JSON.stringify({ a, b }), winner, x.id]);
       await askToConfirm(q, { ...x, final: { a, b }, winner }, actor.user.id);
     });
     return get(id, actor);

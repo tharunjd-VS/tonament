@@ -11,6 +11,7 @@
 const sports = require('./sports');
 const TIE = require('../public/sports/tie');
 const { fromScores } = require('../public/sports/result');
+const rallyTimes = require('./rally-times');
 
 function createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, requireStageOpen }) {
   const baseOf = (t) => t.sportDef.tieOf || sports.get(t.sport);
@@ -148,17 +149,18 @@ function createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, 
     const rallies = done.map((r) => r.winner).join('');
     if (rallies !== m.rallies) await saveRallies(q, tournament, t, m, rallies);
   }
-  async function saveRubber(q, tournament, t, m, r, { rallies = r.rallies, final = null }) {
+  async function saveRubber(q, tournament, t, m, r, { rallies = r.rallies, final = null, tapAt }) {
     const score = final ? null : rubberScore(t, r, rallies);
     const winner = final ? (final.filter((g) => g.a > g.b).length > final.filter((g) => g.b > g.a).length ? 'a' : 'b') : score.winner || null;
     await q(
-      `UPDATE rubbers SET rallies = $1, final = $2::jsonb, winner = $3, status = $4, finished_at = $5 WHERE id = $6`,
-      [rallies, final ? JSON.stringify(final) : null, winner, winner ? 'done' : 'live', winner ? new Date().toISOString() : null, r.id],
+      `UPDATE rubbers SET rallies = $1, final = $2::jsonb, winner = $3, status = $4, finished_at = $5, rally_times = $7::jsonb WHERE id = $6`,
+      [rallies, final ? JSON.stringify(final) : null, winner, winner ? 'done' : 'live', winner ? new Date().toISOString() : null, r.id,
+        rallyTimes.json(rallyTimes.nextTimes(r.rallies, r.rally_times, rallies, tapAt))],
     );
     await settleTie(q, tournament, t, m);
   }
 
-  async function rally(id, actor, mid, n, { side, at, ...extra } = {}) {
+  async function rally(id, actor, mid, n, { side, at, t: tapAt, ...extra } = {}) {
     if (!extra.end && side !== 'a' && side !== 'b') fail(400, 'side must be "a" or "b"');
     await db.tx(async (q) => {
       const { tournament, m, t, r } = await rubberFor(q, id, actor, mid, n);
@@ -167,7 +169,7 @@ function createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, 
       if (at !== undefined && Number(at) !== r.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
       const tap = sports.tapFor(rubberScore(t, r), { ...extra, side });
       if (tap.error) fail(400, tap.error);
-      await saveRubber(q, tournament, t, m, r, { rallies: r.rallies + tap.ch });
+      await saveRubber(q, tournament, t, m, r, { rallies: r.rallies + tap.ch, tapAt });
     });
     return view(id, actor, mid);
   }
@@ -177,7 +179,7 @@ function createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, 
       if (m.status === 'done') fail(409, 'This tie is decided — its results are final');
       if (at !== undefined && Number(at) !== r.rallies.length) fail(409, 'Someone else scored at the same time — the score has been refreshed', 'stale');
       if (r.final) {
-        await q(`UPDATE rubbers SET final = NULL, winner = NULL, status = 'live', finished_at = NULL WHERE id = $1`, [r.id]);
+        await q(`UPDATE rubbers SET final = NULL, winner = NULL, status = 'live', finished_at = NULL, rally_times = NULL WHERE id = $1`, [r.id]);
         await settleTie(q, tournament, t, m);
         return;
       }
@@ -195,7 +197,7 @@ function createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, 
       const built = fromScores((log) => rubberScore(t, r, log), games);
       if (built.error) fail(400, built.error);
       if (!built.score.winner) fail(400, 'That doesn\'t finish the match — enter every game played');
-      await saveRubber(q, tournament, t, m, r, { rallies: built.rallies });
+      await saveRubber(q, tournament, t, m, r, { rallies: built.rallies, tapAt: rallyTimes.REPLACED });
     });
     return view(id, actor, mid);
   }
