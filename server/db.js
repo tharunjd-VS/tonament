@@ -1020,11 +1020,23 @@ CREATE TABLE IF NOT EXISTS cron_runs (
   detail      JSONB
 );
 CREATE INDEX IF NOT EXISTS cron_runs_job ON cron_runs (job, started_at);
+-- v50: templates: a tournament's events and settings, saved to start new
+-- ones from (no dates, entries or results).
+CREATE TABLE IF NOT EXISTS tournament_templates (
+  id          SERIAL PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  sport       TEXT NOT NULL,
+  setup       JSONB NOT NULL,
+  from_tournament TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS tournament_templates_user ON tournament_templates (user_id, created_at);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 49;
+const SCHEMA_VERSION = 50;
 
 async function migrate(db) {
   try {

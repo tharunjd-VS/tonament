@@ -1784,3 +1784,10 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .wrap-close { position: absolute; top: 10px; right: 10px; font-size: 1.3rem; line-height: 1; }
 .wrap-invite { margin: 12px 0 0; }
 .event-share { justify-content: flex-end; margin: 0 0 12px; }
+
+/* ---------- one-screen create, copying settings, templates */
+.quick-new { display: grid; gap: 14px; }
+.quick-new h1 { margin: 0; }
+.copy-sheet .copy-list { display: grid; gap: 8px; margin: 12px 0; max-height: 50vh; overflow: auto; }
+.template-card .card-head { align-items: flex-start; }
+.template-card p { margin: 8px 0; }

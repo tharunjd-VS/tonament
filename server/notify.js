@@ -27,6 +27,7 @@ const KINDS = {
   season: { label: 'Club seasons', email: false },
   club_run: { label: 'Club runs', email: false },
   race: { label: 'Race results', email: true },
+  edition: { label: 'Tournaments you played, back again', email: true },
 };
 const PAGE = 40;
 const DELIVERY_MS = 4000;

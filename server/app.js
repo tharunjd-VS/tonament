@@ -33,7 +33,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|play|compete|you|notifications|goals|goals\/new|runs|races|races\/new|meets|meets\/new|champs|champs\/new|club-run\/\d{1,12}|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|season\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|clubs\/rankings|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|play|compete|you|notifications|goals|goals\/new|runs|races|races\/new|meets|meets\/new|champs|champs\/new|club-run\/\d{1,12}|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|season\/\d{1,12}|invite|templates|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|clubs\/rankings|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -234,6 +234,12 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging } = {}) {
     ['GET', '/api/tournaments', (c) => svc.listTournaments(Object.fromEntries(c.query)), 5],
     ['GET', '/api/tournaments/places', () => svc.tournamentPlaces(), 60],
     ['POST', '/api/tournaments', (c) => svc.createTournament(c.actor, c.body)],
+    ['POST', `${T}/template`, (c, id) => svc.saveTemplate(id, c.actor, c.body)],
+    ['POST', `${T}/invite-previous`, (c, id) => svc.invitePrevious(id, c.actor, c.body)],
+    ['POST', `${T}/events/${N}/copy`, (c, id, eid) => svc.copyEventSettings(id, c.actor, eid, c.body)],
+    ['GET', '/api/me/templates', (c) => svc.myTemplates(c.actor)],
+    ['PATCH', '/api/templates/(\\d+)', (c, tid) => svc.renameTemplate(tid, c.actor, c.body)],
+    ['DELETE', '/api/templates/(\\d+)', (c, tid) => svc.deleteTemplate(tid, c.actor)],
     // Spectators poll the public copy; anyone signed in or holding a link asks
     // for their own copy with ?me=1, which is never cached.
     ['GET', T, (c, id) => svc.getTournament(id, c.query.has('me') ? c.actor : null), (c) => (c.query.has('me') ? 0 : 1)],

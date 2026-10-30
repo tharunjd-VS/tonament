@@ -176,7 +176,8 @@
         : 'Every match is done. Share the results while everyone\'s still talking about it — the picture is made for WhatsApp and Instagram.'),
       h('div', { class: 'actions' },
         tt.visibility !== 'private' ? h('button', { class: 'btn btn-primary', type: 'button', onclick: () => shareTournament(tt) }, 'Share the results') : null,
-        tt.visibility !== 'private' && done.length > 1 ? h('button', { class: 'btn', type: 'button', onclick: () => actionSheet('Share one event', done.map((e) => ({ label: e.name, hint: 'Its podium', onClick: () => shareEvent(tt, e) }))) }, 'One event') : null),
+        tt.visibility !== 'private' && done.length > 1 ? h('button', { class: 'btn', type: 'button', onclick: () => actionSheet('Share one event', done.map((e) => ({ label: e.name, hint: 'Its podium', onClick: () => shareEvent(tt, e) }))) }, 'One event') : null,
+        h('a', { class: 'btn', href: runAgainHref(tt) }, 'Run it again')),
       h('p', { class: 'muted small wrap-invite' }, 'Know someone else who runs tournaments? ',
         r && r.enabled ? 'Your link gives them their first one free — and you a free upgrade when they run it. ' : '',
         h('button', { class: 'link-btn', type: 'button', onclick: () => shareText(`I ran ${tt.name} on Tonament — entries, draws and live scores on everyone's phone. Try it for your next tournament: ${invite}`) }, 'Send them Tonament')));
@@ -584,7 +585,10 @@
           navigate('/signin?next=/new', { replace: true });
           return;
         }
-        S.route = { name: 'new' };
+        // /new?from=t:<id> (run it again) or ?from=tpl:<id> (a template).
+        const from = /^(t|tpl):[a-z0-9-]{1,80}$/.test(params.get('from') || '') ? params.get('from') : '';
+        if (!S.newDraft || from !== (S.newDraft.from || '')) S.newDraft = null;
+        S.route = { name: 'new', from, title: (params.get('name') || '').slice(0, 80) };
       } else if (parts[0] === 'signin' || parts[0] === 'signup') {
         S.route = { name: parts[0], next: params.get('next') || '/', email: params.get('email') || '' };
       } else if (parts[0] === 'forgot') {
@@ -597,6 +601,17 @@
         history.replaceState(null, '', '/link'); // keep the token out of history
         render();
         await useLink();
+        return;
+      } else if (parts[0] === 'templates') {
+        if (!S.me) {
+          navigate('/signin?next=/templates', { replace: true });
+          return;
+        }
+        S.route = { name: 'templates' };
+        S.templates = null;
+        render();
+        S.templates = (await api('GET', '/me/templates').catch(() => ({ templates: [] }))).templates;
+        if (S.route.name === 'templates') render();
         return;
       } else if (parts[0] === 'invite') {
         if (!S.me) {
@@ -1097,6 +1112,7 @@
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
     else if (S.route.name === 'display') view = S.t ? viewDisplay() : loading();
     else if (S.route.name === 'invite') view = viewInvite();
+    else if (S.route.name === 'templates') view = viewTemplates();
     else if (S.route.name === 'play') view = viewPlay();
     else if (S.route.name === 'compete') view = viewCompete();
     else if (S.route.name === 'you') view = viewYou();
@@ -1228,6 +1244,7 @@
         { href: '/me/profile', label: 'Your profile', hint: 'Results, ratings, the club you represent' },
         { href: '/notifications', label: 'Notifications', hint: 'What\'s new, and how you\'re told' },
         { href: '/compete', label: 'My entries and tournaments', hint: 'Everything you\'ve entered or run' },
+        { href: '/templates', label: 'Tournament templates', hint: 'Start new tournaments from your favourite setups' },
       ],
       [
         ...(S.myOrgs || []).map((o) => ({ href: `/@${o.slug}/edit`, label: o.name, hint: o.live ? 'Your public page' : 'Your page (draft)' })),
@@ -2038,96 +2055,119 @@
   // Everything else starts from sensible defaults and is set up afterwards
   // from the checklist on the tournament page. The draft lives in S so a
   // redraw never loses it.
+  // Next year's edition: "Diwali Open 2025" → "Diwali Open 2026".
+  const nextEdition = (name) => {
+    const year = new Date().getFullYear();
+    const m = String(name).match(/\b(20\d\d)\b/);
+    if (!m) return name;
+    return name.replace(m[1], String(Math.max(Number(m[1]) + 1, year)));
+  };
+  // A template's name for this year's tournament.
+  const withYear = (name) => (/\b20\d\d\b/.test(name) ? nextEdition(name) : `${name} ${new Date().getFullYear()}`);
+  // Everything on one screen: start blank, from a template or from a
+  // tournament you ran; name, date, events and format; create.
   function viewNew() {
     document.title = 'New tournament · Tonament';
     const live = liveSports();
     if (!live.length) return loading();
-    const d = (S.newDraft ||= { step: 1, sport: null, types: null, custom: false, events: null, name: '', startsOn: '', startTime: '' });
-    const sport = live.find((x) => x.id === d.sport);
-    if (!sport) d.step = 1;
-    const go = (step) => { d.step = step; render(); window.scrollTo(0, 0); };
-    const presets = sport ? CAT.presetsFor(sport.id) : [];
-    if (sport && !d.types) d.types = [typeOf(presets[0])];
-    const chosen = () => (d.custom ? d.events || [] : d.types.map((type) => ({ ...fromType(type), age: 'Open', level: 'Open' })));
-
-    const head = h('div', { class: 'new-head' },
-      d.step > 1 ? h('button', { type: 'button', class: 'back-link', onclick: () => go(d.step - 1) }, '← Back') : h('span'),
-      h('span', { class: 'new-progress', 'aria-label': `Step ${d.step} of 3` }, `Step ${d.step} of 3`,
-        h('span', { class: 'dots', 'aria-hidden': 'true' }, [1, 2, 3].map((n) => h('span', { class: n <= d.step ? 'on' : '' })))));
-
-    // 1. Sport: tapping a tile moves on.
-    if (d.step === 1) {
-      const soon = S.sports.filter((x) => x.status !== 'live');
-      return h('div', { class: 'card new-flow' }, head,
-        h('h1', {}, 'New tournament'),
-        h('h2', {}, 'Which sport?'),
-        choiceGroup({
-          name: 'sport', label: 'Sport', value: d.sport, tiles: true,
-          options: live.map((x) => ({ value: x.id, label: x.name, icon: x.id })),
-          onchange: (e) => {
-            if (d.sport !== e.target.value) Object.assign(d, { sport: e.target.value, types: null, custom: false, events: null });
-            go(2);
-          },
-        }),
-        soon.length ? h('p', { class: 'muted small' }, `Coming soon: ${soon.map((x) => x.name).join(', ')}. `, h('a', { href: '/' }, 'Request yours')) : null);
+    const d = (S.newDraft ||= { from: S.route.from || '', sport: live[0].id, types: null, custom: false, events: null, format: 'league_knockout', name: S.route.title || '', startsOn: '', startTime: '', only: null, sourceEvents: null });
+    if (S.newTemplates === undefined) { S.newTemplates = null; api('GET', '/me/templates').then((r) => { S.newTemplates = r.templates; render(); }).catch(() => { S.newTemplates = []; }); }
+    if (S.mine === undefined) { S.mine = null; api('GET', '/me/tournaments').then((l) => { S.mine = l; render(); }, () => { S.mine = []; }); }
+    const templates = S.newTemplates || [];
+    const past = (S.mine || []).filter((t) => ['owner', 'organiser'].includes(t.role)).slice(0, 8);
+    // The source: '' (blank), 'tpl:<id>' or 't:<id>'.
+    const [kind, ref] = d.from ? d.from.split(/:(.*)/s) : ['', ''];
+    const tpl = kind === 'tpl' ? templates.find((x) => String(x.id) === ref) : null;
+    const pastT = kind === 't' ? past.find((x) => x.id === ref) || (S.newSource && S.newSource.id === ref ? S.newSource : null) : null;
+    if (kind === 't' && (!S.newSource || S.newSource.id !== ref)) {
+      S.newSource = { id: ref, loading: true };
+      api('GET', `/tournaments/${encodeURIComponent(ref)}?me=1`).then((t) => { S.newSource = { id: t.id, name: t.name, sport: t.sport.id, events: t.events.map((e) => e.name) }; render(); })
+        .catch(() => { S.newSource = { id: ref, error: true }; render(); });
     }
+    const source = tpl ? { name: tpl.name, sport: tpl.sport, events: tpl.events } : kind === 't' && S.newSource && S.newSource.id === ref && !S.newSource.loading ? S.newSource : null;
+    // Arriving with a source (a template's "Use it"): its name to start with.
+    if (source && !d.name && !d.nameTouched) d.name = tpl ? withYear(tpl.name) : nextEdition(source.name);
+    const sport = live.find((x) => x.id === (source ? source.sport : d.sport)) || live[0];
+    const presets = CAT.presetsFor(sport.id);
+    if (!d.types || !d.types.length) d.types = [typeOf(presets[0])];
+    const chosen = () => (d.custom ? d.events || [] : d.types.map((type) => ({ ...fromType(type), age: 'Open', level: 'Open' })));
+    const pick = (value) => {
+      Object.assign(d, { from: value, only: null });
+      if (value.startsWith('t:')) {
+        const t = past.find((x) => `t:${x.id}` === value);
+        if (t && !d.nameTouched) d.name = nextEdition(t.name);
+      } else if (value.startsWith('tpl:')) {
+        const x = templates.find((y) => `tpl:${y.id}` === value);
+        if (x && !d.nameTouched) d.name = withYear(x.name);
+      }
+      render();
+    };
 
-    // 2. Events: this sport's own list, several at once.
-    if (d.step === 2) {
-      const next = h('button', { type: 'button', class: 'btn btn-primary btn-lg', disabled: !chosen().length }, 'Next');
-      let builder = null;
-      const readBuilder = () => {
-        const { events, error } = builder.readList();
-        if (error) { toast(error, true); return false; }
-        d.events = events;
-        return true;
-      };
-      next.onclick = () => { if (!d.custom || readBuilder()) go(3); };
+    const starts = templates.length || past.length
+      ? field('Start from', h('select', { value: d.from, onchange: (e) => pick(e.target.value) },
+        h('option', { value: '' }, 'A blank tournament'),
+        templates.length ? h('optgroup', { label: 'Your templates' }, templates.map((x) => h('option', { value: `tpl:${x.id}` }, `${x.name} · ${x.events.length} event${x.events.length === 1 ? '' : 's'}`))) : null,
+        past.length ? h('optgroup', { label: 'A tournament you ran (same events and settings)' }, past.map((x) => h('option', { value: `t:${x.id}` }, x.name))) : null,
+        kind === 't' && !past.some((x) => x.id === ref) ? h('option', { value: d.from }, pastT && pastT.name ? pastT.name : 'That tournament') : null), null,
+      d.from ? 'Its events, format, scoring, fees, prizes and venue — no players or results.' : null)
+      : null;
+
+    let builder = null;
+    let what;
+    if (d.from) {
+      if (!source) what = S.newSource && S.newSource.error ? h('p', { class: 'muted small' }, 'Couldn\'t open that tournament.') : loading();
+      else {
+        const on = d.only || source.events;
+        const group = choiceGroup({
+          name: 'only', label: 'Events', multiple: true, value: on,
+          options: source.events.map((x) => ({ value: x, label: x })),
+          onchange: () => { d.only = [...group.querySelectorAll('input:checked')].map((x) => x.value); },
+        });
+        what = h('div', { class: 'field' }, h('span', { class: 'label' }, `${sport.name} events`), group);
+      }
+    } else {
       const quick = choiceGroup({
         name: 'types', label: 'Events', value: d.types, multiple: true, tiles: true,
         options: presets.map((p) => ({ value: typeOf(p), label: p.label, icon: typeIcon(typeOf(p)) })),
-        onchange: () => {
-          d.types = [...quick.querySelectorAll('input:checked')].map((x) => x.value);
-          next.disabled = !d.types.length;
-        },
+        onchange: () => { d.types = [...quick.querySelectorAll('input:checked')].map((x) => x.value); },
       });
       if (d.custom) builder = eventBuilder(d.events || chosen(), sport.id);
-      return h('div', { class: 'card new-flow' }, head,
-        h('h2', {}, `Which ${sport.name.toLowerCase()} events?`),
-        d.custom
-          ? [h('p', { class: 'muted small' }, 'Each event gets its own entries and draw.'), builder]
-          : [h('p', { class: 'muted small' }, 'Tap all that apply. Each gets its own entries and draw.'), quick,
-            h('button', {
-              type: 'button', class: 'link-btn',
-              onclick: () => { d.events = chosen(); d.custom = true; render(); },
-            }, 'Age groups, levels or more events…')],
-        h('div', { class: 'actions' }, next));
+      what = [
+        field('Sport', h('select', {
+          name: 'sport', value: sport.id,
+          onchange: (e) => { Object.assign(d, { sport: e.target.value, types: null, custom: false, events: null }); render(); },
+        }, live.map((x) => h('option', { value: x.id }, x.name)))),
+        h('div', { class: 'field' }, h('span', { class: 'label' }, `${sport.name} events`),
+          d.custom ? builder : [quick,
+            h('button', { type: 'button', class: 'link-btn', onclick: () => { d.events = chosen(); d.custom = true; render(); } }, 'Age groups, levels or more events…')]),
+        groupField('Format', choiceGroup({
+          name: 'format', label: 'Format', value: d.format,
+          options: FORMATS.map(([value, label]) => ({ value, label })),
+          onchange: (e) => { d.format = e.target.value; },
+        }), null, 'For every event; change any of them later.'),
+      ];
     }
 
-    // 3. Name and date, then create.
     const year = new Date().getFullYear();
     const form = h('form', {
-      class: 'card new-flow form',
+      class: 'card new-flow form quick-new',
       onsubmit: async (e) => {
         e.preventDefault();
         const btn = form.querySelector('button[type=submit]');
+        if (builder) {
+          const { events, error } = builder.readList();
+          if (error) { toast(error, true); return; }
+          d.events = events;
+        }
         btn.disabled = true;
-        const fd = new FormData(form);
-        Object.assign(d, { name: fd.get('name'), startsOn: fd.get('startsOn') || '', startTime: fd.get('startTime') || '' });
+        const common = { name: d.name, startsOn: d.startsOn, startTime: d.startTime };
+        const body = d.from
+          ? { ...common, from: kind === 'tpl' ? { template: Number(ref) } : { tournament: ref }, ...(d.only && { only: d.only }) }
+          : { ...common, sport: sport.id, country: REGIONS.defaultCountry, format: d.format, groupSize: 4, qualifiers: 2, scoring: sport.defaults, events: chosen() };
         try {
-          const { id, gift } = await api('POST', '/tournaments', {
-            sport: sport.id,
-            name: d.name,
-            startsOn: d.startsOn,
-            startTime: d.startTime,
-            country: REGIONS.defaultCountry,
-            format: 'league_knockout',
-            groupSize: 4,
-            qualifiers: 2,
-            scoring: sport.defaults,
-            events: chosen(),
-          });
+          const { id, gift } = await api('POST', '/tournaments', body);
           S.newDraft = null;
+          S.newSource = null;
           if (gift) S.gift = null;
           toast(gift ? `Created on the ${gift.plan} plan (up to ${gift.entries} entries) — a gift from ${gift.from} 🎁` : 'Tournament created — finish setting it up below');
           navigate(`/t/${id}`);
@@ -2136,15 +2176,16 @@
           btn.disabled = false;
         }
       },
-    }, head,
-    h('h2', {}, 'Name and date'),
-    h('p', { class: 'muted small' }, `${sport.name} · ${chosen().map((x) => CAT.eventName(x)).join(', ')}`),
-    field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: d.name, placeholder: `e.g. ${sport.name} Open ${year}`, autocomplete: 'off', oninput: (e) => { d.name = e.target.value; } })),
+    },
+    h('h1', {}, 'New tournament'),
+    starts,
+    field('Tournament name', h('input', { name: 'name', required: true, maxlength: 80, value: d.name, placeholder: `e.g. ${sport.name} Open ${year}`, autocomplete: 'off', oninput: (e) => { d.name = e.target.value; d.nameTouched = true; } })),
     h('div', { class: 'grid-2' },
       field('Date', h('input', { type: 'date', name: 'startsOn', value: d.startsOn, oninput: (e) => { d.startsOn = e.target.value; } }), null, 'Helps players find it. You can change it later.'),
       field('Start time (optional)', h('input', { type: 'time', name: 'startTime', value: d.startTime, oninput: (e) => { d.startTime = e.target.value; } }))),
-    h('p', { class: 'muted small' }, 'Venue, format, entry fees, prizes and courts come next — on your tournament page, whenever you\'re ready.'),
-    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
+    what,
+    h('p', { class: 'muted small' }, d.from ? 'It starts private, with no players — publish it when you\'re ready.' : 'Venue, entry fees, prizes and courts are on your tournament page, whenever you\'re ready.'),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit', disabled: Boolean(d.from && !source) }, 'Create tournament')));
     return form;
   }
 
@@ -2221,6 +2262,7 @@
             .filter(Boolean).join(' · '), '  ', connDot())),
       roleBar(t),
       finishedCard(tt),
+      previousCard(tt),
       tt.visibility === 'private' && !(t.can.own && S.me && t.role && !t.can.claim) ? visibilityBanner(t) : null,
       perEvent ? eventPicker(tt, ev) : null,
       h('nav', { class: `tabs t-tabs${tabs.length > 1 ? ' bar' : ''}`, 'aria-label': 'Tournament' }, tabs.map((x) => h('a', {
@@ -3352,9 +3394,43 @@
     t.event.discipline !== 'team' && t.event.discipline !== 'any' ? h('label', { class: 'check-field' },
       h('input', { type: 'checkbox', name: 'ranked', checked: t.config.ranked !== false }),
       h('span', {}, h('strong', {}, 'Counts for rankings'), h('small', {}, 'Players collect ranking points (public tournaments, 4+ entries). Untick for fun or social events.'))) : null,
-    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save')));
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save'),
+      t.events.some((e) => e.id !== t.eventId && e.status === 'setup')
+        ? h('button', { class: 'btn', type: 'button', onclick: () => copySettingsSheet(t) }, 'Copy to other events…') : null));
     syncFormat(form);
     return panel(t, `event-${t.eventId}`, multiEvent(t) ? `Event settings · ${t.event.name}` : `Event settings · ${t.formatName}`, form);
+  }
+
+  // This event's (saved) settings onto other events: format, scoring,
+  // limits, fee and prizes. Events of the same kind are ticked to start with.
+  function copySettingsSheet(t) {
+    const others = t.events.filter((e) => e.id !== t.eventId && e.status === 'setup');
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const boxes = others.map((e) => h('label', { class: 'check-field' },
+      h('input', { type: 'checkbox', value: String(e.id), checked: e.discipline === t.event.discipline }),
+      h('span', {}, h('strong', {}, e.name), h('small', {}, [e.formatName, e.fee ? `${money(e.fee)} entry` : null].filter(Boolean).join(' · ')))));
+    const copy = () => {
+      const to = boxes.map((b) => b.querySelector('input')).filter((x) => x.checked).map((x) => Number(x.value));
+      if (!to.length) { toast('Tick at least one event', true); return; }
+      close();
+      act(async () => {
+        const r = await api('POST', `${tPath(t)}/events/${t.eventId}/copy`, { to }, t.id);
+        const { skipped, ...view } = r;
+        S.t = view;
+        const names = others.filter((e) => to.includes(e.id)).map((e) => e.name);
+        toast(`Copied to ${names.length > 2 ? `${names.length} events` : names.join(' and ')}${skipped.length ? ` (left as they were: ${skipped.join(', ')})` : ''}`);
+      });
+    };
+    const box = h('div', { class: 'sheet-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Copy settings', onclick: (e) => { if (e.target === box) close(); } },
+      h('div', { class: 'sheet action-sheet copy-sheet' },
+        h('h2', {}, `Copy ${t.event.name}'s settings`),
+        h('p', { class: 'muted small' }, 'Format, groups and qualifiers, scoring, entry limits, the entry fee and prizes — as last saved. Each event can still be changed after.'),
+        h('div', { class: 'copy-list' }, boxes),
+        h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn btn-primary', onclick: copy }, 'Copy'), h('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel'))));
+    document.body.append(box);
+    document.addEventListener('keydown', onKey);
+    box.querySelector('input').focus();
   }
 
   // Prize money, trophies and rewards for the selected event; editable at any stage.
@@ -3482,12 +3558,15 @@
         e.preventDefault();
         const { events, error } = readEventList(addForm);
         if (error) { toast(error, true); return; }
-        saveForm(addForm, async () => { S.t = await api('POST', `${tPath(t)}/events`, { events }, t.id); },
+        const like = addForm.querySelector('select[name=like]');
+        saveForm(addForm, async () => { S.t = await api('POST', `${tPath(t)}/events`, { events, ...(like && { like: Number(like.value) }) }, t.id); },
           `${events.length} event${events.length > 1 ? 's' : ''} added`);
       },
     },
     eventBuilder([{ discipline: 'singles', gender: 'men', age: 'Open', level: 'Open' }], t.sport.id),
-    h('p', { class: 'hint', style: 'margin:0' }, 'New events copy the format and scoring of the first event; change them in each event\'s settings.'),
+    t.events.length > 1
+      ? field('Same settings as', h('select', { name: 'like' }, t.events.map((e) => h('option', { value: String(e.id) }, e.name))), null, 'Format, scoring and fee come from this event; change them in each event\'s settings.')
+      : h('p', { class: 'hint', style: 'margin:0' }, 'New events copy the format and scoring of the first event; change them in each event\'s settings.'),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add events')));
     return [
       h('div', { class: 'card' },
@@ -3505,6 +3584,7 @@
               disabled: ev.status !== 'setup' || t.events.length === 1, onclick: () => remove(ev),
             }, '✕')))))),
       panel(t, 'add-events', 'Add events', addForm),
+      reuseCard(t),
     ];
   }
 
@@ -5343,7 +5423,7 @@
     play: 'play', groups: 'play', groupNew: 'play', group: 'play', groupGame: 'play', challenges: 'play', challengeNew: 'play', challenge: 'play', goals: 'play', goalNew: 'play', goal: 'play', runs: 'play',
     compete: 'compete', new: 'compete', tournament: 'compete', match: 'compete', races: 'compete', raceNew: 'compete', race: 'compete', meets: 'compete', meetNew: 'compete', meet: 'compete', champs: 'compete', champNew: 'compete', champ: 'compete',
     clubs: 'clubs', club: 'clubs', orgNew: 'clubs', clubChallenge: 'clubs', season: 'clubs', clubRun: 'clubs', clubRankings: 'clubs',
-    you: 'you', profile: 'you', notifications: 'you', admin: 'you', invite: 'you', org: 'you',
+    you: 'you', profile: 'you', notifications: 'you', admin: 'you', invite: 'you', org: 'you', templates: 'you',
   };
   const NO_HUBS = ['display', 'signin', 'signup', 'forgot', 'reset', 'link'];
   let hubBar = null;
@@ -5531,6 +5611,73 @@
   }
 
   // /invite: your link, how it works, friends and credits.
+  // ---------- templates and new editions
+  const saveAsTemplate = (t) => {
+    const name = prompt('Name the template (you\'ll pick a date each time you use it):', t.name.replace(/\s*\b20\d\d\b\s*/g, ' ').trim());
+    if (name === null) return;
+    act(async () => { await api('POST', `${tPath(t)}/template`, { name: name.trim() || t.name.replace(/\s*\b20\d\d\b\s*/g, ' ').trim() }, t.id); S.newTemplates = undefined; }, 'Saved — find it under You › Tournament templates, or when you create a tournament');
+  };
+  const runAgainHref = (t) => `/new?from=t:${encodeURIComponent(t.id)}&name=${encodeURIComponent(nextEdition(t.name))}`;
+  // On the Setup › Events section: reuse this tournament.
+  function reuseCard(t) {
+    if (!t.can.manage) return null;
+    return h('div', { class: 'card' },
+      h('h2', {}, 'Use this setup again'),
+      h('p', { class: 'muted small' }, 'Its events, format, scoring, fees, prizes and venue — without the players, dates or results.'),
+      h('div', { class: 'actions' },
+        h('a', { class: 'btn', href: runAgainHref(t) }, 'Run it again'),
+        h('button', { class: 'btn', type: 'button', onclick: () => saveAsTemplate(t) }, 'Save as a template')));
+  }
+  // A new edition, before it starts: tell last time's players it's back.
+  const INVITED_KEY = 'tonament:invited';
+  function previousCard(tt) {
+    if (!tt.previous || !tt.can.manage || tt.status !== 'setup') return null;
+    let done = [];
+    try { done = JSON.parse(localStorage.getItem(INVITED_KEY) || '[]'); } catch { /* none */ }
+    if (done.includes(tt.id)) return null;
+    const mark = () => { try { localStorage.setItem(INVITED_KEY, JSON.stringify([...done, tt.id].slice(-50))); } catch { /* this visit */ } };
+    const ready = tt.visibility !== 'private' && tt.entriesOpen;
+    const invite = () => act(async () => {
+      const r = await api('POST', `${tPath(tt)}/invite-previous`, {}, tt.id);
+      mark();
+      toast(r.invited ? `Told ${r.invited} player${r.invited === 1 ? '' : 's'} from last time ✓` : 'Everyone from last time has already been told (or entered)');
+    });
+    return h('div', { class: 'card wrap-card' },
+      h('button', { class: 'icon-btn wrap-close', type: 'button', 'aria-label': 'Hide', title: 'Hide', onclick: () => { mark(); render(); } }, '×'),
+      h('h2', {}, '📣 Tell last time\'s players'),
+      h('p', {}, ready
+        ? 'Everyone with a Tonament account who played last time gets a notification (and an email) that it\'s back, with a link to enter.'
+        : 'Once it\'s published with entries open, everyone with a Tonament account who played last time can get a notification (and an email) with a link to enter.'),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'button', disabled: !ready, onclick: invite }, 'Tell them it\'s back')));
+  }
+
+  function viewTemplates() {
+    document.title = 'Tournament templates · Tonament';
+    const list = S.templates;
+    if (!list) return loading();
+    const rename = (x) => {
+      const name = prompt('New name:', x.name);
+      if (!name || !name.trim()) return;
+      act(async () => { const r = await api('PATCH', `/templates/${x.id}`, { name: name.trim() }); Object.assign(x, r); S.newTemplates = undefined; }, 'Renamed');
+    };
+    const remove = (x) => {
+      if (!confirm(`Delete the template "${x.name}"? Tournaments made from it stay as they are.`)) return;
+      act(async () => { S.templates = (await api('DELETE', `/templates/${x.id}`)).templates; S.newTemplates = undefined; }, 'Template deleted');
+    };
+    return [
+      h('h1', {}, 'Tournament templates'),
+      h('p', { class: 'muted' }, 'A template is a tournament\'s events, format, scoring, fees, prizes and venue. Start a new tournament from one and pick the date.'),
+      list.length
+        ? h('div', { class: 'card-list' }, list.map((x) => h('div', { class: 'card template-card' },
+          h('div', { class: 'card-head' },
+            h('span', {}, h('strong', {}, x.name), h('small', { class: 'muted', style: 'display:block' }, [x.sportName, x.venue, x.city].filter(Boolean).join(' · '))),
+            moreButton(x.name, [{ label: 'Rename', onClick: () => rename(x) }, { label: 'Delete', danger: true, onClick: () => remove(x) }])),
+          h('p', { class: 'small' }, x.events.join(' · ')),
+          h('div', { class: 'actions' }, h('a', { class: 'btn btn-primary btn-small', href: `/new?from=tpl:${x.id}` }, 'Use it')))))
+        : h('div', { class: 'card' }, h('p', {}, 'No templates yet.'), h('p', { class: 'muted small' }, 'Open a tournament you run, go to Setup › Events, and tap "Save as a template".')),
+    ];
+  }
+
   function viewInvite() {
     document.title = 'Invite organisers · Tonament';
     const r = S.referrals;
@@ -9852,7 +9999,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|play$|compete$|you$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new|\/rankings)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|meets(?:\/new)?$|meet\/\d+$|champs(?:\/new)?$|champ\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|play$|compete$|you$|t\/|new$|invite$|templates$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new|\/rankings)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|meets(?:\/new)?$|meet\/\d+$|champs(?:\/new)?$|champ\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

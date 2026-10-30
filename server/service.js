@@ -901,6 +901,8 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
         credits: await referrals.creditsFor(q, actor.user, t.plan),
       }),
       ...access,
+      // The tournament this one follows (run it again), for its organisers.
+      ...(access.can.manage && t.config.previous && { previous: t.config.previous }),
       events: evs,
       // The first event's draw at the top level too: single-event pages and
       // older clients read these directly.
@@ -1279,6 +1281,9 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
 
   async function createTournament(actor, input = {}, { gift: giftOk = true } = {}) {
     if (!actor.user) fail(401, 'Sign in to create a tournament');
+    // From a template or an earlier tournament: its events and settings,
+    // with whatever this request says (name, date, …) on top.
+    if (input.from && typeof input.from === 'object') return createFrom(actor, input, { gift: giftOk });
     const name = text(input.name, 'Tournament name');
     const details = detailsOf(input);
     const sport = sports.get(input.sport || 'badminton');
@@ -1540,8 +1545,9 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     return mutate(id, actor, async (q, t) => {
       const existing = await eventsOf(q, t.id);
       if (existing.length + list.length > 30) fail(400, 'A tournament can have at most 30 events');
-      // New events start with the first event's format and scoring.
-      const base = existing[0] ? eventContext(t, existing[0]) : null;
+      // New events start with the settings of the event named in `like`, else the first event's.
+      const like = existing.find((e) => e.id === Number(input.like)) || existing[0];
+      const base = like ? eventContext(t, like) : null;
       const names = new Set(existing.map((e) => catalog.eventName(e).toLowerCase()));
       let position = existing.reduce((max, e) => Math.max(max, e.position), -1);
       for (const raw of list) {
@@ -3797,6 +3803,171 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
   const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null), clubChallengeCard: (id) => clubChallenges.card(id), seasonCard: (id) => seasons.card(id), raceCard: (id) => races.card(id), meetCard: (id) => meets.card(id), champCard: (id) => champs.card(id), matchCard, eventCard, resultsCard, posterCard });
 
 
+  // ---------- templates, and new tournaments from old ones
+
+  // What makes up a tournament's setup, to start another from: its events
+  // with their settings, and the tournament-wide details. Never its dates,
+  // entries or results (nor what the draw worked out).
+  const DRAW_KEYS = ['knockoutRounds', 'groupPools', 'poolOrder', 'previous', 'entriesCloseAt'];
+  const strip = (config) => Object.fromEntries(Object.entries(config || {}).filter(([k]) => !DRAW_KEYS.includes(k)));
+  async function setupOf(q, t) {
+    const rows = await eventsOf(q, t.id);
+    return {
+      sport: t.sport,
+      format: t.format,
+      details: { venue: t.venue, address: t.address, city: t.city, region: t.region, postcode: t.postcode, country: t.country, start_time: t.start_time, end_time: t.end_time },
+      config: strip(t.config),
+      events: rows.map((e) => ({ discipline: e.discipline, gender: e.gender, age: e.age, level: e.level, name: e.name, format: e.format, config: strip(e.config) })),
+    };
+  }
+  async function sourceSetup(q, actor, from) {
+    if (from.template != null) {
+      const [row] = await q('SELECT * FROM tournament_templates WHERE id = $1 AND user_id = $2', [Number(from.template) || 0, actor.user.id]);
+      if (!row) fail(404, 'Template not found');
+      return { setup: row.setup, previous: null };
+    }
+    if (from.tournament != null) {
+      const { t } = await lockWith(q, String(from.tournament), actor, 'manage');
+      return { setup: await setupOf(q, t), previous: t.id };
+    }
+    fail(400, 'from must name a template or a tournament');
+  }
+
+  async function createFrom(actor, input, { gift: giftOk }) {
+    const name = text(input.name, 'Tournament name');
+    const { setup, previous } = await sourceSetup(db.query, actor, input.from);
+    const sport = sports.get(setup.sport);
+    if (!sport) fail(400, 'That sport isn\'t available any more');
+    // Only some of its events (by name), if asked.
+    const only = Array.isArray(input.only) && input.only.length ? new Set(input.only.map((x) => String(x).toLowerCase())) : null;
+    const events = setup.events.filter((e) => !only || only.has(catalog.eventName(e).toLowerCase()));
+    if (!events.length) fail(400, 'Pick at least one event');
+    const visibility = input.visibility ?? 'private';
+    if (!VISIBILITY.includes(visibility)) fail(400, 'visibility must be "private", "link" or "public"');
+    // The place carries over; the day's times only with a new date.
+    const day = input.startsOn || undefined;
+    const details = detailsOf({
+      startsOn: day, endsOn: day && input.endsOn ? input.endsOn : undefined,
+      startTime: day ? input.startTime || setup.details.start_time || undefined : undefined,
+      endTime: day ? setup.details.end_time || undefined : undefined,
+    }, { ...setup.details, start_time: null, end_time: null });
+    const config = { ...buildConfig({}, sport, setup.config), entriesCloseAt: null, ...(previous && { previous }) };
+    for (const e of events) checkMaxEntries(e.config, 'free');
+    const id = `${slugify(name)}-${crypto.randomBytes(3).toString('hex')}`;
+    let gift = null;
+    await db.tx(async (q) => {
+      await q(
+        `INSERT INTO tournaments (id, name, sport, format, config, admin_key, scorer_key, visibility, source)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, (SELECT source FROM users WHERE id = $9))`,
+        [id, name, sport.id, events[0].format || setup.format, JSON.stringify(config), crypto.randomBytes(18).toString('base64url'), crypto.randomBytes(18).toString('base64url'), visibility, actor.user.id],
+      );
+      await saveDetails(q, { id }, details);
+      for (const [i, e] of events.entries()) {
+        await insertEvent(q, id, i, { ...e, format: FORMATS[e.format] ? e.format : 'league_knockout' }, eventConfigOf({ ...e.config, scoring: sport.normalizeConfig(e.config.scoring) }));
+      }
+      await q(`INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, 'owner')`, [id, actor.user.email]);
+      await syncTournament(q, id);
+      if (giftOk) gift = await referrals.useWelcome(q, actor.user, id);
+    });
+    return { id, ...(gift && { gift }) };
+  }
+
+  // Templates: saved by organisers, theirs alone.
+  const templateView = (r) => ({ id: r.id, name: r.name, sport: r.sport, sportName: sports.get(r.sport)?.name || r.sport, events: r.setup.events.map((e) => catalog.eventName(e)), venue: r.setup.details.venue || null, city: r.setup.details.city || null, createdAt: r.created_at });
+  async function saveTemplate(id, actor, input = {}) {
+    if (!actor.user) fail(401, 'Sign in first');
+    return db.tx(async (q) => {
+      const { t } = await lockWith(q, id, actor, 'manage');
+      const name = text(input.name || t.name, 'Template name', { max: 80 });
+      const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM tournament_templates WHERE user_id = $1', [actor.user.id]);
+      if (n >= 50) fail(409, 'You have 50 templates — delete one first');
+      const [row] = await q(
+        'INSERT INTO tournament_templates (user_id, name, sport, setup, from_tournament) VALUES ($1, $2, $3, $4::jsonb, $5) RETURNING *',
+        [actor.user.id, name, t.sport, JSON.stringify(await setupOf(q, t)), t.id],
+      );
+      return templateView(row);
+    });
+  }
+  async function myTemplates(actor) {
+    if (!actor.user) fail(401, 'Sign in first');
+    const rows = await db.query('SELECT * FROM tournament_templates WHERE user_id = $1 ORDER BY created_at DESC, id DESC', [actor.user.id]);
+    return { templates: rows.map(templateView) };
+  }
+  async function renameTemplate(tid, actor, input = {}) {
+    if (!actor.user) fail(401, 'Sign in first');
+    const [row] = await db.query('UPDATE tournament_templates SET name = $3 WHERE id = $1 AND user_id = $2 RETURNING *', [Number(tid) || 0, actor.user.id, text(input.name, 'Template name', { max: 80 })]);
+    if (!row) fail(404, 'Template not found');
+    return templateView(row);
+  }
+  async function deleteTemplate(tid, actor) {
+    if (!actor.user) fail(401, 'Sign in first');
+    const rows = await db.query('DELETE FROM tournament_templates WHERE id = $1 AND user_id = $2 RETURNING id', [Number(tid) || 0, actor.user.id]);
+    if (!rows.length) fail(404, 'Template not found');
+    return myTemplates(actor);
+  }
+
+  // One event's settings onto others (still in setup). Settings that don't
+  // fit an event are left alone: partners for doubles only, ties and fees
+  // per player for team events, level pools not for team sports.
+  async function copyEventSettings(id, actor, eventId, input = {}) {
+    const to = Array.isArray(input.to) ? [...new Set(input.to.map(Number))] : [];
+    if (!to.length) fail(400, 'Pick the events to copy to');
+    let skipped = [];
+    const result = await mutate(id, actor, async (q, t) => {
+      const from = await eventFor(q, t, eventId);
+      const rows = await eventsOf(q, t.id);
+      const c = from.config;
+      skipped = [];
+      for (const target of to) {
+        const row = rows.find((r) => r.id === target);
+        if (!row || row.id === from.eventId) fail(404, 'Event not found');
+        if (row.status !== 'setup') fail(409, `${catalog.eventName(row)} has started — its settings are locked`);
+        const doubles = row.discipline === 'doubles';
+        const team = row.discipline === 'team';
+        const settings = {
+          format: from.format, qualifiers: c.qualifiers, scoring: c.scoring, maxEntries: c.maxEntries ?? null, lateEntry: Boolean(c.lateEntry),
+          leagueDraws: Boolean(c.leagueDraws), fee: c.fee || 0, prizes: c.prizes || [], ranked: c.ranked !== false,
+          ...(c.groupSize ? { groupSize: c.groupSize } : { groups: c.groups }),
+        };
+        const skip = (what) => skipped.push(`${what} (${catalog.eventName(row)})`);
+        if (doubles) Object.assign(settings, { partners: c.partners || 'own', balancePairs: Boolean(c.balancePairs) });
+        else if (c.partners === 'drawn') skip('drawn partners');
+        if (c.feePer === 'player' && !team) { settings.feePer = 'entry'; skip('fee per player'); } else if (c.feePer) settings.feePer = c.feePer;
+        if (c.tie) { if (team && catalog.hasTies(t.sport)) settings.tie = c.tie; else skip('tie format'); }
+        if (c.pools !== undefined) settings.pools = c.pools && !catalog.isTeamSport(t.sport) && from.format === 'league_knockout' ? c.pools : null;
+        if (t.sport === 'pickleball') Object.assign(settings, { dupr: c.dupr || 'off', duprMin: c.duprMin ?? null, duprMax: c.duprMax ?? null });
+        await applyEventSettings(q, eventContext(t, row), settings);
+      }
+    });
+    return { ...result, skipped };
+  }
+
+  // A new edition: everyone with an account who played the one before is
+  // told it's back (once each; not those who turned these off).
+  async function invitePrevious(id, actor, input = {}) {
+    const t = await db.tx(async (q) => (await lockWith(q, id, actor, 'manage')).t);
+    const from = String(input.from || t.config.previous || '');
+    if (!from) fail(400, 'Which tournament were they in?');
+    await db.tx(async (q) => lockWith(q, from, actor, 'manage'));
+    if (t.visibility === 'private') fail(409, 'Publish the tournament first, so they can open it');
+    const ev = { ...t, config: { ...t.config } };
+    if (t.status !== 'setup' || ev.config.selfEntry === false || (ev.config.entriesCloseAt && Date.parse(ev.config.entriesCloseAt) < Date.now())) fail(409, 'Open entries first, so they can enter');
+    const people = await db.query(
+      `SELECT DISTINCT u.id FROM entries e JOIN entry_players p ON p.entry_id = e.id JOIN users u ON lower(u.email) = lower(p.email)
+       WHERE e.tournament_id = $1 AND u.disabled_at IS NULL
+       UNION SELECT DISTINCT e.user_id FROM entries e WHERE e.tournament_id = $1 AND e.user_id IS NOT NULL`,
+      [from],
+    );
+    const already = new Set((await db.query('SELECT user_id FROM entries WHERE tournament_id = $1 AND user_id IS NOT NULL', [t.id])).map((r) => r.user_id));
+    const users = people.map((r) => r.id).filter((x) => x && x !== actor.user.id && !already.has(x));
+    const when = t.starts_on ? new Date(`${String(t.starts_on).slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }) : null;
+    const sent = await notify.send(db.query, {
+      users, kind: 'edition', actor: actor.user.id, dedupe: `edition:${t.id}`,
+      title: `${t.name} is on${when ? ` — ${when}` : ''}`, body: 'You played last time. Entries are open.', url: `/t/${t.id}`,
+    });
+    return { invited: sent.length, of: users.length };
+  }
+
   // ---------- share cards for tournaments (cards.js draws them): a match's
   // result, an event's podium, every event's champions, and the poster.
   // Never for private tournaments, nor the hidden ones behind club matches.
@@ -4059,6 +4230,12 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     cards,
     matchCard,
     eventCard,
+    saveTemplate,
+    myTemplates,
+    renameTemplate,
+    deleteTemplate,
+    copyEventSettings,
+    invitePrevious,
     resultsCard,
     posterCard,
     notify,
