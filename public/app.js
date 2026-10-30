@@ -667,6 +667,24 @@
           render();
           S.goals = await api('GET', '/goals').catch(() => ({ active: [], past: [] }));
         }
+      } else if (parts[0] === 'champ' && /^\d+$/.test(parts[1] || '')) {
+        S.route = { name: 'champ', id: Number(parts[1]), round: Number(params.get('round')) || null };
+        if (!S.champ || S.champ.id !== S.route.id) S.champ = null;
+        render();
+        await loadChamp();
+        return;
+      } else if (parts[0] === 'champs') {
+        if (parts[1] === 'new') {
+          if (!S.me) { navigate(`/signin?next=${encodeURIComponent(location.pathname)}`, { replace: true }); return; }
+          S.route = { name: 'champNew' };
+          render();
+          S.goalClubs = await api('GET', '/clubs/mine').catch(() => []);
+        } else {
+          S.route = { name: 'champs' };
+          S.champs = null;
+          render();
+          S.champs = await api('GET', '/champs').catch(() => []);
+        }
       } else if (parts[0] === 'meet' && /^\d+$/.test(parts[1] || '')) {
         S.route = { name: 'meet', id: Number(parts[1]), event: Number(params.get('event')) || null };
         if (!S.meet || S.meet.id !== S.route.id) S.meet = null;
@@ -972,6 +990,9 @@
     else if (S.route.name === 'meets') view = viewMeets();
     else if (S.route.name === 'meetNew') view = viewMeetNew();
     else if (S.route.name === 'meet') view = viewMeet();
+    else if (S.route.name === 'champs') view = viewChamps();
+    else if (S.route.name === 'champNew') view = viewChampNew();
+    else if (S.route.name === 'champ') view = viewChamp();
     else if (S.route.name === 'goalNew') view = viewGoalNew();
     else if (S.route.name === 'goal') view = viewGoal();
     else if (S.route.name === 'challengeNew') view = viewChallengeNew();
@@ -5169,6 +5190,7 @@
             h('a', { href: '/runs', onclick: closeMenu }, 'Runs'),
             h('a', { href: '/races', onclick: closeMenu }, 'Races'),
             h('a', { href: '/meets', onclick: closeMenu }, 'Meets'),
+            h('a', { href: '/champs', onclick: closeMenu }, 'Racing'),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
@@ -7149,6 +7171,156 @@
       V.admin && S.ccForm ? form() : null);
   }
 
+  // ---------- motorsport championships: drivers, rounds, grids, standings
+  function viewChamps() {
+    document.title = 'Racing · Tonament';
+    const L = S.champs;
+    const card = (c) => h('a', { class: 'card goal-card', href: `/champ/${c.id}` },
+      h('p', { class: 'eyebrow' }, [c.series || 'Motorsport', c.status === 'done' ? 'Finished' : `Round ${c.done} of ${c.rounds} done`].join(' · ')),
+      h('strong', { class: 'goal-title' }, c.name),
+      h('small', { class: 'muted' }, `${c.drivers} drivers${c.mine ? ' · you\'re in ✓' : ''}`));
+    return [
+      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Racing'), S.me ? h('a', { class: 'btn btn-primary', href: '/champs/new' }, 'Set up a championship') : null),
+      h('p', { class: 'muted' }, 'Karting and club racing: qualifying, the grid, results, the fastest lap and the championship standings.'),
+      L == null ? loading() : L.length ? h('div', { class: 'card-list' }, L.map(card)) : empty('No championships yet — set one up.'),
+    ];
+  }
+
+  function viewChampNew() {
+    document.title = 'New championship · Tonament';
+    const d = (S.champDraft ||= { name: '', series: '', rounds: 'Round 1, ECR Speedway\nRound 2, ECR Speedway\nRound 3, Kari Motor Speedway', club: '' });
+    const clubs = (S.goalClubs || []).filter((c) => c.role === 'admin' && c.status === 'active');
+    return h('form', {
+      class: 'card form new-flow',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const rounds = d.rounds.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => { const [name, place] = l.split(',').map((x) => x.trim()); return { name, place: place || null }; });
+        act(async () => { const c = await api('POST', '/champs', { name: d.name, series: d.series || null, rounds, club: d.club || null }); S.champDraft = null; navigate(`/champ/${c.id}`); }, 'Championship set up — add drivers');
+      },
+    },
+    h('h1', {}, 'Set up a championship'),
+    field('Name', h('input', { required: true, maxlength: 80, placeholder: 'Chennai Karting Cup', value: d.name, oninput: (e) => { d.name = e.target.value; } })),
+    field('Class', h('input', { maxlength: 60, placeholder: 'Rotax Senior', value: d.series, oninput: (e) => { d.series = e.target.value; } })),
+    field('Rounds', h('textarea', { rows: 4, required: true, value: d.rounds, oninput: (e) => { d.rounds = e.target.value; } }), null, 'One per line: Name, Track. You can add more later.'),
+    clubs.length ? field('Run by', h('select', { onchange: (e) => { d.club = e.target.value; } }, h('option', { value: '' }, 'Just me'), clubs.map((c) => h('option', { value: c.slug, selected: c.slug === d.club }, c.name)))) : null,
+    h('p', { class: 'muted small' }, 'Points: 25-18-15-12-10-8-6-4-2-1, plus 1 for the fastest lap in the top 10.'),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Set it up')));
+  }
+
+  async function loadChamp() {
+    try {
+      S.champ = await api('GET', `/champs/${S.route.id}`);
+      S.error = null;
+    } catch (e) {
+      S.error = e.message;
+    }
+    render();
+  }
+
+  function viewChamp() {
+    const x = S.champ;
+    if (!x || x.id !== S.route.id) return loading();
+    document.title = `${x.name} · Racing`;
+    const manage = x.can.manage;
+    const share = () => shareSheet({ title: x.name, text: x.standings[0] && x.standings[0].points ? `${x.name}: #${x.standings[0].number} ${x.standings[0].name} leads with ${x.standings[0].points} points` : `${x.name} on Tonament`, url: `${location.origin}/champ/${x.id}`, image: `/img/champ/${x.id}.png` });
+    const rd = x.rounds.find((r) => r.id === S.route.round);
+    const open = (r) => { S.route = { ...S.route, round: r ? r.id : null }; history.replaceState(null, '', `/champ/${x.id}${r ? `?round=${r.id}` : ''}`); render(); window.scrollTo(0, 0); };
+    const driverName = (d) => [h('span', { class: 'kart-no' }, d.number), ' ', d.handle ? h('a', { href: `/@${d.handle}` }, d.name) : d.name, d.team ? h('small', { class: 'muted' }, ` · ${d.team}`) : null];
+    const head = h('div', { class: 'card challenge-head' },
+      h('p', { class: 'eyebrow' }, [x.series || 'Motorsport', `${x.rounds.filter((r) => r.stage === 'done').length} of ${x.rounds.length} rounds`].join(' · ')),
+      h('h1', {}, x.name),
+      x.club ? h('p', { class: 'muted small' }, x.club.name) : null,
+      h('div', { class: 'actions' }, pill(...(x.status === 'done' ? ['done', 'Finished'] : ['org', 'On'])), h('button', { class: 'btn btn-small', onclick: share }, 'Share')));
+    if (!rd) {
+      const tab = S.champTab || 'drivers';
+      return [
+        h('p', {}, h('a', { class: 'back-link', href: '/champs' }, '← Racing')), head,
+        x.status === 'done' && x.standings[0] ? h('div', { class: 'card cc-result' }, h('p', { class: 'eyebrow' }, 'Champion'),
+          h('div', { class: 'cc-score' }, h('strong', {}, ['🏆 ', ...driverName(x.standings[0])]), h('span', { class: 'cc-big' }, `${x.standings[0].points} pts`))) : null,
+        h('div', { class: 'card' },
+          h('div', { class: 'card-head' }, h('h2', {}, 'Standings'),
+            x.teams.length ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Standings' }, [['drivers', 'Drivers'], ['teams', 'Teams']].map(([v, l]) => h('button', { 'aria-pressed': String(tab === v), onclick: () => { S.champTab = v; render(); } }, l))) : null),
+          tab === 'teams' && x.teams.length
+            ? h('table', { class: 'season-table' }, h('tbody', {}, x.teams.map((t, i) => h('tr', {}, h('td', {}, i + 1), h('td', {}, t.team), h('td', { class: 'num' }, `${t.wins} wins`), h('td', { class: 'num' }, h('strong', {}, t.points))))))
+            : x.standings.length ? h('table', { class: 'season-table' }, h('thead', {}, h('tr', {}, ['#', 'Driver', 'Wins', 'Pts'].map((c, i) => h('th', { class: i > 1 ? 'num' : '' }, c)))),
+              h('tbody', {}, x.standings.map((d, i) => h('tr', { class: d.me ? 'me' : '' }, h('td', {}, i + 1), h('td', {}, driverName(d)), h('td', { class: 'num' }, d.wins), h('td', { class: 'num' }, h('strong', {}, d.points))))))
+              : h('p', { class: 'muted' }, 'No drivers yet.')),
+        h('div', { class: 'card' }, h('h2', {}, 'Rounds'),
+          h('ul', { class: 'cc-list' }, x.rounds.map((r) => h('li', {},
+            h('a', { href: `/champ/${x.id}?round=${r.id}`, onclick: (e) => { e.preventDefault(); open(r); } }, h('strong', {}, r.name)),
+            h('span', { class: 'muted small' }, `${r.place ? ` · ${r.place}` : ''}${r.winner ? ` · 🏁 ${r.winner}` : ''}`),
+            pill(...({ qualifying: ['waiting', 'Qualifying'], race: ['org', 'Race'], done: ['done', 'Done'] }[r.stage]))))),
+          manage && x.status !== 'done' ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => act(async () => { S.champ = await api('POST', `/champs/${x.id}/rounds`, {}); }, 'Round added') }, '+ Add a round')) : null),
+        x.can.join ? (() => {
+          const d = (S.champJoin ||= { number: '', team: '' });
+          return h('form', { class: 'card form', onsubmit: (e) => { e.preventDefault(); act(async () => { S.champ = await api('POST', `/champs/${x.id}/join`, { number: d.number ? Number(d.number) : null, team: d.team || null }); S.champJoin = null; }, 'You\'re on the entry list 🏎️'); } },
+            h('h2', {}, 'Race in it'),
+            h('div', { class: 'run-row' }, field('Your number', h('input', { type: 'number', min: 0, max: 999, inputmode: 'numeric', placeholder: 'Any', value: d.number, oninput: (e) => { d.number = e.target.value; } })),
+              field('Team', h('input', { maxlength: 60, placeholder: 'Optional', value: d.team, oninput: (e) => { d.team = e.target.value; } }))),
+            h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Join')));
+        })() : null,
+        manage && x.status !== 'done' ? (() => {
+          const area = h('textarea', { rows: 3, placeholder: 'One per line: Number, Name, Team (, email)\n7, Arjun R, Speed Demons' });
+          return h('div', { class: 'card' }, h('h2', {}, 'Add drivers'), area,
+            h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => act(async () => { S.champ = await api('POST', `/champs/${x.id}/drivers`, { drivers: area.value }); }, 'Drivers added') }, 'Add'),
+              h('button', { class: 'btn btn-ghost', onclick: () => confirm('Close the championship? The leader is crowned champion.') && act(async () => { S.champ = await api('POST', `/champs/${x.id}/close`); }, 'Champion crowned 🏆') }, 'Close the championship')));
+        })() : null,
+      ];
+    }
+    const path = `/champs/${x.id}/rounds/${rd.id}`;
+    const post = (what, body, msg) => act(async () => { S.champ = await api('POST', `${path}/${what}`, body || {}); }, msg);
+    // Qualifying: a lap time per driver.
+    const quali = () => {
+      const byDriver = new Map(rd.qualifying.map((q) => [q.driver, q.quali]));
+      const f = h('form', { onsubmit: (e) => { e.preventDefault(); post('qualifying', { times: [...f.querySelectorAll('input[data-driver]')].map((el) => ({ driver: Number(el.dataset.driver), time: el.value || null })) }, 'Times saved'); } },
+        h('table', { class: 'race-results' }, h('tbody', {}, x.drivers.map((d) => h('tr', {}, h('td', {}, driverName(d)),
+          h('td', { class: 'num' }, h('input', { class: 'meet-mark', 'data-driver': d.id, inputmode: 'decimal', placeholder: '48.312', value: byDriver.get(d.id) || '', 'aria-label': `${d.name} best lap` })))))),
+        h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'submit' }, 'Save times'), h('button', { class: 'btn btn-primary', type: 'button', onclick: () => post('grid', {}, 'Grid set — lights out!') }, 'Set the grid')));
+      return h('div', { class: 'card' }, h('h2', {}, 'Qualifying'), h('p', { class: 'muted small' }, 'Best lap for each driver. No time: back of the grid.'), f);
+    };
+    const raceSheet = () => {
+      const f = h('form', {
+        onsubmit: (e) => {
+          e.preventDefault();
+          const results = rd.grid.map((g) => {
+            const v = (k) => f.querySelector(`[data-driver="${g.driver}"][data-k="${k}"]`).value;
+            return { driver: g.driver, finish: v('finish') ? Number(v('finish')) : null, laps: v('laps') ? Number(v('laps')) : null, bestLap: v('best') || null, status: v('status') };
+          });
+          post('race', { results }, 'Race saved');
+        },
+      },
+      h('div', { class: 'table-wrap' }, h('table', { class: 'race-results kart-sheet' },
+        h('thead', {}, h('tr', {}, ['Driver', 'Pos', 'Laps', 'Best', ''].map((c) => h('th', {}, c)))),
+        h('tbody', {}, rd.grid.map((g) => h('tr', {},
+          h('td', {}, h('small', { class: 'muted' }, `P${g.grid} `), h('span', { class: 'kart-no' }, g.number), ' ', g.name),
+          h('td', {}, h('input', { 'data-driver': g.driver, 'data-k': 'finish', type: 'number', min: 1, inputmode: 'numeric', value: g.finish ?? '', 'aria-label': `${g.name} position`, class: 'kart-pos' })),
+          h('td', {}, h('input', { 'data-driver': g.driver, 'data-k': 'laps', type: 'number', min: 0, inputmode: 'numeric', value: g.laps ?? '', 'aria-label': `${g.name} laps`, class: 'kart-pos' })),
+          h('td', {}, h('input', { 'data-driver': g.driver, 'data-k': 'best', inputmode: 'decimal', placeholder: '48.1', value: g.bestLap || '', 'aria-label': `${g.name} best lap`, class: 'meet-mark' })),
+          h('td', {}, h('select', { 'data-driver': g.driver, 'data-k': 'status', 'aria-label': `${g.name} status`, class: 'meet-status' }, ['ok', 'dnf', 'dns', 'dsq'].map((v) => h('option', { value: v, selected: g.status === v }, v === 'ok' ? '—' : v.toUpperCase()))))))))),
+      h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'submit' }, 'Save'), h('button', { class: 'btn btn-primary', type: 'button', onclick: () => confirm('Finish the round? Points are given and the podium is posted.') && post('finish', {}, 'Chequered flag 🏁') }, 'Finish the round')));
+      return h('div', { class: 'card' }, h('h2', {}, 'Race'), h('p', { class: 'muted small' }, 'Finishing position, laps and best lap for each driver; DNF drivers are classified by laps.'), f);
+    };
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: `/champ/${x.id}`, onclick: (e) => { e.preventDefault(); open(null); } }, `← ${x.name}`)),
+      h('div', { class: 'card challenge-head' }, h('p', { class: 'eyebrow' }, [x.series || 'Motorsport', rd.place].filter(Boolean).join(' · ')), h('h1', {}, rd.name),
+        h('div', { class: 'actions' }, pill(...({ qualifying: ['waiting', 'Qualifying'], race: ['org', 'Race'], done: ['done', 'Results'] }[rd.stage])))),
+      rd.stage === 'done' ? h('div', { class: 'card' }, h('h2', {}, 'Results'),
+        h('table', { class: 'race-results' }, h('thead', {}, h('tr', {}, ['Pos', 'Driver', 'Grid', 'Best lap', 'Pts'].map((c, i) => h('th', { class: i > 1 ? 'num' : '' }, c)))),
+          h('tbody', {}, rd.results.map((r) => h('tr', { class: r.me ? 'me' : '' },
+            h('td', {}, r.position ? (MEDAL[r.position] && r.status === 'ok' ? MEDAL[r.position] : r.status === 'dnf' ? 'DNF' : r.position) : r.status.toUpperCase()),
+            h('td', {}, driverName(r)), h('td', { class: 'num' }, r.grid ? `P${r.grid}` : '—'),
+            h('td', { class: 'num' }, r.bestLap || '—', r.fastest ? h('span', { class: 'pill org', style: 'margin-left:4px' }, 'FL') : null),
+            h('td', { class: 'num' }, h('strong', {}, r.points)))))),
+        manage && x.status !== 'done' ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-ghost btn-small', onclick: () => confirm('Reopen the round? Its points come off until you finish it again.') && post('reopen', {}, 'Reopened') }, 'Reopen to fix it')) : null) : null,
+      rd.stage === 'race' && manage ? raceSheet() : null,
+      rd.stage !== 'qualifying' && !(rd.stage === 'race' && manage) && rd.stage !== 'done' ? h('div', { class: 'card' }, h('h2', {}, 'Grid'), h('ol', { class: 'entries' }, rd.grid.map((g) => h('li', {}, driverName(g), g.quali ? h('small', { class: 'muted' }, ` · ${g.quali}`) : null)))) : null,
+      rd.stage === 'qualifying' && manage ? quali() : null,
+      rd.qualifying.length && rd.stage !== 'qualifying' ? h('details', { class: 'card race-runners' }, h('summary', {}, 'Qualifying times'),
+        h('ol', { class: 'entries' }, rd.qualifying.map((q) => h('li', {}, driverName(q), h('small', { class: 'muted' }, ` · ${q.quali}`))))) : null,
+      rd.stage === 'qualifying' && !manage ? h('p', { class: 'muted' }, 'Qualifying hasn\'t finished yet.') : null,
+    ];
+  }
+
   // ---------- track meets: events, heats, finals, results, team points
   const STAGE = { entries: ['waiting', 'Entries'], heats: ['org', 'Heats'], final: ['org', 'Final'], done: ['done', 'Results'] };
   const MEDAL = { 1: '🥇', 2: '🥈', 3: '🥉' };
@@ -8280,6 +8452,12 @@
         ? ['🏆 ', club(d.winner, winSlug), ' beat ', club(d.loser, loseSlug), ' ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score), ` in a club v club ${d.kind === 'tie' ? 'tie' : 'friendly'}`]
         : ['🤝 ', club(d.from, d.fromSlug), ' and ', club(d.to, d.toSlug), ' drew ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score)];
     }
+    if (x.verb === 'motor') {
+      return [d.place <= 3 ? `${MEDAL[d.place]} ` : '🏁 ', who, ` (#${d.number}) ${d.place === 1 ? 'won' : `finished P${d.place} in`} ${d.round} of `, h('a', { href: `/champ/${d.champ}` }, d.name), ` from P${d.grid}`, d.fastest ? ' · fastest lap ⏱️' : '', d.standing === 1 ? ' — leads the championship' : ''];
+    }
+    if (x.verb === 'motor_champ') {
+      return ['🏆 ', h('strong', {}, `#${d.number} ${d.driver}`), ' is the ', h('a', { href: `/champ/${d.champ}` }, d.name), ` champion — ${d.points} points, ${d.wins} win${d.wins === 1 ? '' : 's'}`, d.team ? ` · ${d.team} take the teams' title` : ''];
+    }
     if (x.verb === 'meet') {
       return [d.place <= 3 ? `${MEDAL[d.place]} ` : '🏁 ', who, ` ${d.place === 1 ? 'won' : `came ${ordinal(d.place)} in`} the ${d.event} at `, h('a', { href: `/meet/${d.meet}` }, d.name), ' — ', h('span', { class: 'feed-score' }, d.mark), d.pb ? ' · Personal best 🎉' : ''];
     }
@@ -9229,7 +9407,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|meets(?:\/new)?$|meet\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|meets(?:\/new)?$|meet\/\d+$|champs(?:\/new)?$|champ\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

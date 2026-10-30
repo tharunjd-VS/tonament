@@ -917,11 +917,59 @@ CREATE TABLE IF NOT EXISTS meet_entries (
 );
 CREATE INDEX IF NOT EXISTS meet_entries_event ON meet_entries(event_id);
 CREATE INDEX IF NOT EXISTS meet_entries_user ON meet_entries(user_id);
+-- v46: motorsport championships (karting and the like). Drivers (a number,
+-- a team) race rounds: qualifying times set the grid, the race is entered as
+-- finishing positions (laps, best lap, DNF/DSQ), points per position plus the
+-- fastest lap, and the drivers' and teams' standings add up.
+CREATE TABLE IF NOT EXISTS champs (
+  id          SERIAL PRIMARY KEY,
+  name        TEXT NOT NULL,
+  series      TEXT,                              -- the class: Rotax Senior, Rental karts, …
+  org_id      INTEGER REFERENCES orgs(id) ON DELETE SET NULL,
+  points      JSONB NOT NULL DEFAULT '[25,18,15,12,10,8,6,4,2,1]',
+  fastest_lap INTEGER NOT NULL DEFAULT 1,
+  visibility  TEXT NOT NULL DEFAULT 'public',
+  status      TEXT NOT NULL DEFAULT 'on',        -- on | done
+  created_by  INTEGER NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS champ_drivers (
+  id        SERIAL PRIMARY KEY,
+  champ_id  INTEGER NOT NULL REFERENCES champs(id) ON DELETE CASCADE,
+  user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  name      TEXT NOT NULL,
+  number    INTEGER NOT NULL,
+  team      TEXT,
+  UNIQUE (champ_id, number)
+);
+CREATE TABLE IF NOT EXISTS champ_rounds (
+  id        SERIAL PRIMARY KEY,
+  champ_id  INTEGER NOT NULL REFERENCES champs(id) ON DELETE CASCADE,
+  name      TEXT NOT NULL,
+  place     TEXT,
+  starts_at TIMESTAMPTZ,
+  position  INTEGER NOT NULL DEFAULT 0,
+  stage     TEXT NOT NULL DEFAULT 'qualifying'   -- qualifying | race | done
+);
+CREATE TABLE IF NOT EXISTS champ_results (
+  round_id   INTEGER NOT NULL REFERENCES champ_rounds(id) ON DELETE CASCADE,
+  driver_id  INTEGER NOT NULL REFERENCES champ_drivers(id) ON DELETE CASCADE,
+  quali_s    NUMERIC,
+  grid       INTEGER,
+  finish     INTEGER,                            -- the finishing position entered
+  laps       INTEGER,
+  best_lap_s NUMERIC,
+  status     TEXT NOT NULL DEFAULT 'ok',         -- ok | dnf | dns | dsq
+  position   INTEGER,                            -- classified position (after DNF/DSQ)
+  points     INTEGER NOT NULL DEFAULT 0,
+  fastest    BOOLEAN NOT NULL DEFAULT false,
+  PRIMARY KEY (round_id, driver_id)
+);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 45;
+const SCHEMA_VERSION = 46;
 
 async function migrate(db) {
   try {

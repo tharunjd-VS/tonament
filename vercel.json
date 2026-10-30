@@ -80,6 +80,18 @@
       "destination": "/api/index?__path=meetpage/:id"
     },
     {
+      "source": "/champ/:id(\\d{1,12})",
+      "destination": "/api/index?__path=champpage/:id"
+    },
+    {
+      "source": "/champs",
+      "destination": "/api/index?__path=app"
+    },
+    {
+      "source": "/champs/new",
+      "destination": "/api/index?__path=app"
+    },
+    {
       "source": "/meets",
       "destination": "/api/index?__path=app"
     },
@@ -144,7 +156,7 @@
       "destination": "/api/index?__path=item/:id"
     },
     {
-      "source": "/img/:kind(a|club|p|t|ladder|goal|cc|season|race|meet)/:file",
+      "source": "/img/:kind(a|club|p|t|ladder|goal|cc|season|race|meet|champ)/:file",
       "destination": "/api/index?__path=img/:kind/:file"
     },
     {

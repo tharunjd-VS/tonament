@@ -1637,3 +1637,11 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .meet-sheet td:last-child { white-space: nowrap; }
 .meet-mark { width: 84px; padding: 6px 8px; font-variant-numeric: tabular-nums; text-align: right; }
 .meet-status { width: auto; margin-left: 4px; padding: 6px 4px; }
+
+/* Motorsport */
+.kart-no { display: inline-block; min-width: 2.2em; padding: 1px 6px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); font-weight: 700; font-variant-numeric: tabular-nums; text-align: center; font-size: 0.85em; }
+.kart-sheet th, .kart-sheet td { padding: 6px 3px; }
+.kart-sheet td:first-child { white-space: normal; }
+.kart-sheet .meet-mark { width: 64px; }
+.kart-sheet .meet-status { margin-left: 0; }
+.kart-pos { width: 44px; padding: 6px 4px; text-align: right; font-variant-numeric: tabular-nums; }
