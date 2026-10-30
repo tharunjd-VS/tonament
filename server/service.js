@@ -3488,6 +3488,21 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     });
   }
 
+  // Site admins give a tournament an AI pack (to try it, or as a goodwill
+  // gesture): counted as given, not sold.
+  async function adminGrantAi(id, actor, pack) {
+    requireSiteAdmin(actor);
+    if (!AI_PACKS[pack]) fail(400, `pack must be one of: ${Object.keys(AI_PACKS).join(', ')}`);
+    return db.tx(async (q) => {
+      const [t] = await q('SELECT id, name FROM tournaments WHERE id = $1', [String(id)]);
+      if (!t) fail(404, 'Tournament not found');
+      const [{ n }] = await q(`SELECT COUNT(*)::int AS n FROM ai_credits WHERE tournament_id = $1 AND reason = 'admin'`, [t.id]);
+      await credits.grantPack(q, { pack, tournament: t.id, reason: 'admin', ref: `admin:${t.id}:${pack}:${n}` });
+      await adminLog(q, actor, 'tournament.ai', t.id, { name: t.name, pack });
+      return credits.balance(q, { tournament: t.id });
+    });
+  }
+
   // Every change made through the admin dashboard is recorded.
   const adminLog = (q, actor, action, target, detail) => q(
     'INSERT INTO admin_log (admin_email, action, target, detail) VALUES ($1, $2, $3, $4::jsonb)',
@@ -4576,6 +4591,7 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     verifyPayment,
     razorpayWebhook,
     adminSetPlan,
+    adminGrantAi,
     setOfficial,
     setEntryFee,
     adminPayments,

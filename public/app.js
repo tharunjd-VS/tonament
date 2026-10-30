@@ -10116,6 +10116,7 @@
     'org.extend': (x) => `added ${x.detail.days} days · ${x.detail.name}`,
     'org.unpublish': (x) => `unpublished academy page · ${x.detail.name}`,
     'org.delete': (x) => `deleted academy page ${x.detail.name}`,
+    'tournament.ai': (x) => `gave AI credits (${({ both: 'Both', manage: 'On the day', create: 'Setup', topup: 'Top-up' })[x.detail.pack] || x.detail.pack}) · ${x.detail.name}`,
     'setting.change': (x) => `${({ orgIncludesBranding: 'academy pages include branding', duprSubmit: 'send results to DUPR' })[x.target] || x.target}: ${x.detail.to ? 'on' : 'off'}`,
   };
 
@@ -10173,6 +10174,11 @@
         await api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/plan`, { plan });
         t.plan = plan;
       }, `${t.name}: plan set to ${PLAN_LABELS[plan] || 'Free'}`);
+      const grantAi = () => actionSheet(`AI credits for ${t.name}`, [
+        { label: 'Both (setup + on the day)', hint: '20 setup and 150 on-the-day credits', onClick: () => act(() => api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/ai-grant`, { pack: 'both' }), 'Given: AI setup + on the day') },
+        { label: 'On the day', hint: '150 on-the-day credits', onClick: () => act(() => api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/ai-grant`, { pack: 'manage' }), 'Given: AI on the day') },
+        { label: 'Setup', hint: '20 setup credits', onClick: () => act(() => api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/ai-grant`, { pack: 'create' }), 'Given: AI setup') },
+      ]);
       const official = (on) => act(async () => { await api('POST', `/admin/tournaments/${encodeURIComponent(t.id)}/official`, { official: on }); t.official = on; }, on ? 'Marked as organised by Tonament' : 'No longer organised by Tonament');
       const visibility = (v) => act(async () => { await api('POST', `/tournaments/${encodeURIComponent(t.id)}/visibility`, { visibility: v }); t.visibility = v; }, v === 'private' ? 'Unpublished' : 'Published');
       const remove = () => {
@@ -10197,6 +10203,7 @@
           t.visibility === 'private'
             ? h('button', { class: 'btn btn-small', onclick: () => visibility('public') }, 'Publish')
             : h('button', { class: 'btn btn-small', onclick: () => visibility('private') }, 'Unpublish'),
+          S.aiEnabled ? h('button', { class: 'btn btn-small', onclick: () => grantAi() }, 'Give AI credits') : null,
           h('button', { class: 'btn btn-small btn-ghost danger', onclick: remove }, 'Delete')));
     };
     return [filters,
@@ -10386,6 +10393,34 @@
   }
 
   // ----- site settings
+  // Is AI working? The key (set or not, never shown), the model, the last
+  // day's calls, and a free test call.
+  function adminAiStatus(A) {
+    if (A.ai === undefined) { A.ai = null; api('GET', '/admin/ai').then((r) => { A.ai = r; render(); }).catch(() => { A.ai = false; render(); }); }
+    const x = A.ai;
+    const test = async (btn) => {
+      btn.disabled = true;
+      btn.textContent = 'Testing…';
+      try {
+        const r = await api('POST', '/admin/ai-test', {});
+        toast(r.ok ? `AI works ✓ ${r.model} answered in ${r.seconds}s` : 'AI answered, but not as expected', !r.ok);
+      } catch (e) { toast(`AI test failed: ${e.message}`, true); }
+      A.ai = undefined;
+      render();
+    };
+    const secs = (ms) => `${Math.round(ms / 100) / 10}s`;
+    return [h('h2', {}, 'AI'),
+      !x ? (x === false ? h('p', { class: 'muted small' }, 'Couldn\'t load AI status.') : loading())
+        : [h('ul', { class: 'plain-list' },
+          h('li', {}, h('strong', {}, 'Key'), ' ', h('span', { class: 'muted' }, x.enabled ? `set · model ${x.model}` : 'not set — add ANTHROPIC_API_KEY to the environment and redeploy')),
+          h('li', {}, h('strong', {}, 'Last 24 hours'), ' ', h('span', { class: 'muted' }, x.day.calls
+            ? `${x.day.calls} call${x.day.calls === 1 ? '' : 's'} · ${x.day.failed} failed · ${secs(x.day.avgMs)} average, ${secs(x.day.maxMs)} slowest · ${money(x.day.cost)}`
+            : 'no calls')),
+          h('li', {}, h('strong', {}, '30 days'), ' ', h('span', { class: 'muted' }, `${x.drafts} setups · ${x.mappings} form imports · ${x.assists} assistant messages · ${money(x.cost)}`))),
+        x.enabled ? h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: (e) => test(e.currentTarget) }, 'Test AI')) : null,
+        h('p', { class: 'hint' }, 'The test is a tiny call (no credits used). To try the assistant on a tournament, give it AI credits from the Tournaments tab.')]];
+  }
+
   function adminSettingsTab() {
     const A = adminState();
     if (!A.settings) return loading();
@@ -10400,6 +10435,7 @@
             ? 'On: every tournament linked to a paid academy page gets the logo, sponsors and organiser-led venue display, without buying Open. Entry limits still follow the tournament\'s plan.'
             : 'Off: tournaments need their own Open or Championship plan for branding, even when linked to an academy page.'))),
       h('p', { class: 'hint' }, 'You can override this for a single academy on the Academies tab. Changes show within a minute and are recorded in the admin log.'),
+      adminAiStatus(A),
       h('h2', {}, 'AI prices'),
       (() => {
         const p = { create: 9900, manage: 19900, both: 24900, topup: 9900, ...(A.settings.aiPrices || {}) };

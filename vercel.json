@@ -228,7 +228,7 @@
   ],
   "functions": {
     "api/index.js": {
-      "maxDuration": 10,
+      "maxDuration": 60,
       "includeFiles": "{public/index.html,public/app.js,public/styles.css,public/brand/logo-white.svg,server/fonts/**,content/**}"
     }
   },

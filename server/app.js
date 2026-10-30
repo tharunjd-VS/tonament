@@ -428,6 +428,9 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
     ['GET', '/api/admin/funnel', (c) => svc.adminFunnel(c.actor, { days: c.query.get('days') })],
     ['GET', '/api/admin/cron', (c) => cron.status(c.actor)],
     ['GET', '/api/admin/ai-credits', (c) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return svc.credits.adminUsage({ days: c.query.get('days') }); }],
+    ['GET', '/api/admin/ai', (c) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return ai.usage(30); }],
+    ['POST', '/api/admin/ai-test', (c) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return ai.test(c.actor); }],
+    ['POST', `/api/admin${T.replace('/api', '')}/ai-grant`, (c, id) => svc.adminGrantAi(id, c.actor, c.body.pack)],
     ['POST', `/api/admin${T.replace('/api', '')}/ai-pause`, (c, id) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return svc.credits.setPaused(id, c.body.paused); }],
     // Scheduled jobs (vercel.json crons): the CRON_SECRET, or a site admin.
     ['GET', '/api/cron/(hourly|weekly|reminders)', (c, job) => cron.run(job, c.req, c.actor, { force: c.query.get('force') === '1' && Boolean(c.actor.user?.isAdmin) })],

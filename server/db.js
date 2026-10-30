@@ -1080,11 +1080,28 @@ CREATE TABLE IF NOT EXISTS ai_actions (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ai_actions_t ON ai_actions (tournament_id, created_at);
+-- v54: how long each AI call took; undo for the assistant's changes (a batch
+-- per Apply, how to reverse each one); notes from umpires to the organisers.
+ALTER TABLE ai_calls ADD COLUMN IF NOT EXISTS ms INTEGER;
+ALTER TABLE ai_actions ADD COLUMN IF NOT EXISTS batch TEXT;
+ALTER TABLE ai_actions ADD COLUMN IF NOT EXISTS undo JSONB;
+ALTER TABLE ai_actions ADD COLUMN IF NOT EXISTS undone_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS ai_actions_batch ON ai_actions (batch);
+CREATE TABLE IF NOT EXISTS assistant_notes (
+  id            SERIAL PRIMARY KEY,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  user_id       INTEGER,
+  by_name       TEXT,
+  text          TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'open',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS assistant_notes_t ON assistant_notes (tournament_id, status);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 53;
+const SCHEMA_VERSION = 54;
 
 async function migrate(db) {
   try {

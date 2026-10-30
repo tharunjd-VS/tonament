@@ -48,7 +48,7 @@ let failNext = false;
 const client = { beta: { messages: { async create(req) {
   if (failNext) { failNext = false; throw new Error('boom'); }
   const mapping = /map the columns/.test(req.system);
-  const out = mapping ? { columns: [], categoryValues: [], separator: ',', paidValues: [], notes: [] }
+  const out = /Reply with ok/.test(req.system) ? { ok: true } : mapping ? { columns: [], categoryValues: [], separator: ',', paidValues: [], notes: [] }
     : { name: 'Cup', sport: 'badminton', events: [{ discipline: 'singles', gender: 'men', age: null, level: null, name: null, feeRupees: null, feePer: null }], unsure: [], contacts: [], links: { instagram: null, whatsapp: null, website: null, entryForm: null } };
   return { model: req.model, stop_reason: 'end_turn', usage: { input_tokens: 100, output_tokens: 50 }, content: [{ type: 'text', text: JSON.stringify(out) }] };
 } } } };
@@ -178,4 +178,26 @@ test('referrals: the invited friend gets a Create; the inviter a Manage when the
     const ib = await svc.credits.balance(db.query, { user: inviter.id });
     assert.equal(ib.manage.account, 150);
   } finally { await new Promise((r) => server.close(r)); }
+});
+
+test('admins: give a tournament AI credits (counted as given), and test the key for free', async () => {
+  const admin = { user: { id: 999, email: 'boss@credits.test', name: 'Boss', isAdmin: true } };
+  const org = await user('Grant Credits');
+  const { id } = await svc.createTournament(org.actor, { name: 'Given Cup', sport: 'badminton', events: [{ discipline: 'singles', gender: 'men' }] });
+  await assert.rejects(svc.adminGrantAi(id, org.actor, 'both'), (e) => e.status === 403);
+  await assert.rejects(svc.adminGrantAi(id, admin, 'gold'), /pack must be/);
+  const before = await svc.credits.adminUsage({ days: 30 });
+  let b = await svc.adminGrantAi(id, admin, 'both');
+  assert.deepEqual([b.create.tournament, b.manage.tournament], [20, 150]);
+  b = await svc.adminGrantAi(id, admin, 'manage'); // again: a second grant, not the same one
+  assert.equal(b.manage.tournament, 300);
+  const after = await svc.credits.adminUsage({ days: 30 });
+  assert.equal(after.given - before.given, 320);
+  assert.equal(after.revenue, before.revenue);
+  const r = await ai.test(admin);
+  assert.equal(r.ok, true);
+  const [row] = await db.query(`SELECT kind, ms FROM ai_calls WHERE kind = 'test' ORDER BY id DESC LIMIT 1`);
+  assert.ok(row && row.ms >= 0);
+  const u = await ai.usage(30);
+  assert.ok(u.day.calls >= 1);
 });

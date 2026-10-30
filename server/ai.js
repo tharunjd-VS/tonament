@@ -21,8 +21,9 @@ const FORM_HOSTS = ['docs.google.com', 'forms.gle'];
 
 // ---------- the schemas (structured outputs: every field present, nullable where unknown)
 
-const str = { type: ['string', 'null'] };
+// Nullable fields use anyOf (structured outputs don't take type arrays).
 const nullable = (schema) => ({ anyOf: [schema, { type: 'null' }] });
+const str = nullable({ type: 'string' });
 const obj = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const EVENT_SPEC = obj({
   discipline: { type: 'string', enum: ['singles', 'doubles', 'team', 'any'] },
@@ -44,7 +45,7 @@ const draftSchema = () => obj({
       discipline: { type: 'string', enum: ['singles', 'doubles', 'team', 'any'] },
       gender: { type: 'string', enum: ['men', 'women', 'mixed', 'open'] },
       age: str, level: str, name: str,
-      feeRupees: { type: ['number', 'null'] },
+      feeRupees: nullable({ type: 'number' }),
       feePer: nullable({ type: 'string', enum: ['entry', 'player'] }),
     }),
   },
@@ -133,8 +134,8 @@ function createAi({ db, fail, env = process.env, client = null, fetchImpl = glob
 
   async function log(row) {
     await db.query(
-      'INSERT INTO ai_calls (user_id, tournament_id, kind, model, tokens_in, tokens_out, cost_paise, ok) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-      [row.user ?? null, row.tournament ?? null, row.kind, row.model, row.tokensIn || 0, row.tokensOut || 0, row.cost || 0, row.ok],
+      'INSERT INTO ai_calls (user_id, tournament_id, kind, model, tokens_in, tokens_out, cost_paise, ok, ms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+      [row.user ?? null, row.tournament ?? null, row.kind, row.model, row.tokensIn || 0, row.tokensOut || 0, row.cost || 0, row.ok, row.ms ?? null],
     ).catch((err) => console.error('ai_calls:', err.message));
   }
 
@@ -146,6 +147,7 @@ function createAi({ db, fail, env = process.env, client = null, fetchImpl = glob
     const Anthropic = require('@anthropic-ai/sdk');
     const A = Anthropic.default || Anthropic;
     let res;
+    const started = Date.now();
     try {
       res = await getClient().beta.messages.create({
         model: m,
@@ -156,7 +158,7 @@ function createAi({ db, fail, env = process.env, client = null, fetchImpl = glob
         messages: [{ role: 'user', content }],
       });
     } catch (err) {
-      await log({ user, tournament, kind, model: m, ok: false });
+      await log({ user, tournament, kind, model: m, ok: false, ms: Date.now() - started });
       console.error(`AI ${kind}:`, err.message);
       if (err instanceof A.AuthenticationError) fail(503, 'AI setup isn\'t available right now — fill it in yourself');
       if (err instanceof A.RateLimitError) fail(429, 'AI setup is busy — try again in a minute');
@@ -164,7 +166,7 @@ function createAi({ db, fail, env = process.env, client = null, fetchImpl = glob
       fail(502, 'AI setup didn\'t answer — try again, or fill it in yourself');
     }
     const used = res.model || m;
-    await log({ user, tournament, kind, model: used, tokensIn: res.usage?.input_tokens, tokensOut: res.usage?.output_tokens, cost: costPaise(used, res.usage), ok: res.stop_reason === 'end_turn' });
+    await log({ user, tournament, kind, model: used, tokensIn: res.usage?.input_tokens, tokensOut: res.usage?.output_tokens, cost: costPaise(used, res.usage), ok: res.stop_reason === 'end_turn', ms: Date.now() - started });
     if (res.stop_reason !== 'end_turn') fail(422, 'Couldn\'t read that — fill it in by hand');
     const text = (res.content || []).find((b) => b.type === 'text');
     try {
@@ -226,17 +228,30 @@ function createAi({ db, fail, env = process.env, client = null, fetchImpl = glob
       () => call({ kind: 'mapping', user: actor.user.id, tournament, system: MAPPING_SYSTEM, content: [{ type: 'text', text }], schema: MAPPING_SCHEMA, effort: 'low' }));
   }
 
-  // Totals for the admin overview.
+  // Totals for the admin overview, and the last day's health.
   async function usage(days = 30) {
     const [r] = await db.query(
       `SELECT COUNT(*)::int AS calls, COUNT(*) FILTER (WHERE kind = 'draft')::int AS drafts, COUNT(*) FILTER (WHERE kind = 'mapping')::int AS mappings,
+              COUNT(*) FILTER (WHERE kind = 'assist')::int AS assists,
               COUNT(*) FILTER (WHERE NOT ok)::int AS failed, COALESCE(SUM(cost_paise), 0)::int AS cost
        FROM ai_calls WHERE created_at > now() - make_interval(days => $1)`, [days],
     );
-    return { ...r, enabled: enabled(), model: model() };
+    const [day] = await db.query(
+      `SELECT COUNT(*)::int AS calls, COUNT(*) FILTER (WHERE NOT ok)::int AS failed, COALESCE(ROUND(AVG(ms)), 0)::int AS "avgMs",
+              COALESCE(MAX(ms), 0)::int AS "maxMs", COALESCE(SUM(cost_paise), 0)::int AS cost
+       FROM ai_calls WHERE created_at > now() - interval '1 day'`,
+    );
+    return { ...r, day, enabled: enabled(), model: model() };
   }
 
-  return { enabled, tournamentDraft, columnMapping, usage, model, call, paid };
+  // A tiny call, for admins to check the key and the model work (no credits).
+  async function test(actor) {
+    const started = Date.now();
+    const out = await call({ kind: 'test', user: actor.user.id, system: 'Reply with ok true.', content: [{ type: 'text', text: 'Are you there?' }], schema: obj({ ok: { type: 'boolean' } }), effort: 'low' });
+    return { ok: out.ok === true, model: model(), seconds: Math.round((Date.now() - started) / 100) / 10 };
+  }
+
+  return { enabled, tournamentDraft, columnMapping, usage, model, call, paid, test };
 }
 
 // Each event checked as Tonament would make it; problems listed, never failing the draft.
