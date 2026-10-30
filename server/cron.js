@@ -7,7 +7,8 @@
 //              unanswered challenges and ladder forfeits, club challenges
 //              expired, goal badges for goals that ended
 //   weekly     the admins' summary email (Mondays): this week against last
-//   reminders  (next: the day-before reminders)
+//   reminders  the day before: tournaments, races, meets, group sessions
+//              and club runs tomorrow (daily, 6 pm India time)
 
 const crypto = require('node:crypto');
 const { adminWeeklyEmail } = require('./email');
@@ -85,9 +86,65 @@ function createCron({ db, svc, fail, baseUrl = 'https://tonament.com', env = pro
     return { sent, rows };
   }
 
-  // Sprint 2: the day-before reminders.
+  // The day before: everyone in something tomorrow (India time) is reminded,
+  // once each (the dedupe). Tournaments (players, and a note for the
+  // organisers), races and meets (entrants), group sessions (those who said
+  // they're in) and club runs (those going).
   async function reminders() {
-    return { sent: 0 };
+    const [{ day }] = await db.query(`SELECT to_char((now() AT TIME ZONE 'Asia/Kolkata')::date + 1, 'YYYY-MM-DD') AS day`);
+    const tomorrow = `((%s) AT TIME ZONE 'Asia/Kolkata')::date = $1::date`;
+    const on = (col) => tomorrow.replace('%s', col);
+    const clock = (hhmm) => {
+      if (!hhmm) return null;
+      const [h, m] = String(hhmm).split(':').map(Number);
+      return `${h % 12 || 12}${m ? `:${String(m).padStart(2, '0')}` : ''} ${h < 12 ? 'am' : 'pm'}`;
+    };
+    const timeOf = (at) => new Date(at).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' }).replace(/:00(?= )/, '').toLowerCase();
+    const out = { day, tournaments: 0, races: 0, meets: 0, groups: 0, clubRuns: 0 };
+    const tell = async (key, users, n) => {
+      const sent = await svc.notify.send(db.query, { users, kind: 'reminder', dedupe: `reminder:${n.dedupe}:${day}`, title: n.title, body: n.body, url: n.url });
+      out[key] += sent.length;
+    };
+
+    // Tournaments: players (accounts on their entries, still in), and the organisers.
+    for (const t of await db.query(
+      `SELECT id, name, venue, city, start_time FROM tournaments WHERE starts_on = $1 AND status <> 'completed' AND club_challenge_id IS NULL AND season_id IS NULL`, [day],
+    )) {
+      const players = await db.query(
+        `SELECT DISTINCT u.id FROM entries e LEFT JOIN entry_players p ON p.entry_id = e.id
+         JOIN users u ON u.id = e.user_id OR lower(u.email) = lower(p.email)
+         WHERE e.tournament_id = $1 AND NOT e.withdrawn AND e.confirmed IS NOT FALSE AND e.paired_into IS NULL`, [t.id]);
+      const team = await db.query(`SELECT DISTINCT u.id FROM members m JOIN users u ON lower(u.email) = lower(m.email) WHERE m.tournament_id = $1 AND m.role IN ('owner', 'organiser')`, [t.id]);
+      const where = [clock(t.start_time), t.venue || t.city].filter(Boolean).join(' at ');
+      const crew = new Set(team.map((r) => r.id));
+      await tell('tournaments', players.map((r) => r.id).filter((x) => !crew.has(x)), { dedupe: `t:${t.id}`, title: `Tomorrow: ${t.name}`, body: where ? `${where}. Good luck!` : 'Good luck!', url: `/t/${t.id}` });
+      const [{ entries }] = await db.query(`SELECT COUNT(*)::int AS entries FROM entries WHERE tournament_id = $1 AND NOT withdrawn AND paired_into IS NULL`, [t.id]);
+      await tell('tournaments', [...crew], { dedupe: `t:${t.id}:org`, title: `Tomorrow: ${t.name}`, body: `${entries} entr${entries === 1 ? 'y' : 'ies'}${where ? ` · ${where}` : ''}. Check-in, the draw and courts are on the tournament page.`, url: `/t/${t.id}` });
+    }
+    // Races and meets: whoever's entered.
+    for (const r of await db.query(`SELECT id, name, place, starts_at FROM races WHERE ${on('starts_at')} AND status <> 'done'`, [day])) {
+      const users = (await db.query('SELECT DISTINCT user_id AS id FROM race_entries WHERE race_id = $1 AND user_id IS NOT NULL', [r.id])).map((x) => x.id);
+      await tell('races', users, { dedupe: `race:${r.id}`, title: `Tomorrow: ${r.name}`, body: `${timeOf(r.starts_at)} at ${r.place}. Your bib number is on the race page.`, url: `/race/${r.id}` });
+    }
+    for (const m of await db.query(`SELECT id, name, place, starts_at FROM meets WHERE ${on('starts_at')} AND status <> 'done'`, [day])) {
+      const users = (await db.query('SELECT DISTINCT user_id AS id FROM meet_entries WHERE meet_id = $1 AND user_id IS NOT NULL', [m.id])).map((x) => x.id);
+      await tell('meets', users, { dedupe: `meet:${m.id}`, title: `Tomorrow: ${m.name}`, body: `${timeOf(m.starts_at)} at ${m.place}. Heats and lanes are on the meet page.`, url: `/meet/${m.id}` });
+    }
+    // Group sessions: those who said they're in.
+    for (const g of await db.query(
+      `SELECT s.id, s.starts_at, g.name, g.slug, g.venue FROM group_sessions s JOIN groups g ON g.id = s.group_id WHERE ${on('s.starts_at')}`, [day],
+    )) {
+      const users = (await db.query(`SELECT user_id AS id FROM session_players WHERE session_id = $1 AND status = 'in'`, [g.id])).map((x) => x.id);
+      await tell('groups', users, { dedupe: `session:${g.id}`, title: `Tomorrow: ${g.name}`, body: `${timeOf(g.starts_at)}${g.venue ? ` at ${g.venue}` : ''}. You said you're in.`, url: `/g/${g.slug}` });
+    }
+    // Club runs: those going tomorrow.
+    for (const c of await db.query(
+      `SELECT r.id, r.name, r.at_time, r.place, o.name AS club FROM club_runs r JOIN orgs o ON o.id = r.org_id WHERE r.active AND r.weekday = EXTRACT(DOW FROM $1::date)`, [day],
+    )) {
+      const users = (await db.query('SELECT user_id AS id FROM club_run_people WHERE club_run_id = $1 AND on_date = $2::date AND going', [c.id, day])).map((x) => x.id);
+      await tell('clubRuns', users, { dedupe: `clubrun:${c.id}`, title: `Tomorrow: ${c.club} · ${c.name}`, body: `${clock(c.at_time)} at ${c.place}. See you there!`, url: `/club-run/${c.id}` });
+    }
+    return out;
   }
 
   const JOBS = { hourly, weekly, reminders };

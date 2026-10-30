@@ -14,6 +14,10 @@
     {
       "path": "/api/cron/weekly",
       "schedule": "31 3 * * 1"
+    },
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "31 12 * * *"
     }
   ],
   "rewrites": [
