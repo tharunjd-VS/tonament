@@ -667,6 +667,24 @@
           render();
           S.goals = await api('GET', '/goals').catch(() => ({ active: [], past: [] }));
         }
+      } else if (parts[0] === 'meet' && /^\d+$/.test(parts[1] || '')) {
+        S.route = { name: 'meet', id: Number(parts[1]), event: Number(params.get('event')) || null };
+        if (!S.meet || S.meet.id !== S.route.id) S.meet = null;
+        render();
+        await loadMeet();
+        return;
+      } else if (parts[0] === 'meets') {
+        if (parts[1] === 'new') {
+          if (!S.me) { navigate(`/signin?next=${encodeURIComponent(location.pathname)}`, { replace: true }); return; }
+          S.route = { name: 'meetNew' };
+          render();
+          [S.meetCatalogue, S.goalClubs] = await Promise.all([api('GET', '/meets/catalogue'), api('GET', '/clubs/mine').catch(() => [])]);
+        } else {
+          S.route = { name: 'meets' };
+          S.meets = null;
+          render();
+          S.meets = await api('GET', '/meets').catch(() => ({ upcoming: [], past: [] }));
+        }
       } else if (parts[0] === 'race' && /^\d+$/.test(parts[1] || '')) {
         S.route = { name: 'race', id: Number(parts[1]) };
         if (!S.race || S.race.id !== S.route.id) { S.race = null; S.raceTab = null; S.raceLast = null; S.raceAdd = null; }
@@ -951,6 +969,9 @@
     else if (S.route.name === 'races') view = viewRaces();
     else if (S.route.name === 'raceNew') view = viewRaceNew();
     else if (S.route.name === 'race') view = viewRace();
+    else if (S.route.name === 'meets') view = viewMeets();
+    else if (S.route.name === 'meetNew') view = viewMeetNew();
+    else if (S.route.name === 'meet') view = viewMeet();
     else if (S.route.name === 'goalNew') view = viewGoalNew();
     else if (S.route.name === 'goal') view = viewGoal();
     else if (S.route.name === 'challengeNew') view = viewChallengeNew();
@@ -5147,6 +5168,7 @@
             h('a', { href: '/goals', onclick: closeMenu }, 'Goals'),
             h('a', { href: '/runs', onclick: closeMenu }, 'Runs'),
             h('a', { href: '/races', onclick: closeMenu }, 'Races'),
+            h('a', { href: '/meets', onclick: closeMenu }, 'Meets'),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
@@ -7127,6 +7149,168 @@
       V.admin && S.ccForm ? form() : null);
   }
 
+  // ---------- track meets: events, heats, finals, results, team points
+  const STAGE = { entries: ['waiting', 'Entries'], heats: ['org', 'Heats'], final: ['org', 'Final'], done: ['done', 'Results'] };
+  const MEDAL = { 1: '🥇', 2: '🥈', 3: '🥉' };
+
+  function viewMeets() {
+    document.title = 'Meets · Tonament';
+    const L = S.meets;
+    const card = (m) => h('a', { class: 'card goal-card', href: `/meet/${m.id}` },
+      h('p', { class: 'eyebrow' }, [m.sport, raceWhen(m.startsAt), m.city].filter(Boolean).join(' · ')),
+      h('strong', { class: 'goal-title' }, m.name),
+      h('small', { class: 'muted' }, `${m.events} events · ${m.entries} entries${m.mine ? ' · you\'re in ✓' : ''}${m.status === 'done' ? ' · results' : m.status === 'on' ? ' · on now' : ''}`));
+    return [
+      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Meets'), S.me ? h('a', { class: 'btn btn-primary', href: '/meets/new' }, 'Set up a meet') : null),
+      h('p', { class: 'muted' }, 'Athletics, swimming and track cycling: heats, finals, personal bests and team points.'),
+      L == null ? loading() : [
+        L.upcoming.length ? h('section', { class: 'section' }, h('h2', {}, 'Coming up and on'), h('div', { class: 'card-list' }, L.upcoming.map(card))) : empty('No meets yet — set one up.'),
+        L.past.length ? h('section', { class: 'section' }, h('h2', {}, 'Results'), h('div', { class: 'card-list' }, L.past.map(card))) : null,
+      ],
+    ];
+  }
+
+  function viewMeetNew() {
+    document.title = 'New meet · Tonament';
+    const cat = S.meetCatalogue;
+    if (!cat) return loading();
+    const d = (S.meetDraft ||= { sport: 'athletics', name: '', when: '', place: '', city: '', lanes: 8, picked: ['100m', '200m', 'Long jump'], genders: ['m', 'f'], club: '' });
+    const sport = cat.find((x) => x.id === d.sport);
+    const clubs = (S.goalClubs || []).filter((c) => c.role === 'admin' && c.status === 'active');
+    const form = h('form', {
+      class: 'card form new-flow',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const events = d.picked.flatMap((name) => d.genders.map((gender) => ({ name, gender })));
+        act(async () => {
+          const m = await api('POST', '/meets', { sport: d.sport, name: d.name, startsAt: new Date(`${d.when}:00+05:30`).toISOString(), place: d.place, city: d.city || null, lanes: Number(d.lanes), events, club: d.club || null });
+          S.meetDraft = null;
+          navigate(`/meet/${m.id}`);
+        }, 'Meet set up — add athletes to each event');
+      },
+    },
+    h('h1', {}, 'Set up a meet'),
+    groupField('Sport', choiceGroup({ name: 'meetSport', label: 'Sport', value: d.sport, options: cat.map((x) => ({ value: x.id, label: x.name })), onchange: (e) => { d.sport = e.target.value; d.picked = []; render(); } })),
+    field('Name', h('input', { required: true, maxlength: 80, placeholder: 'Chennai Open', value: d.name, oninput: (e) => { d.name = e.target.value; } })),
+    field('Start (India time)', h('input', { type: 'datetime-local', required: true, value: d.when, oninput: (e) => { d.when = e.target.value; } })),
+    field('Venue', h('input', { required: true, maxlength: 80, placeholder: 'Nehru Stadium', value: d.place, oninput: (e) => { d.place = e.target.value; } })),
+    field('City', h('input', { maxlength: 60, placeholder: 'Chennai', value: d.city, oninput: (e) => { d.city = e.target.value; } })),
+    groupField('Events', choiceGroup({ name: 'meetEvents', label: 'Events', multiple: true, value: d.picked, options: sport.events.map((x) => ({ value: x.name, label: x.name })), onchange: (e) => { const v = e.target.value; d.picked = e.target.checked ? [...d.picked, v] : d.picked.filter((y) => y !== v); } })),
+    groupField('For', choiceGroup({ name: 'meetGenders', label: 'For', multiple: true, value: d.genders, options: [{ value: 'm', label: 'Men' }, { value: 'f', label: 'Women' }, { value: 'x', label: 'Open' }], onchange: (e) => { const v = e.target.value; d.genders = e.target.checked ? [...d.genders, v] : d.genders.filter((y) => y !== v); } }), null, 'Each event is held for each of these.'),
+    groupField(d.sport === 'swimming' ? 'Lanes in the pool' : 'Lanes', choiceGroup({ name: 'meetLanes', label: 'Lanes', value: d.lanes, options: [4, 5, 6, 8, 10].map((n) => ({ value: n, label: String(n) })), onchange: (e) => { d.lanes = Number(e.target.value); } }), null, 'Timed events with more entries than lanes run heats; the best heat marks make the final.'),
+    clubs.length ? field('Put on by', h('select', { onchange: (e) => { d.club = e.target.value; } }, h('option', { value: '' }, 'Just me'), clubs.map((c) => h('option', { value: c.slug, selected: c.slug === d.club }, c.name)))) : null,
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Set it up')));
+    return form;
+  }
+
+  async function loadMeet() {
+    try {
+      S.meet = await api('GET', `/meets/${S.route.id}`);
+      S.error = null;
+    } catch (e) {
+      S.error = e.message;
+    }
+    render();
+  }
+  setInterval(() => {
+    if (S.route.name === 'meet' && S.meet && S.meet.status === 'on' && !document.hidden && !isEditing() && !(S.meet.can && S.meet.can.manage)) loadMeet();
+  }, 10000);
+
+  function viewMeet() {
+    const x = S.meet;
+    if (!x || x.id !== S.route.id) return loading();
+    document.title = `${x.name} · ${x.sport.name}`;
+    const share = () => shareSheet({ title: x.name, text: x.teams.length ? `${x.name} — ${x.teams[0].team} lead with ${x.teams[0].points} points:` : `${x.name}, ${raceWhen(x.startsAt)}:`, url: `${location.origin}/meet/${x.id}`, image: `/img/meet/${x.id}.png` });
+    const ev = x.events.find((e) => e.id === S.route.event);
+    const evPath = (e) => `/meets/${x.id}/events/${e.id}`;
+    const open = (e) => { S.route = { ...S.route, event: e ? e.id : null }; history.replaceState(null, '', `/meet/${x.id}${e ? `?event=${e.id}` : ''}`); render(); window.scrollTo(0, 0); };
+    const head = h('div', { class: 'card challenge-head' },
+      h('p', { class: 'eyebrow' }, [x.sport.name, raceWhen(x.startsAt)].join(' · ')),
+      h('h1', {}, x.name),
+      h('p', { class: 'muted small' }, [[x.place, x.city].filter(Boolean).join(', '), x.club ? x.club.name : null, `${x.lanes} lanes`].filter(Boolean).join(' · ')),
+      h('div', { class: 'actions' }, pill(...({ open: ['waiting', 'Entries open'], on: ['org', 'On now'], done: ['done', 'Finished'] }[x.status])), h('button', { class: 'btn btn-small', onclick: share }, 'Share')));
+    const teams = () => (x.teams.length ? h('div', { class: 'card' }, h('h2', {}, x.status === 'done' ? 'Team points — final' : 'Team points'),
+      h('table', { class: 'season-table' }, h('thead', {}, h('tr', {}, ['#', 'Team', '🥇', '🥈', '🥉', 'Pts'].map((c, i) => h('th', { class: i > 1 ? 'num' : '' }, c)))),
+        h('tbody', {}, x.teams.map((t, i) => h('tr', {}, h('td', {}, i + 1), h('td', {}, t.team), h('td', { class: 'num' }, t.gold), h('td', { class: 'num' }, t.silver), h('td', { class: 'num' }, t.bronze), h('td', { class: 'num' }, h('strong', {}, t.points)))))),
+      h('p', { class: 'muted small' }, `Points for places 1–${x.points.length}: ${x.points.join('-')}.`)) : null);
+    if (!ev) {
+      return [
+        h('p', {}, h('a', { class: 'back-link', href: '/meets' }, '← Meets')), head, teams(),
+        h('div', { class: 'card' }, h('h2', {}, 'Events'),
+          h('ul', { class: 'cc-list' }, x.events.map((e) => h('li', {},
+            h('a', { href: `/meet/${x.id}?event=${e.id}`, onclick: (evt) => { evt.preventDefault(); open(e); } }, h('strong', {}, `${e.genderName === 'Open' ? '' : `${e.genderName}'s `}${e.name}`)),
+            h('span', { class: 'muted small' }, ` · ${e.entries} in${e.mine ? ' · you ✓' : ''}${e.results[0] ? ` · ${MEDAL[1]} ${e.results[0].name} ${e.results[0].mark}` : ''}`),
+            pill(...STAGE[e.stage]))))),
+      ];
+    }
+    const manage = x.can.manage;
+    const post = (what, body, msg) => act(async () => { S.meet = await api('POST', `${evPath(ev)}/${what}`, body || {}); }, msg);
+    const markLabel = ev.kind === 'time' ? 'Time' : 'Metres';
+    // A start list (a heat, or the final) with marks: inputs for the organisers.
+    const sheet = (title, list, round) => {
+      const editing = manage && ((round === 'heats' && ev.stage === 'heats') || (round === 'final' && ev.stage === 'final'));
+      const rows = list.map((a) => {
+        const lane = round === 'heats' ? a.heatLane : a.lane;
+        const mark = round === 'heats' ? a.heatMark : a.mark;
+        const inp = editing ? h('input', { class: 'meet-mark', 'data-entry': a.id, inputmode: 'decimal', placeholder: ev.kind === 'time' ? '10.85' : '6.45', value: (mark || '').replace(' m', ''), 'aria-label': `${a.name} ${markLabel}` }) : null;
+        const st = editing ? h('select', { class: 'meet-status', 'data-entry': a.id, 'aria-label': `${a.name} status` }, ['ok', 'dns', 'dnf', 'dq'].map((v) => h('option', { value: v, selected: a.status === v }, v === 'ok' ? '—' : v.toUpperCase()))) : null;
+        return h('tr', { class: a.me ? 'me' : '' },
+          h('td', { class: 'num' }, lane || ''),
+          h('td', {}, a.handle ? h('a', { href: `/@${a.handle}` }, a.name) : a.name, a.team ? h('small', { class: 'muted' }, ` · ${a.team}`) : null),
+          h('td', { class: 'num' }, editing ? [inp, st] : a.status !== 'ok' ? a.status.toUpperCase() : mark || '—'));
+      });
+      const f = h('form', {
+        onsubmit: (e) => {
+          e.preventDefault();
+          const results = [...f.querySelectorAll('.meet-mark')].map((el) => ({ entry: Number(el.dataset.entry), mark: el.value || null, status: f.querySelector(`.meet-status[data-entry="${el.dataset.entry}"]`).value }));
+          post('marks', { results }, 'Marks saved');
+        },
+      },
+      h('table', { class: 'race-results meet-sheet' }, h('thead', {}, h('tr', {}, h('th', { class: 'num' }, ev.kind === 'time' ? 'Lane' : 'Order'), h('th', {}, 'Athlete'), h('th', { class: 'num' }, markLabel))), h('tbody', {}, rows)),
+      editing ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save marks')) : null);
+      return h('div', { class: 'card' }, h('h3', {}, title), f);
+    };
+    const enterBox = () => {
+      if (!x.can.enter || ev.stage !== 'entries' || ev.mine) return null;
+      const d = (S.meetEnter ||= { club: '' });
+      return h('div', { class: 'card' }, h('h2', {}, 'Enter this event'),
+        x.myClubs.length ? field('For', h('select', { onchange: (e) => { d.club = e.target.value; } }, h('option', { value: '' }, 'No team'), x.myClubs.map((c) => h('option', { value: c.slug, selected: c.slug === d.club }, c.name)))) : null,
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => act(async () => { S.meet = await api('POST', `/meets/${x.id}/enter`, { event: ev.id, club: d.club || null }); }, 'You\'re in') }, 'Enter')));
+    };
+    const addBox = () => {
+      if (!manage || ev.stage !== 'entries') return null;
+      const area = h('textarea', { rows: 4, placeholder: 'One per line: Name, Team (, email to link their account)\nRavi K, Anna Nagar AC\nBala M, Velachery TC' });
+      return h('div', { class: 'card' }, h('h2', {}, 'Add athletes'),
+        area,
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn', onclick: () => act(async () => { S.meet = await api('POST', `/meets/${x.id}/athletes`, { event: ev.id, athletes: area.value }); }, 'Added') }, 'Add'),
+          h('button', { class: 'btn btn-primary', disabled: !ev.entries, onclick: () => post('start', {}, ev.kind === 'time' && ev.entries > x.lanes ? 'Heats drawn' : 'Start list out') }, ev.kind === 'time' && ev.entries > x.lanes ? `Draw ${Math.ceil(ev.entries / x.lanes)} heats` : 'Start the event')));
+    };
+    const finalists = ev.athletes.filter((a) => a.inFinal).sort((a, b) => a.lane - b.lane);
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: `/meet/${x.id}`, onclick: (e) => { e.preventDefault(); open(null); } }, `← ${x.name}`)),
+      h('div', { class: 'card challenge-head' },
+        h('p', { class: 'eyebrow' }, [x.sport.name, ev.kind === 'time' ? 'Timed' : ev.kind === 'height' ? 'Height' : 'Distance'].join(' · ')),
+        h('h1', {}, `${ev.genderName === 'Open' ? '' : `${ev.genderName}'s `}${ev.name}`),
+        h('div', { class: 'actions' }, pill(...STAGE[ev.stage]), h('span', { class: 'muted small' }, `${ev.entries} athletes`))),
+      ev.stage === 'done' ? h('div', { class: 'card' }, h('h2', {}, 'Results'),
+        h('table', { class: 'race-results' }, h('tbody', {}, ev.results.map((a) => h('tr', { class: a.me ? 'me' : '' },
+          h('td', {}, MEDAL[a.place] || a.place),
+          h('td', {}, a.handle ? h('a', { href: `/@${a.handle}` }, a.name) : a.name, a.team ? h('small', { class: 'muted' }, ` · ${a.team}`) : null, a.pb ? h('span', { class: 'pill org', style: 'margin-left:6px' }, 'PB') : null),
+          h('td', { class: 'num' }, h('strong', {}, a.mark)))))),
+        manage ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-ghost btn-small', onclick: () => confirm('Reopen this event to fix a mark? Its places and points come off until you finish it again.') && post('reopen', {}, 'Reopened') }, 'Reopen to fix a mark')) : null) : null,
+      ev.stage === 'final' ? [sheet(ev.kind === 'time' ? 'Final' : 'Start list', finalists, 'final'),
+        manage ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', onclick: () => confirm('Finish the event? Places and team points are given, and athletes are told.') && post('finish', {}, 'Results are in 🏁') }, 'Finish the event')) : null] : null,
+      ev.heats.length ? [
+        ev.stage === 'heats' && manage ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => confirm(`Make the final? The ${x.lanes} best heat marks go through.`) && post('final', {}, 'Final drawn') }, 'Make the final')) : null,
+        ev.heats.map((n) => sheet(`Heat ${n}`, ev.athletes.filter((a) => a.heat === n).sort((a, b) => a.heatLane - b.heatLane), 'heats')),
+      ] : null,
+      ev.stage === 'entries' ? [enterBox(), addBox(),
+        h('div', { class: 'card' }, h('h2', {}, 'Entered'), ev.athletes.length ? h('ul', { class: 'cc-list' }, ev.athletes.map((a) => h('li', {}, h('span', {}, a.name), a.team ? h('small', { class: 'muted' }, ` · ${a.team}`) : null,
+          manage || a.me ? h('button', { class: 'link-btn small', style: 'margin-left:auto', onclick: () => act(async () => { S.meet = await api('DELETE', `/meets/${x.id}/entries/${a.id}`); }) }, 'Remove') : null))) : h('p', { class: 'muted' }, 'No one yet.'))] : null,
+    ];
+  }
+
   // ---------- races: distances, bibs, times by bib, results
   const raceWhen = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
   const ordinal = (n) => `${n}${[11, 12, 13].includes(n % 100) ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
@@ -8096,6 +8280,12 @@
         ? ['🏆 ', club(d.winner, winSlug), ' beat ', club(d.loser, loseSlug), ' ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score), ` in a club v club ${d.kind === 'tie' ? 'tie' : 'friendly'}`]
         : ['🤝 ', club(d.from, d.fromSlug), ' and ', club(d.to, d.toSlug), ' drew ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score)];
     }
+    if (x.verb === 'meet') {
+      return [d.place <= 3 ? `${MEDAL[d.place]} ` : '🏁 ', who, ` ${d.place === 1 ? 'won' : `came ${ordinal(d.place)} in`} the ${d.event} at `, h('a', { href: `/meet/${d.meet}` }, d.name), ' — ', h('span', { class: 'feed-score' }, d.mark), d.pb ? ' · Personal best 🎉' : ''];
+    }
+    if (x.verb === 'meet_won') {
+      return ['🏆 ', h('strong', {}, d.team), ' won ', h('a', { href: `/meet/${d.meet}` }, d.name), ` — ${d.points} points, ${d.gold} gold`];
+    }
     if (x.verb === 'race') {
       return ['🏁 ', who, ` finished the ${d.event} at `, h('a', { href: `/race/${d.race}` }, d.name), ' in ', h('span', { class: 'feed-score' }, d.time), ` — ${ordinal(d.place)} of ${d.of}`, d.groupPlace === 1 ? ` · 1st in ${d.ageGroup} 🥇` : ''];
     }
@@ -9039,7 +9229,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|meets(?:\/new)?$|meet\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

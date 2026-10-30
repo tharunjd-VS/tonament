@@ -1632,3 +1632,8 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .race-results tr.me td { background: var(--accent-soft); }
 .race-runners { margin-top: 12px; }
 .race-runners summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+
+/* Track meets */
+.meet-sheet td:last-child { white-space: nowrap; }
+.meet-mark { width: 84px; padding: 6px 8px; font-variant-numeric: tabular-nums; text-align: right; }
+.meet-status { width: auto; margin-left: 4px; padding: 6px 4px; }

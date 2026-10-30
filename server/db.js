@@ -869,11 +869,59 @@ CREATE TABLE IF NOT EXISTS race_entries (
   UNIQUE (race_id, bib)
 );
 CREATE INDEX IF NOT EXISTS race_entries_user ON race_entries(user_id);
+-- v45: track meets (athletics, swimming, track cycling). Events are measured
+-- (a time, a distance or a height). Timed events with more entries than
+-- lanes run heats, and the best marks make the final; places score team
+-- points for each athlete's team.
+CREATE TABLE IF NOT EXISTS meets (
+  id          SERIAL PRIMARY KEY,
+  sport       TEXT NOT NULL,                     -- athletics | swimming | cycling
+  name        TEXT NOT NULL,
+  org_id      INTEGER REFERENCES orgs(id) ON DELETE SET NULL,
+  starts_at   TIMESTAMPTZ NOT NULL,
+  place       TEXT NOT NULL,
+  city        TEXT,
+  lanes       INTEGER NOT NULL DEFAULT 8,
+  points      JSONB NOT NULL DEFAULT '[8,6,5,4,3,2,1]',
+  visibility  TEXT NOT NULL DEFAULT 'public',
+  status      TEXT NOT NULL DEFAULT 'open',      -- open | on | done
+  created_by  INTEGER NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS meet_events (
+  id        SERIAL PRIMARY KEY,
+  meet_id   INTEGER NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
+  name      TEXT NOT NULL,                       -- 100m, Long jump, …
+  kind      TEXT NOT NULL,                       -- time | distance | height
+  gender    TEXT NOT NULL DEFAULT 'x',           -- m | f | x
+  position  INTEGER NOT NULL DEFAULT 0,
+  stage     TEXT NOT NULL DEFAULT 'entries'      -- entries | heats | final | done
+);
+CREATE TABLE IF NOT EXISTS meet_entries (
+  id         SERIAL PRIMARY KEY,
+  meet_id    INTEGER NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
+  event_id   INTEGER NOT NULL REFERENCES meet_events(id) ON DELETE CASCADE,
+  user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  name       TEXT NOT NULL,
+  team       TEXT,
+  heat       INTEGER,
+  heat_lane  INTEGER,
+  heat_mark  NUMERIC,
+  in_final   BOOLEAN NOT NULL DEFAULT false,
+  lane       INTEGER,
+  mark       NUMERIC,
+  status     TEXT NOT NULL DEFAULT 'ok',         -- ok | dns | dnf | dq
+  place      INTEGER,
+  pb         BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS meet_entries_event ON meet_entries(event_id);
+CREATE INDEX IF NOT EXISTS meet_entries_user ON meet_entries(user_id);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 44;
+const SCHEMA_VERSION = 45;
 
 async function migrate(db) {
   try {

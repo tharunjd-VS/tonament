@@ -26,6 +26,7 @@ const { createSeasons } = require('./seasons');
 const { createRuns } = require('./runs');
 const { createClubRuns } = require('./club-runs');
 const { createRaces } = require('./races');
+const { createMeets } = require('./meets');
 const { createGoals } = require('./goals');
 const { createTies } = require('./ties');
 const TIE = require('../public/sports/tie');
@@ -3711,6 +3712,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const goals = createGoals({ db, fail, text, social, notify, runCounts: runs.counts });
   const clubRuns = createClubRuns({ db, fail, text, social, notify, runs });
   const races = createRaces({ db, fail, text, social, notify });
+  const meets = createMeets({ db, fail, text, social, notify });
   const ties = createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, requireStageOpen });
   goalsRef = goals;
   const clubChallenges = createClubChallenges({
@@ -3724,7 +3726,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   });
   seasonsRef = seasons;
   // (the goal card asks the goals module for a goal when it's drawn)
-  const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null), clubChallengeCard: (id) => clubChallenges.card(id), seasonCard: (id) => seasons.card(id), raceCard: (id) => races.card(id) });
+  const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null), clubChallengeCard: (id) => clubChallenges.card(id), seasonCard: (id) => seasons.card(id), raceCard: (id) => races.card(id), meetCard: (id) => meets.card(id) });
 
   // ---------- club v club matches (club-challenges.js)
 
@@ -3894,6 +3896,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     runs,
     clubRuns,
     races,
+    meets,
     referrals,
     useCredit,
     takeOverScoring,

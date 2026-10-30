@@ -32,7 +32,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|notifications|goals|goals\/new|runs|races|races\/new|club-run\/\d{1,12}|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|season\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|notifications|goals|goals\/new|runs|races|races\/new|meets|meets\/new|club-run\/\d{1,12}|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|season\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -435,6 +435,19 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `/api/club-challenges/${N}/respond`, (c, id) => svc.clubChallenges.respond(id, c.actor, c.body)],
     ['POST', `/api/club-challenges/${N}/cancel`, (c, id) => svc.clubChallenges.cancel(id, c.actor)],
     ['POST', `/api/club-challenges/${N}/team`, (c, id) => svc.clubChallenges.setTeam(id, c.actor, c.body)],
+    // Track meets
+    ['GET', '/api/meets', (c) => svc.meets.list(c.actor)],
+    ['GET', '/api/meets/catalogue', () => svc.meets.catalogue()],
+    ['POST', '/api/meets', (c) => svc.meets.create(c.actor, c.body)],
+    ['GET', `/api/meets/${N}`, (c, id) => svc.meets.get(id, c.actor)],
+    ['POST', `/api/meets/${N}/athletes`, (c, id) => svc.meets.addAthletes(id, c.actor, c.body)],
+    ['POST', `/api/meets/${N}/enter`, (c, id) => svc.meets.enter(id, c.actor, c.body)],
+    ['DELETE', `/api/meets/${N}/entries/${N}`, (c, id, eid) => svc.meets.removeEntry(id, c.actor, eid)],
+    ['POST', `/api/meets/${N}/events/${N}/start`, (c, id, eid) => svc.meets.start(id, c.actor, eid)],
+    ['POST', `/api/meets/${N}/events/${N}/marks`, (c, id, eid) => svc.meets.marks(id, c.actor, eid, c.body)],
+    ['POST', `/api/meets/${N}/events/${N}/final`, (c, id, eid) => svc.meets.makeFinal(id, c.actor, eid)],
+    ['POST', `/api/meets/${N}/events/${N}/finish`, (c, id, eid) => svc.meets.finish(id, c.actor, eid)],
+    ['POST', `/api/meets/${N}/events/${N}/reopen`, (c, id, eid) => svc.meets.reopen(id, c.actor, eid)],
     // Races
     ['GET', '/api/races', (c) => svc.races.list(c.actor)],
     ['POST', '/api/races', (c) => svc.races.create(c.actor, c.body)],
@@ -589,6 +602,14 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     return sharedAppPage(req, res, {
       path: `/goals/${g.id}`, title: g.title, image: `/img/goal/${g.id}.png`,
       description: `${what} · ${g.ended ? 'finished' : `${g.daysLeft} days left`}. Every game counts — join in on Tonament.`,
+    });
+  }
+  async function meetPage(req, res, id) {
+    const card = await svc.meets.card(id).catch(() => null);
+    if (!card) return sharedAppPage(req, res, { path: `/meet/${id}`, title: 'Meet — Tonament', description: 'Track meets, heats, finals and team points on Tonament.', image: '/brand/og.png' });
+    return sharedAppPage(req, res, {
+      path: `/meet/${id}`, title: `${card.title} — ${card.eyebrow}`, image: `/img/meet/${id}.png`,
+      description: `${card.subtitle}. Heats, finals, results and team points on Tonament.`,
     });
   }
   async function racePage(req, res, id) {
@@ -934,11 +955,13 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
         return res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Emails · Tonament</title><link rel="stylesheet" href="/styles.css"><main class="doc" style="padding:48px 16px"><h1>${done ? 'Done' : 'Hmm'}</h1><p>${msg}</p><p><a href="/">Open Tonament</a></p></main>`);
       }
       // Share cards: /img/<kind>/<id>.png (?size=story for 1080×1920).
-      const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t|ladder|goal|cc|season|race)\/([A-Za-z0-9-]{1,100})\.png$/);
+      const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t|ladder|goal|cc|season|race|meet)\/([A-Za-z0-9-]{1,100})\.png$/);
       if (imgPath && read) return await shareImage(req, res, imgPath[1], imgPath[2], url.searchParams.get('size'));
       // A club's app page, and one feed item, with link previews for WhatsApp.
       const clubPath = pathname.match(/^\/(?:club|api\/clubpage)\/([a-z0-9-]{3,30})\/?$/);
       if (clubPath && read) return await clubPage(req, res, clubPath[1]);
+      const meetPath = pathname.match(/^\/(?:meet|api\/meetpage)\/(\d{1,12})\/?$/);
+      if (meetPath && read) return await meetPage(req, res, meetPath[1]);
       const racePath = pathname.match(/^\/(?:race|api\/racepage)\/(\d{1,12})\/?$/);
       if (racePath && read) return await racePage(req, res, racePath[1]);
       const seasonPath = pathname.match(/^\/(?:season|api\/seasonpage)\/(\d{1,12})\/?$/);
