@@ -236,7 +236,7 @@ function createAi({ db, fail, env = process.env, client = null, fetchImpl = glob
     return { ...r, enabled: enabled(), model: model() };
   }
 
-  return { enabled, tournamentDraft, columnMapping, usage, model };
+  return { enabled, tournamentDraft, columnMapping, usage, model, call, paid };
 }
 
 // Each event checked as Tonament would make it; problems listed, never failing the draft.

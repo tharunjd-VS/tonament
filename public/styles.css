@@ -1829,4 +1829,11 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .late-option { text-align: left; }
 .late-option.recommended { box-shadow: inset 3px 0 0 var(--accent); }
 .late-option:disabled { opacity: 0.6; }
+.assistant textarea { width: 100%; }
+.proposals { display: grid; gap: 10px; margin: 8px 0; }
+.proposal .check-field { margin: 0; }
+.assistant-questions p { margin: 0; }
+.assistant-questions p + p { margin-top: 6px; }
+.proposal .quote { font-style: italic; }
+.proposal.blocked { opacity: 0.65; }
 .late-words p { margin: 0 0 4px; }

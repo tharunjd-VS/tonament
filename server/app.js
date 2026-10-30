@@ -6,6 +6,7 @@ const sports = require('./sports');
 const { createService } = require('./service');
 const { createCron } = require('./cron');
 const { createAi } = require('./ai');
+const { createAssistant } = require('./assistant');
 const { createAuth } = require('./auth');
 const { HttpError } = require('./errors');
 const pages = require('./pages');
@@ -216,6 +217,8 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
   let svc = null;
   const ai = createAi({ db, fail: (status, message) => { throw new HttpError(status, message); }, env: aiEnv, client: aiClient, fetchImpl: fetchImpl || globalThis.fetch, getCredits: () => svc && svc.credits });
   svc = createService(db, { mailer, fetchImpl, messaging, ai });
+  const assistant = createAssistant({ db, fail: (status, message, code) => { throw new HttpError(status, message, code); }, ai, svc });
+  svc.assistant = assistant;
   const auth = createAuth(db, {
     mailer, messaging: svc.messaging,
     onSignup: async (q, user, ref) => {
@@ -304,6 +307,9 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
     ['POST', `${T}/entries/${N}/withdraw`, (c, id, eid) => svc.withdraw(id, c.actor, eid)],
     ['POST', `${T}/late-entry`, (c, id) => svc.lateEntry(id, c.actor, { ...c.body, event: ev(c) })],
     // The fair options for a latecomer or a no-show, under the late-arrival policy.
+    ['POST', `${T}/assistant`, (c, id) => assistant.propose(id, c.actor, c.body)],
+    ['POST', `${T}/assistant/apply`, (c, id) => assistant.apply(id, c.actor, c.body)],
+    ['GET', `${T}/assistant/log`, (c, id) => assistant.log(id, c.actor)],
     ['GET', `${T}/late-options`, (c, id) => svc.lateOptions(id, c.actor, { kind: c.query.get('kind'), entry: c.query.get('entry'), event: c.query.get('event') || undefined, match: c.query.get('match'), level: c.query.get('level') })],
     ['POST', `${T}/redraw`, (c, id) => svc.redraw(id, c.actor, { event: ev(c) })],
     ['PUT', `${T}/entries/order`, (c, id) => svc.reorderEntries(id, c.actor, c.body.ids, { event: ev(c) })],
@@ -1080,7 +1086,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
           const ctx = {
             req,
             query: url.searchParams,
-            body: write ? await readJson(req, /\/media$|\/ai\/tournament-draft$|\/import(\/preview)?$/.test(pathname) ? MAX_MEDIA_BODY : MAX_BODY) : {},
+            body: write ? await readJson(req, /\/media$|\/ai\/tournament-draft$|\/assistant$|\/import(\/preview)?$/.test(pathname) ? MAX_MEDIA_BODY : MAX_BODY) : {},
             setCookie: (cookie) => cookies.push(cookie),
           };
           const cache = typeof route.cache === 'function' ? route.cache(ctx) : route.cache;

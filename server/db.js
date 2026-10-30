@@ -1066,11 +1066,25 @@ CREATE TABLE IF NOT EXISTS ai_credits (
 CREATE UNIQUE INDEX IF NOT EXISTS ai_credits_ref ON ai_credits (ref) WHERE ref IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ai_credits_owner ON ai_credits (tournament_id, user_id, scope);
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS ai_paused BOOLEAN NOT NULL DEFAULT false;
+-- v53: the on-the-day assistant (server/assistant.js): every change an
+-- organiser approved, what was asked, and how it went.
+CREATE TABLE IF NOT EXISTS ai_actions (
+  id            SERIAL PRIMARY KEY,
+  tournament_id TEXT REFERENCES tournaments(id) ON DELETE CASCADE,
+  user_id       INTEGER,
+  request       TEXT,
+  type          TEXT NOT NULL,
+  params        JSONB,
+  ok            BOOLEAN NOT NULL,
+  result        TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ai_actions_t ON ai_actions (tournament_id, created_at);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 52;
+const SCHEMA_VERSION = 53;
 
 async function migrate(db) {
   try {

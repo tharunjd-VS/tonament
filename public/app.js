@@ -2741,8 +2741,8 @@
       ];
     }
     // Organisers: just the players and what to do with them. Settings are on the Setup tab.
-    if (!setup) return [paymentsToCheck(t), upgradeCard(t), teamEditCard(t), running ? lateEntryCard(t) : null, list, setupLink(t)];
-    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), addEntriesForm(t, usingCheckIn), importCard(t), soloCard(t), teamEditCard(t), list, startCard(t), setupLink(t)];
+    if (!setup) return [assistantCard(t), paymentsToCheck(t), upgradeCard(t), teamEditCard(t), running ? lateEntryCard(t) : null, list, setupLink(t)];
+    return [setupChecklist(t), assistantCard(t), paymentsToCheck(t), upgradeCard(t), addEntriesForm(t, usingCheckIn), importCard(t), soloCard(t), teamEditCard(t), list, startCard(t), setupLink(t)];
   }
 
   // ---------- Google Form responses → entries: the CSV (or the published
@@ -3114,6 +3114,81 @@
         h('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel')));
     document.body.append(box);
     document.addEventListener('keydown', onKey);
+  }
+
+  // The on-the-day assistant (server/assistant.js): the organiser says what's
+  // happening; suggestions come back to tick and approve. Nothing changes
+  // until Apply, and where latecomers go follows the late-arrival policy.
+  function assistantCard(t) {
+    if (!S.aiEnabled || !t.can.manage || t.status === 'completed') return null;
+    const d = (S.assist && S.assist.t === t.id) ? S.assist : (S.assist = { t: t.id, text: '', busy: false, result: null, off: new Set() });
+    const ask = async (body) => {
+      d.busy = true;
+      render();
+      try {
+        d.result = await api('POST', `${tPath(t)}/assistant`, body, t.id);
+        d.off = new Set(d.result.proposals.filter((x) => !x.allowed).map((x) => x.key));
+        loadCredits(t.id);
+      } catch (e) {
+        if (!outOfCredits(e, t.id)) toast(e.message, true);
+      }
+      d.busy = false;
+      render();
+    };
+    const photo = async (file) => {
+      if (!file) return;
+      try { await ask({ text: d.text, image: await prepareImage(file, 'photo') }); } catch (e) { toast(e.message, true); }
+    };
+    const apply = async () => {
+      const chosen = d.result.proposals.filter((x) => x.allowed && !d.off.has(x.key));
+      if (!chosen.length) return;
+      d.busy = true;
+      render();
+      try {
+        const r = await api('POST', `${tPath(t)}/assistant/apply`, { version: d.result.version, request: d.result.request, proposals: chosen }, t.id);
+        S.t = r.tournament;
+        const bad = r.results.filter((x) => !x.ok);
+        toast(bad.length ? `${r.results.length - bad.length} done · ${bad.length} couldn't be: ${bad.map((x) => x.result).join('; ')}` : `Done ✓ ${r.results.map((x) => x.result).join(' · ')}`, bad.length > 0);
+        S.assist = null;
+      } catch (e) {
+        toast(e.message, true);
+        if (e.code === 'stale') d.result = null;
+        d.busy = false;
+      }
+      render();
+    };
+    const head = [h('h2', {}, 'Tell the assistant'), creditsLine(t.id, 'manage')];
+    if (d.busy) {
+      return h('div', { class: 'card assistant reading' }, ...head, h('p', { class: 'muted small' }, d.result ? 'Making the changes…' : 'Working out what to do…'),
+        h('div', { class: 'progress' }, h('span', { class: 'indeterminate' })));
+    }
+    if (d.result) {
+      const r = d.result;
+      const ticked = r.proposals.filter((x) => x.allowed && !d.off.has(x.key)).length;
+      return h('div', { class: 'card assistant' }, ...head,
+        r.summary ? h('p', { class: 'small' }, r.summary) : null,
+        r.questions.length ? h('div', { class: 'banner info small assistant-questions' }, r.questions.map((q) => h('p', {}, q))) : null,
+        r.proposals.length ? h('ul', { class: 'plain-list proposals' }, r.proposals.map((x) => h('li', { class: `proposal${x.allowed ? '' : ' blocked'}` },
+          h('label', { class: 'check-field' },
+            h('input', { type: 'checkbox', checked: x.allowed && !d.off.has(x.key), disabled: !x.allowed, onchange: (e) => { if (e.target.checked) d.off.delete(x.key); else d.off.add(x.key); render(); } }),
+            h('span', {}, h('strong', {}, x.label || x.name || 'Not possible'),
+              x.effect ? h('small', { class: 'muted' }, x.effect) : null,
+              x.why ? h('small', { class: 'muted' }, x.allowed ? x.why : `Can't: ${x.why}`) : null,
+              x.quote ? h('small', { class: 'muted quote' }, `“${x.quote}”`) : null))))) : h('p', { class: 'muted small' }, 'Nothing to change.'),
+        h('p', { class: 'muted small' }, 'Where latecomers go and when a walkover is due follow your late-arrival policy — not the AI.'),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn btn-primary', type: 'button', disabled: !ticked, onclick: apply }, ticked ? `Apply ${ticked}` : 'Apply'),
+          h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { d.result = null; render(); } }, 'Discard')));
+    }
+    const text = h('textarea', { rows: 2, maxlength: 2000, placeholder: 'e.g. Ravi and Kiran are here. New pair Asha / Eva for women\'s doubles, paid cash. Sanjay is running late.', 'aria-label': 'What\'s happening', oninput: (e) => { d.text = e.target.value; } }, d.text);
+    return h('div', { class: 'card assistant' }, ...head,
+      h('p', { class: 'muted small' }, 'Arrivals, walk-ins, late players, payments — say it like you\'d tell a helper, or snap the sign-up sheet. You approve every change.'),
+      h('form', { class: 'ai-row stack', onsubmit: (e) => { e.preventDefault(); if (d.text.trim()) ask({ text: d.text }); } },
+        text,
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn btn-primary', type: 'submit' }, 'Suggest'),
+          h('label', { class: 'btn ai-file' }, icon('camera'), h('span', {}, 'Photo'),
+            h('input', { type: 'file', accept: 'image/*', hidden: true, onchange: (e) => photo(e.target.files[0]) })))));
   }
 
   // Setup › Late arrivals: the policy, in plain words, shown to players.
@@ -3932,6 +4007,7 @@
     return [
       championBanner(t),
       t.can.manage ? nextStepCard(t) : stageBanner(t),
+      t.status !== 'setup' ? assistantCard(t) : null,
       matchSection(t, 'On court now', live, 'No matches in progress.', true),
       upcoming.length || t.status !== 'completed' ? matchSection(t, 'Up next', upcoming, 'Nothing scheduled right now.') : null,
       matchSection(t, 'Latest results', results, 'No results yet.'),
