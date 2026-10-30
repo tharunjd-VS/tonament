@@ -6417,7 +6417,8 @@
         h('h1', {}, 'Check your email'),
         h('p', {}, 'We sent a sign-in link to ', h('strong', {}, sent.email), '. Tap it and you\'re in — no password needed. If it opens in your email app, come back here: this page signs you in too.'),
         h('p', { class: 'check-code' }, h('span', { class: 'muted small' }, 'Check code'), h('strong', {}, sent.code)),
-        h('p', { class: 'muted small' }, 'The email shows the same code. Not there? Check spam, or wait a minute and send it again.'),
+        h('p', { class: 'muted small' }, 'The email shows the same code.', S.emailFrom ? [' It\'s from ', h('strong', {}, S.emailFrom.replace(/^.*<|>$/g, '')), '.'] : null,
+          ' Not there? Check Spam or Promotions and tap "Not spam" — your next emails from us will land in your inbox. Or wait a minute and send it again.'),
         h('div', { class: 'actions' },
           h('button', { class: 'btn', type: 'button', onclick: () => send(sent.email) }, 'Send again'),
           h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { S.route.sent = null; render(); } }, 'Use another email')),
@@ -6526,7 +6527,8 @@
       return h('div', { class: 'card auth-card' },
         h('h1', {}, 'Check your email'),
         h('p', {}, 'If an account exists for ', h('strong', {}, S.route.email), ', we\'ve sent a link to reset its password. It works once and expires in 1 hour.'),
-        h('p', { class: 'muted small' }, 'Nothing there? Check your spam folder, or try again in a minute.'),
+        h('p', { class: 'muted small' }, S.emailFrom ? ['It\'s from ', h('strong', {}, S.emailFrom.replace(/^.*<|>$/g, '')), '. '] : null,
+          'Nothing there? Check Spam or Promotions and tap "Not spam", or try again in a minute.'),
         h('a', { class: 'btn', href: '/signin' }, 'Back to sign in'));
     }
     const input = h('input', { name: 'email', type: 'email', required: true, autocomplete: 'email', value: S.route.email || null });
@@ -10529,6 +10531,24 @@
   }
 
   // ----- site settings
+  // Email: who it's from, where replies go, and a test send (for mail-tester.com).
+  function adminEmailStatus(A) {
+    if (A.email === undefined) { A.email = null; api('GET', '/admin/email').then((r) => { A.email = r; render(); }).catch(() => { A.email = false; render(); }); }
+    const x = A.email;
+    if (!x) return [h('h2', {}, 'Email'), x === false ? h('p', { class: 'muted small' }, 'Couldn\'t load email settings.') : loading()];
+    const to = h('input', { type: 'email', name: 'to', required: true, placeholder: 'you@example.com, or a mail-tester.com address', 'aria-label': 'Send a test to', value: S.me.email });
+    return [h('h2', {}, 'Email'),
+      h('ul', { class: 'plain-list' },
+        h('li', {}, h('strong', {}, 'Sending'), ' ', h('span', { class: 'muted' }, x.configured ? 'on (Resend)' : 'off — add RESEND_API_KEY and redeploy')),
+        h('li', {}, h('strong', {}, 'From'), ' ', h('span', { class: 'muted' }, x.from)),
+        h('li', {}, h('strong', {}, 'Replies go to'), ' ', h('span', { class: 'muted' }, x.replyTo || 'nowhere — set EMAIL_REPLY_TO to an inbox you read'))),
+      x.configured ? h('form', { class: 'team-form', onsubmit: (e) => {
+        e.preventDefault();
+        act(async () => { await api('POST', '/admin/email-test', { to: to.value.trim() }); }, `Test sent to ${to.value.trim()}`);
+      } }, to, h('button', { class: 'btn', type: 'submit' }, 'Send a test')) : null,
+      h('p', { class: 'hint' }, 'Landing in spam? Send the test to the address mail-tester.com gives you and aim for 9/10. In Resend, the domain should show SPF and DKIM verified, with click and open tracking off; add a DMARC record too.')];
+  }
+
   // Is AI working? The key (set or not, never shown), the model, the last
   // day's calls, and a free test call.
   function adminAiStatus(A) {
@@ -10572,6 +10592,7 @@
             : 'Off: tournaments need their own Open or Championship plan for branding, even when linked to an academy page.'))),
       h('p', { class: 'hint' }, 'You can override this for a single academy on the Academies tab. Changes show within a minute and are recorded in the admin log.'),
       adminAiStatus(A),
+      adminEmailStatus(A),
       h('h2', {}, 'AI prices'),
       (() => {
         const p = { create: 9900, manage: 19900, both: 24900, topup: 9900, ...(A.settings.aiPrices || {}) };
@@ -10669,6 +10690,7 @@
     S.me = me.user;
     S.gift = me.gift || null;
     S.emailEnabled = Boolean(me.emailEnabled);
+    S.emailFrom = me.emailFrom || null;
     S.phoneEnabled = Boolean(me.phoneEnabled);
     S.aiEnabled = Boolean(me.aiEnabled);
     route();

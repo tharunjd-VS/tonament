@@ -1,7 +1,8 @@
 'use strict';
 
 // Outgoing email through Resend (https://resend.com). Configured with
-// RESEND_API_KEY and EMAIL_FROM; without a key nothing is sent and the app
+// RESEND_API_KEY, EMAIL_FROM and EMAIL_REPLY_TO (an inbox someone reads:
+// replies there help deliverability); without a key nothing is sent and the app
 // carries on. For local development, EMAIL_LOG=1 prints emails to the
 // terminal instead and turns on the email features (never on Vercel).
 
@@ -11,12 +12,17 @@ const esc = (s) =>
 function createMailer({
   apiKey = process.env.RESEND_API_KEY,
   from = process.env.EMAIL_FROM || 'Tonament <noreply@tonament.com>',
+  replyTo = process.env.EMAIL_REPLY_TO || null,
   fetchImpl = globalThis.fetch,
   logOnly = !process.env.VERCEL && process.env.EMAIL_LOG === '1',
 } = {}) {
   return {
     enabled: Boolean(apiKey) || logOnly,
-    async send({ to, subject, html, text }) {
+    configured: Boolean(apiKey),
+    from,
+    replyTo,
+    // headers: extra email headers (e.g. List-Unsubscribe on notifications).
+    async send({ to, subject, html, text, headers }) {
       if (!apiKey) {
         if (!process.env.VERCEL) console.log(`[email ${logOnly ? 'log' : 'not configured'}] to=${to} subject="${subject}"\n${text}\n`);
         return { sent: logOnly };
@@ -24,7 +30,7 @@ function createMailer({
       const res = await fetchImpl('https://api.resend.com/emails', {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from, to: [to], subject, html, text }),
+        body: JSON.stringify({ from, to: [to], subject, html, text, ...(replyTo && { reply_to: replyTo }), ...(headers && { headers }) }),
       });
       if (!res.ok) throw new Error(`Resend error ${res.status}: ${await res.text().catch(() => '')}`);
       return { sent: true };
@@ -41,7 +47,8 @@ const LIME = '#A3E635';
 const SLATE = '#475569';
 const FONT = "Outfit,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
-function layout({ heading, body, button, url, footer }) {
+// preheader: the line inboxes show after the subject (hidden in the email).
+function layout({ heading, body, button, url, footer, preheader }) {
   let logo = '';
   try {
     logo = `${new URL(url).origin}/brand/email-logo.png`;
@@ -53,6 +60,7 @@ function layout({ heading, body, button, url, footer }) {
     : `<span style="color:#ffffff;font:700 18px ${FONT};letter-spacing:.12em">TONAMENT</span>`;
   return `<!doctype html><html><head><meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"></head>
 <body style="margin:0;background:#E5E7EB;font-family:${FONT};color:${NAVY}">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all">${esc(preheader || String(body[0] || heading).replace(/<[^>]+>/g, '').replace(/&#39;/g, "'").replace(/&amp;/g, '&'))}&#8204;&nbsp;&#8204;&nbsp;&#8204;&nbsp;</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#E5E7EB"><tr><td align="center" style="padding:32px 16px">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:14px;overflow:hidden">
 <tr><td style="background:${NAVY};padding:20px 28px;border-bottom:4px solid ${LIME}">${brand}</td></tr>
@@ -301,6 +309,23 @@ function noticeEmail({ title, body, button = 'Open Tonament', url, unsubscribeUr
       footer: unsubscribeUrl ? `Don't want these emails? <a href="${esc(unsubscribeUrl)}" style="color:${NAVY}">Turn them off</a>.` : null,
     }),
     text: `${title}${body ? `\n\n${body}` : ''}\n\n${url}${unsubscribeUrl ? `\n\nTurn these emails off: ${unsubscribeUrl}` : ''}`,
+    // One-click unsubscribe (RFC 8058), which Gmail and Yahoo expect on notifications.
+    ...(unsubscribeUrl && { headers: { 'List-Unsubscribe': `<${unsubscribeUrl}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } }),
+  };
+}
+
+// Admins check delivery (e.g. with mail-tester.com): a sign-in-style email.
+function testEmail({ url }) {
+  return {
+    subject: 'Tonament test email',
+    html: layout({
+      heading: 'Your test email arrived',
+      body: ['This is how Tonament\'s sign-in emails look. If this landed in spam, check the domain settings in Resend (SPF, DKIM, DMARC) and turn off click tracking.'],
+      button: 'Open Tonament',
+      url,
+      footer: 'Sent from Admin › Settings › Email.',
+    }),
+    text: `Your test email arrived. This is how Tonament's sign-in emails look.\n\n${url}`,
   };
 }
 
@@ -321,4 +346,5 @@ ${rows.map(([label, now, before]) => `<tr><td style="${cell}">${esc(label)}</td>
   };
 }
 
-module.exports = { adminWeeklyEmail, noticeEmail, referralEarnedEmail, createMailer, passwordResetEmail, signInLinkEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };
+module.exports = {
+  testEmail, adminWeeklyEmail, noticeEmail, referralEarnedEmail, createMailer, passwordResetEmail, signInLinkEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };

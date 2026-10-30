@@ -14,7 +14,7 @@ const rankings = require('./rankings');
 const catalog = require('../public/sports/events');
 const { SPORTS: SPORT_PAGES } = require('./sport-pages');
 const blog = require('./blog');
-const { createMailer } = require('./email');
+const { createMailer, testEmail } = require('./email');
 const { billingConfig, publicBillingConfig } = require('./billing');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -332,7 +332,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
     ['POST', `${T}/scoring/preview`, (c, id) => svc.previewScoringChange(id, c.actor, c.body)],
     ['POST', `${T}/scoring`, (c, id) => svc.changeScoring(id, c.actor, c.body)],
 
-    ['GET', '/api/auth/me', async (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled, phoneEnabled: svc.messaging.phoneEnabled(), aiEnabled: ai.enabled(), gift: c.actor.user ? await svc.referrals.welcomeFor(c.actor.user) : null })],
+    ['GET', '/api/auth/me', async (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled, emailFrom: mailer.from, phoneEnabled: svc.messaging.phoneEnabled(), aiEnabled: ai.enabled(), gift: c.actor.user ? await svc.referrals.welcomeFor(c.actor.user) : null })],
     ['POST', '/api/auth/forgot', async (c) => {
       const url = baseUrl(c.req);
       if (!url) throw new HttpError(503, 'Set APP_URL in the project settings to enable password reset');
@@ -434,6 +434,15 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
     ['GET', '/api/admin/funnel', (c) => svc.adminFunnel(c.actor, { days: c.query.get('days') })],
     ['GET', '/api/admin/cron', (c) => cron.status(c.actor)],
     ['GET', '/api/admin/ai-credits', (c) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return svc.credits.adminUsage({ days: c.query.get('days') }); }],
+    ['GET', '/api/admin/email', (c) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return { configured: mailer.configured, from: mailer.from, replyTo: mailer.replyTo }; }],
+    ['POST', '/api/admin/email-test', async (c) => {
+      if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only');
+      const to = String(c.body.to || '').trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) throw new HttpError(400, 'Enter an email address');
+      if (!mailer.enabled) throw new HttpError(409, 'Email isn\'t set up (RESEND_API_KEY)');
+      await mailer.send({ to, ...testEmail({ url: baseUrl(c.req) }) });
+      return { ok: true };
+    }],
     ['GET', '/api/admin/ai', (c) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return ai.usage(30); }],
     ['POST', '/api/admin/ai-test', (c) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return ai.test(c.actor); }],
     ['POST', `/api/admin${T.replace('/api', '')}/ai-grant`, (c, id) => svc.adminGrantAi(id, c.actor, c.body.pack)],
@@ -1035,7 +1044,8 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
         return res.end(req.method === 'HEAD' ? undefined : html);
       }
       // The "turn these emails off" link (no sign-in needed).
-      if ((pathname === '/api/notifications/unsubscribe') && read) {
+      // POST is the one-click unsubscribe from the mail app (List-Unsubscribe-Post).
+      if ((pathname === '/api/notifications/unsubscribe') && (read || req.method === 'POST')) {
         const done = await svc.notify.unsubscribeEmail(url.searchParams.get('t'), url.searchParams.get('k'));
         res.writeHead(done ? 200 : 404, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
         const msg = done ? `${done === 'All' ? 'All Tonament emails' : `Emails for “${pages.esc(done)}”`} are off. You can turn them back on in the app, under 🔔 › Settings.` : 'That link has expired.';
