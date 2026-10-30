@@ -52,7 +52,7 @@ function wrap(text, maxWidth, size, maxLines) {
   return lines;
 }
 
-// A card: { eyebrow, title, subtitle, big, bigLabel } on navy with the brand's
+// A card: { eyebrow, title, subtitle, link, big, bigLabel } (or lines: a short table) on navy with the brand's
 // lime slashes, in either size. Fixed zones: the logo at the top, the words
 // below it (smaller when long), the big number at the bottom, the tagline last.
 function svgFor(card, size = 'og') {
@@ -81,14 +81,22 @@ function svgFor(card, size = 'og') {
     out.push(`<text x="${pad}" y="${y}" font-size="${subSize}" font-weight="400" fill="${MUTED}">${esc(l)}</text>`);
     y += subSize * 1.3;
   }
+  if (card.link) {
+    // Where to go (the poster): its own line, under the subtitle.
+    const linkSize = story ? 38 : 26;
+    y += story ? 16 : 6;
+    out.push(`<text x="${pad}" y="${y}" font-size="${linkSize}" font-weight="600" fill="${MIST}">${esc(wrap(card.link, width, linkSize, 1)[0] || '')}</text>`);
+    y += linkSize * 1.3;
+  }
   if (card.lines && card.lines.length) {
     // A short table: "1  Arjun Mehta  1240", up to five rows.
     const rowH = story ? 104 : 46;
     let ly = story ? y + 60 : y + 8;
     for (const [i, line] of card.lines.slice(0, 5).entries()) {
       const size = story ? 48 : 28;
-      out.push(`<text x="${pad}" y="${ly}" font-size="${size}" font-weight="800" fill="${i ? MUTED : LIME}">${i + 1}</text>`,
-        `<text x="${pad + size * 1.6}" y="${ly}" font-size="${size}" font-weight="${i ? 600 : 800}" fill="${MIST}">${esc(wrap(line.name, width - size * 5, size, 1)[0] || '')}</text>`,
+      const indent = card.numbered === false ? 0 : size * 1.6;
+      out.push(card.numbered === false ? '' : `<text x="${pad}" y="${ly}" font-size="${size}" font-weight="800" fill="${i ? MUTED : LIME}">${i + 1}</text>`,
+        `<text x="${pad + indent}" y="${ly}" font-size="${size}" font-weight="${i ? 600 : 800}" fill="${MIST}">${esc(wrap(line.name, width - indent - textWidth(line.value || '', size) - size, size, 1)[0] || '')}</text>`,
         line.value != null ? `<text x="${pad + width}" y="${ly}" font-size="${size}" font-weight="600" fill="${MUTED}" text-anchor="end">${esc(line.value)}</text>` : '');
       ly += rowH;
     }
@@ -130,7 +138,7 @@ function render(card, size = 'og') {
 
 const ordinal = (n) => `${n}${[11, 12, 13].includes(n % 100) ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
 
-function createCards({ db, goalsView = null, clubChallengeCard = null, seasonCard = null, raceCard = null, meetCard = null, champCard = null }) {
+function createCards({ db, goalsView = null, clubChallengeCard = null, seasonCard = null, raceCard = null, meetCard = null, champCard = null, matchCard = null, eventCard = null, resultsCard = null, posterCard = null }) {
   const minorYear = () => new Date().getFullYear() - MINOR_AGE;
   const sportName = (id) => (sports.get(id) || sports.info(id) || {}).name || '';
   const FINISH = { W: 'Champion', F: 'Finalist' };
@@ -291,7 +299,11 @@ function createCards({ db, goalsView = null, clubChallengeCard = null, seasonCar
   const race = async (id) => (raceCard ? raceCard(id) : null);
   const meet = async (id) => (meetCard ? meetCard(id) : null);
   const champ = async (id) => (champCard ? champCard(id) : null);
-  const KINDS = { a: activity, club, p: player, t: tournament, ladder, goal, cc, season, race, meet, champ };
+  const from = (fn) => async (id) => (fn ? fn(id) : null);
+  const KINDS = {
+    a: activity, club, p: player, t: tournament, ladder, goal, cc, season, race, meet, champ,
+    m: from(matchCard), w: from(eventCard), results: from(resultsCard), poster: from(posterCard),
+  };
   // The PNG for /img/<kind>/<id>.png, or null.
   async function image(kind, id, size) {
     const make = KINDS[kind];

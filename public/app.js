@@ -142,8 +142,44 @@
   const shareUrl = (t) => `${location.origin}/t/${t.id}`;
   const whatsappUrl = (t) => `https://wa.me/?text=${encodeURIComponent(`${t.name} — ${shareUrl(t)}`)}`;
   // The phone's share sheet where there is one; otherwise copy the link.
+  // The picture fits the moment: the poster before it starts, the
+  // champions once it's over, the tournament card while it's on.
   function shareTournament(t) {
-    shareSheet({ title: t.name, text: t.name, url: shareUrl(t), image: t.visibility === 'private' ? null : `/img/t/${t.id}.png` });
+    const kind = t.status === 'setup' ? 'poster' : t.status === 'completed' ? 'results' : 't';
+    const text = t.status === 'setup' ? `${t.name} — entries are open:` : t.status === 'completed' ? `${t.name} — the results:` : `${t.name} — live scores:`;
+    shareSheet({ title: t.name, text, url: shareUrl(t), image: t.visibility === 'private' ? null : `/img/${kind}/${t.id}.png` });
+  }
+  // A finished match, and a finished event's podium.
+  const shareMatch = (t, m) => shareSheet({
+    title: `${nameOf(m.a)} v ${nameOf(m.b)}`, text: `${m.winner ? `${nameOf(m.winner === m.a.id ? m.a : m.b)} won` : 'A draw'} — ${m.summary} · ${t.name}`,
+    url: `${location.origin}/t/${t.id}/m/${m.id}`, image: t.visibility === 'private' ? null : `/img/m/${m.id}.png`,
+  });
+  const shareEvent = (t, ev) => shareSheet({ title: `${ev.name} results`, text: `${t.name} · ${ev.name} — the results:`, url: shareUrl(t), image: t.visibility === 'private' ? null : `/img/w/${ev.id}.png` });
+
+  // Organisers, once it's all over: share the results, and invite the next organiser.
+  const WRAP_KEY = 'tonament:wrapped';
+  function finishedCard(tt) {
+    if (tt.status !== 'completed' || !tt.can.manage) return null;
+    let seen = [];
+    try { seen = JSON.parse(localStorage.getItem(WRAP_KEY) || '[]'); } catch { /* none */ }
+    if (seen.includes(tt.id)) return null;
+    const hide = () => { try { localStorage.setItem(WRAP_KEY, JSON.stringify([...seen, tt.id].slice(-50))); } catch { /* this visit */ } render(); };
+    if (S.referrals === undefined && S.me) { S.referrals = null; api('GET', '/me/referrals').then((r) => { S.referrals = r; render(); }).catch(() => { S.referrals = { enabled: false }; }); }
+    const r = S.referrals;
+    const invite = r && r.enabled && r.code ? `${location.origin}/?ref=${r.code}` : `${location.origin}/`;
+    const done = tt.events.filter((e) => e.status === 'completed');
+    return h('div', { class: 'card wrap-card' },
+      h('button', { class: 'icon-btn wrap-close', type: 'button', 'aria-label': 'Hide', title: 'Hide', onclick: hide }, '×'),
+      h('h2', {}, '🏆 That\'s a wrap'),
+      h('p', {}, tt.visibility === 'private'
+        ? 'Every match is done. Publish the tournament to share the results with a picture for WhatsApp and Instagram.'
+        : 'Every match is done. Share the results while everyone\'s still talking about it — the picture is made for WhatsApp and Instagram.'),
+      h('div', { class: 'actions' },
+        tt.visibility !== 'private' ? h('button', { class: 'btn btn-primary', type: 'button', onclick: () => shareTournament(tt) }, 'Share the results') : null,
+        tt.visibility !== 'private' && done.length > 1 ? h('button', { class: 'btn', type: 'button', onclick: () => actionSheet('Share one event', done.map((e) => ({ label: e.name, hint: 'Its podium', onClick: () => shareEvent(tt, e) }))) }, 'One event') : null),
+      h('p', { class: 'muted small wrap-invite' }, 'Know someone else who runs tournaments? ',
+        r && r.enabled ? 'Your link gives them their first one free — and you a free upgrade when they run it. ' : '',
+        h('button', { class: 'link-btn', type: 'button', onclick: () => shareText(`I ran ${tt.name} on Tonament — entries, draws and live scores on everyone's phone. Try it for your next tournament: ${invite}`) }, 'Send them Tonament')));
   }
   // One way to share anything: WhatsApp, an image for an Instagram story, the
   // link, or the phone's own share menu. image: the share card (/img/…png).
@@ -2184,6 +2220,7 @@
           [fmtSchedule(tt), placeLine(tt.venue, tt.location.city), tt.sport.name, multiEvent(tt) ? `${tt.events.length} events` : t.formatName, statusLine]
             .filter(Boolean).join(' · '), '  ', connDot())),
       roleBar(t),
+      finishedCard(tt),
       tt.visibility === 'private' && !(t.can.own && S.me && t.role && !t.can.claim) ? visibilityBanner(t) : null,
       perEvent ? eventPicker(tt, ev) : null,
       h('nav', { class: `tabs t-tabs${tabs.length > 1 ? ' bar' : ''}`, 'aria-label': 'Tournament' }, tabs.map((x) => h('a', {
@@ -4079,6 +4116,13 @@
   // ----- knockout tab
   // Groups and the knockout bracket; League + Knockout switches between them.
   function panelDraw(t) {
+    // A finished event: its podium as a picture to share.
+    const podium = t.status === 'completed' && t.visibility !== 'private'
+      ? h('div', { class: 'actions event-share' }, h('button', { class: 'btn btn-small', type: 'button', onclick: () => shareEvent(t, t.event) }, `Share the ${multiEvent(t) ? `${t.event.name} ` : ''}results`))
+      : null;
+    return podium ? [podium, drawBody(t)] : drawBody(t);
+  }
+  function drawBody(t) {
     if (t.format === 'league') return panelGroups(t);
     if (t.format === 'knockout') return panelBracket(t);
     const view = S.drawView || (t.matches.some((m) => m.stage === 'knockout') ? 'knockout' : 'groups');
@@ -4311,6 +4355,9 @@
           h('button', { class: 'btn btn-ghost', onclick: () => undo(t, m) }, '↶ Undo last point (reopens the match)'))
         : null,
       gamesTable(m),
+      m.status === 'done' && m.a && m.b && t.visibility !== 'private'
+        ? h('div', { class: 'actions center', style: 'margin:16px 0' }, h('button', { class: 'btn', type: 'button', onclick: () => shareMatch(t, m) }, 'Share the result'))
+        : null,
       !t.can.score && m.status !== 'done' ? h('p', { class: 'muted center small' }, 'This scoreboard updates live — no need to refresh.') : null,
     ];
   }

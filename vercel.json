@@ -178,7 +178,7 @@
       "destination": "/api/index?__path=item/:id"
     },
     {
-      "source": "/img/:kind(a|club|p|t|ladder|goal|cc|season|race|meet|champ)/:file",
+      "source": "/img/:kind(a|club|p|t|ladder|goal|cc|season|race|meet|champ|m|w|results|poster)/:file",
       "destination": "/api/index?__path=img/:kind/:file"
     },
     {

@@ -32,6 +32,7 @@ const { createMeets } = require('./meets');
 const { createChamps } = require('./champs');
 const { createHonours } = require('./honours');
 const rallyTimes = require('./rally-times');
+const R = require('./rankings');
 const { createGoals } = require('./goals');
 const { createTies } = require('./ties');
 const TIE = require('../public/sports/tie');
@@ -3793,7 +3794,110 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
   });
   seasonsRef = seasons;
   // (the goal card asks the goals module for a goal when it's drawn)
-  const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null), clubChallengeCard: (id) => clubChallenges.card(id), seasonCard: (id) => seasons.card(id), raceCard: (id) => races.card(id), meetCard: (id) => meets.card(id), champCard: (id) => champs.card(id) });
+  const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null), clubChallengeCard: (id) => clubChallenges.card(id), seasonCard: (id) => seasons.card(id), raceCard: (id) => races.card(id), meetCard: (id) => meets.card(id), champCard: (id) => champs.card(id), matchCard, eventCard, resultsCard, posterCard });
+
+
+  // ---------- share cards for tournaments (cards.js draws them): a match's
+  // result, an event's podium, every event's champions, and the poster.
+  // Never for private tournaments, nor the hidden ones behind club matches.
+  async function publicT(q, id) {
+    const [row] = await q(`SELECT * FROM tournaments WHERE id = $1 AND visibility <> 'private' AND club_challenge_id IS NULL AND season_id IS NULL`, [String(id || '')]);
+    return row ? { ...row, sportDef: sports.get(row.sport) } : null;
+  }
+  const dateOf = (d) => (d ? new Date(`${String(d).slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : null);
+  // Where each entry finished in a finished event: [{ name, finish }], best first.
+  async function placings(q, ev) {
+    const entries = (await entriesOf(q, ev)).filter((e) => !e.withdrawn && e.confirmed !== false);
+    const rows = await q(`SELECT * FROM matches WHERE event_id = $1 ORDER BY ${MATCH_ORDER}`, [ev.eventId]);
+    const names = new Map(entries.map((e) => [e.id, e.name]));
+    const scored = rows.map((row) => ({ row, score: scoreOf(ev, row) }));
+    const standings = groupStandings(ev, entries, scored, names).map((g) => g.standings.map((r) => r.id));
+    const finish = R.finishes({ format: ev.format, entries, matches: rows, standings, knockoutRounds: ev.config.knockoutRounds });
+    const order = ['W', 'F', 'SF', 'QF', 'R16', 'R32', 'G'];
+    return entries.map((e) => ({ name: e.name, finish: finish.get(e.id) || 'G' }))
+      .sort((a, b) => order.indexOf(a.finish) - order.indexOf(b.finish) || a.name.localeCompare(b.name));
+  }
+  const FINISH_SHORT = { W: 'Champion', F: 'Runner-up', SF: 'Semi-final', QF: 'Quarter-final' };
+
+  async function matchCard(matchId) {
+    const q = db.query;
+    const [m] = await q(`SELECT * FROM matches WHERE id = $1 AND status = 'done' AND a_id IS NOT NULL AND b_id IS NOT NULL`, [Number(matchId) || 0]);
+    if (!m) return null;
+    const t = await publicT(q, m.tournament_id);
+    if (!t) return null;
+    const ev = await eventFor(q, t, m.event_id);
+    const names = new Map((await q('SELECT id, name FROM entries WHERE id = ANY($1::int[])', [[m.a_id, m.b_id]])).map((e) => [e.id, e.name]));
+    const score = scoreOf(ev, m);
+    const round = m.stage === 'knockout'
+      ? (m.round === ev.config.knockoutRounds ? 'Final' : m.round === ev.config.knockoutRounds - 1 ? 'Semi-final' : `Round ${m.round}`)
+      : `Group ${String.fromCharCode(65 + (m.group_no || 0))}`;
+    const summary = m.walkover ? 'Walkover' : ev.sportDef.summary(score).replace(/(\d)-(\d)/g, '$1–$2');
+    const head = `${round} · ${eventLabel(ev)}`;
+    if (m.winner_id == null) return { eyebrow: head, title: `${names.get(m.a_id)} v ${names.get(m.b_id)}`, subtitle: t.name, big: summary, bigLabel: 'Draw' };
+    const loser = m.winner_id === m.a_id ? m.b_id : m.a_id;
+    return {
+      eyebrow: head, title: names.get(m.winner_id), subtitle: `beat ${names.get(loser)} · ${t.name}`,
+      big: summary, bigLabel: m.stage === 'knockout' && m.round === ev.config.knockoutRounds ? 'Champion' : sports.get(t.sport)?.name || null,
+    };
+  }
+
+  // One event's podium.
+  async function eventCard(eventId) {
+    const q = db.query;
+    const [row] = await q(`SELECT tournament_id FROM events WHERE id = $1 AND status = 'completed'`, [Number(eventId) || 0]);
+    if (!row) return null;
+    const t = await publicT(q, row.tournament_id);
+    if (!t) return null;
+    const ev = await eventFor(q, t, Number(eventId));
+    const top = (await placings(q, ev)).filter((p) => ['W', 'F', 'SF'].includes(p.finish)).slice(0, 4);
+    if (!top.length) return null;
+    return {
+      eyebrow: `Results · ${t.sportDef?.name || t.sport}`, title: eventLabel(ev), subtitle: [t.name, dateOf(t.starts_on)].filter(Boolean).join(' · '),
+      lines: top.map((p) => ({ name: p.name, value: FINISH_SHORT[p.finish] })),
+    };
+  }
+
+  // Every finished event's champion (up to five; then "and n more").
+  async function resultsCard(id) {
+    const q = db.query;
+    const t = await publicT(q, id);
+    if (!t) return null;
+    const evs = (await eventsOf(q, t.id)).filter((e) => e.status === 'completed');
+    if (!evs.length) return null;
+    const lines = [];
+    for (const row of evs) {
+      const ev = eventContext(t, row);
+      const champ = (await placings(q, ev)).find((p) => p.finish === 'W');
+      if (champ) lines.push({ name: champ.name, value: evs.length > 1 ? eventLabel(ev) : 'Champion' });
+    }
+    if (!lines.length) return null;
+    const more = lines.length > 5 ? ` · and ${lines.length - 5} more` : '';
+    return {
+      eyebrow: `${evs.length > 1 ? 'Champions' : 'Champion'} · ${t.sportDef?.name || t.sport}`, title: t.name,
+      subtitle: [dateOf(t.starts_on), t.venue || t.city].filter(Boolean).join(' · ') + more, lines, numbered: false,
+    };
+  }
+
+  // The poster: entries open, when and where, the fee, and where to enter.
+  async function posterCard(id) {
+    const q = db.query;
+    const t = await publicT(q, id);
+    if (!t) return null;
+    const evs = await eventsOf(q, t.id);
+    const fees = evs.map((e) => Number(e.config?.fee) || 0).filter((f) => f > 0);
+    const open = t.status === 'setup' && (t.config.selfEntry ?? true) && !(t.config.entriesCloseAt && Date.parse(t.config.entriesCloseAt) < Date.now());
+    const closes = t.config.entriesCloseAt ? new Date(t.config.entriesCloseAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' }) : null;
+    // Outfit (the card font) has no rupee sign.
+    const rupees = (p) => `Rs ${(p / 100).toLocaleString('en-IN')}`;
+    return {
+      eyebrow: [open ? 'Entries open' : t.status === 'completed' ? 'Results' : 'Live scores', t.sportDef?.name || t.sport, t.city].filter(Boolean).join(' · '),
+      title: t.name,
+      subtitle: [dateOf(t.starts_on), t.venue, evs.length > 1 ? `${evs.length} events` : null].filter(Boolean).join(' · ') || 'On Tonament',
+      big: fees.length ? (Math.min(...fees) === Math.max(...fees) ? rupees(fees[0]) : `from ${rupees(Math.min(...fees))}`) : open ? 'Free' : null,
+      bigLabel: open ? `entry${closes ? ` · closes ${closes}` : ''}` : null,
+      link: `tonament.com/t/${t.id}`,
+    };
+  }
 
   // ---------- club v club matches (club-challenges.js)
 
@@ -3953,6 +4057,10 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     clubs,
     social,
     cards,
+    matchCard,
+    eventCard,
+    resultsCard,
+    posterCard,
     notify,
     challenges,
     ladders,

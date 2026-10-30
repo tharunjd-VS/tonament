@@ -996,7 +996,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging } = {}) {
         return res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Emails · Tonament</title><link rel="stylesheet" href="/styles.css"><main class="doc" style="padding:48px 16px"><h1>${done ? 'Done' : 'Hmm'}</h1><p>${msg}</p><p><a href="/">Open Tonament</a></p></main>`);
       }
       // Share cards: /img/<kind>/<id>.png (?size=story for 1080×1920).
-      const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t|ladder|goal|cc|season|race|meet|champ)\/([A-Za-z0-9-]{1,100})\.png$/);
+      const imgPath = pathname.match(/^\/(?:api\/)?img\/(a|club|p|t|ladder|goal|cc|season|race|meet|champ|m|w|results|poster)\/([A-Za-z0-9-]{1,100})\.png$/);
       if (imgPath && read) return await shareImage(req, res, imgPath[1], imgPath[2], url.searchParams.get('size'));
       // A club's app page, and one feed item, with link previews for WhatsApp.
       const clubPath = pathname.match(/^\/(?:club|api\/clubpage)\/([a-z0-9-]{3,30})\/?$/);

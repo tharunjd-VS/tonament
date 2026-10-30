@@ -156,7 +156,9 @@ function tournamentHtml(shell, { base, id, page, match = false }) {
   const canonical = `${base}/t/${id}`;
   const image = page && page.preview.image;
   // An uploaded image, else the tournament's own card (name, dates, entries).
-  const imageUrl = image ? base + image.path : t ? `${base}/img/t/${id}.png` : `${base}/brand/og.png`;
+  // (the poster before it starts, the champions once it's over).
+  const kind = t ? (t.status === 'setup' ? 'poster' : t.status === 'completed' ? 'results' : 't') : null;
+  const imageUrl = image ? base + image.path : t ? `${base}/img/${kind}/${id}.png` : `${base}/brand/og.png`;
   const meta = (attr, name, content) => `<meta ${attr}="${name}" content="${esc(content)}">`;
   let head;
   if (t) {
