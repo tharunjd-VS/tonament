@@ -814,6 +814,37 @@
             S.errorCode = e.code;
           }
         }
+      } else if (['play', 'you'].includes(parts[0]) && !parts[1]) {
+        if (!S.me) {
+          navigate(`/signin?next=/${parts[0]}`, { replace: true });
+          return;
+        }
+        S.route = { name: parts[0] };
+        render();
+        if (parts[0] === 'play') {
+          const [groups, challenges, goals, runs] = await Promise.all([
+            api('GET', '/me/groups').catch(() => []),
+            api('GET', '/challenges').catch(() => null),
+            api('GET', '/goals').catch(() => null),
+            api('GET', '/runs').catch(() => null),
+          ]);
+          S.hubPlay = { groups, challenges, goals, runs };
+        }
+      } else if (parts[0] === 'compete' && !parts[1]) {
+        const tab = ['races', 'meets', 'racing'].includes(params.get('tab')) ? params.get('tab') : 'tournaments';
+        S.route = { name: 'compete', tab };
+        if (tab === 'tournaments') {
+          S.filters = readFilters(params);
+          render();
+          [S.list, S.mine, S.myEntries, S.places] = await Promise.all([
+            api('GET', `/tournaments?${filterQuery(S.filters, true)}`).catch(() => []),
+            S.me ? api('GET', '/me/tournaments').catch(() => []) : null,
+            S.me ? api('GET', '/me/entries').catch(() => []) : null,
+            api('GET', '/tournaments/places').catch(() => []),
+          ]);
+        } else if (tab === 'races') { S.races = null; render(); S.races = await api('GET', '/races').catch(() => ({ upcoming: [], past: [] })); }
+        else if (tab === 'meets') { S.meets = null; render(); S.meets = await api('GET', '/meets').catch(() => ({ upcoming: [], past: [] })); }
+        else { S.champs = null; render(); S.champs = await api('GET', '/champs').catch(() => []); }
       } else if (parts[0] === 'admin') {
         const tab = ADMIN_TABS.some(([id]) => id === params.get('tab')) ? params.get('tab') : 'overview';
         S.route = { name: 'admin', tab };
@@ -1016,6 +1047,9 @@
     else if (S.route.name === 'match') view = S.t ? viewMatch() : loading();
     else if (S.route.name === 'display') view = S.t ? viewDisplay() : loading();
     else if (S.route.name === 'invite') view = viewInvite();
+    else if (S.route.name === 'play') view = viewPlay();
+    else if (S.route.name === 'compete') view = viewCompete();
+    else if (S.route.name === 'you') view = viewYou();
     else view = viewHome();
     // An invite from a friend: on the home page, sign-up and the New tournament flow.
     if (!S.error && ['home', 'signin', 'signup', 'new'].includes(S.route.name)) view = [inviteBanner(), view];
@@ -1029,6 +1063,7 @@
     keepDetails();
     applyBranding(['tournament', 'match', 'display'].includes(S.route.name) && S.t && !S.error ? S.t.branding : null);
     renderNav();
+    renderHubs();
     refreshBell();
   }
 
@@ -1079,222 +1114,160 @@
   }
 
   // ---------- home
-  // ---------- home hero: a slider through what Tonament does best.
-  // All slides sit in one grid cell (so the hero never changes height) and
-  // only the active one shows. It moves on every 7 s, pauses on hover or
-  // focus, stops for good once someone picks a slide, and never moves for
-  // people who'd rather not see motion. Swipe on phones.
-  const HERO_MS = 7000;
-  let heroTimer = null;
-  const heroReduced = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  function heroShow(root) {
-    root.querySelectorAll('.hero-slide').forEach((el, k) => {
-      const on = k === S.heroSlide;
-      el.classList.toggle('active', on);
-      el.setAttribute('aria-hidden', String(!on));
-      el.inert = !on;
-    });
-    root.querySelectorAll('.hero-dots button').forEach((b, k) => b.setAttribute('aria-current', String(k === S.heroSlide)));
-  }
-  function heroGo(i, byHand = false) {
-    const root = app.querySelector('.hero-slider');
-    if (!root) return;
-    const n = root.querySelectorAll('.hero-slide').length;
-    S.heroSlide = ((i % n) + n) % n;
-    if (byHand) S.heroStopped = true;
-    heroShow(root);
-  }
-  function heroTick() {
-    clearTimeout(heroTimer);
-    heroTimer = setTimeout(() => {
-      const root = app.querySelector('.hero-slider');
-      if (root && !S.heroStopped && !document.hidden && !heroReduced() && !root.matches(':hover, :focus-within')) heroGo((S.heroSlide || 0) + 1);
-      heroTick();
-    }, HERO_MS);
+  // ---------- hub pages
+  const hubTile = (emoji, title, desc, stat, href) => h('a', { class: 'card hub-tile', href },
+    h('span', { class: 'hub-emoji', 'aria-hidden': 'true' }, emoji),
+    h('strong', {}, title), h('small', { class: 'muted' }, desc), stat ? h('span', { class: 'hub-stat' }, stat) : null);
+
+  function viewPlay() {
+    document.title = 'Play · Tonament';
+    const P = S.hubPlay;
+    const ch = P && P.challenges;
+    const goals = P && P.goals ? P.goals.active : [];
+    const needs = ch ? [...ch.incoming.map((x) => [x, 'Answer']), ...ch.toPlay.map((x) => [x, 'Play']), ...(ch.toConfirm || []).map((x) => [x, 'Confirm'])] : [];
+    return [
+      h('h1', {}, 'Play'),
+      h('p', { class: 'muted' }, 'Keep playing between events — with your regulars, your friends and your club. Every game counts towards your rating, goals and profile.'),
+      h('div', { class: 'hub-grid' },
+        hubTile('👥', 'Groups', 'Weekly games with your regulars: who\'s in, courts, results', P ? `${P.groups.length} group${P.groups.length === 1 ? '' : 's'}` : null, '/groups'),
+        hubTile('⚔️', 'Challenges', 'Take on a friend; the loser confirms and ratings move', ch ? `${ch.incoming.length} to answer · ${ch.toPlay.length} to play` : null, '/challenges'),
+        hubTile('🎯', 'Goals', '30 games this month, 100 km — alone, with friends or your club', P && P.goals ? `${goals.length} on` : null, '/goals'),
+        hubTile('🏃', 'Runs', 'Log runs, beat your bests, top the week with friends', P && P.runs ? `${P.runs.week.km} km this week` : null, '/runs')),
+      needs.length ? h('section', { class: 'section' }, h('h2', {}, 'Needs you'),
+        h('ul', { class: 'card cc-list' }, needs.slice(0, 6).map(([x, what]) => h('li', {},
+          h('a', { href: `/c/${x.id}` }, h('strong', {}, `${sideNames(x.a)} v ${sideNames(x.b)}`)), h('span', { class: 'muted small' }, ` · ${x.sport.name}`), pill('org', what))))) : null,
+      goals.length ? h('section', { class: 'section' }, h('h2', {}, 'Your goals'), h('div', { class: 'card-list' }, goals.slice(0, 3).map(goalCard))) : null,
+      P && P.groups.length ? h('section', { class: 'section' }, h('h2', {}, 'Your groups'),
+        h('ul', { class: 'card cc-list' }, P.groups.slice(0, 6).map((g) => h('li', {}, h('a', { href: `/g/${g.slug}` }, h('strong', {}, g.name)), h('span', { class: 'muted small' }, ` · ${g.sportName}${g.city ? ` · ${g.city}` : ''} · ${g.members} members`))))) : null,
+      P == null ? loading() : null,
+    ];
   }
 
-  function heroSlider(explore) {
-    if (S.heroSlide == null) S.heroSlide = 0;
-    if (!heroTimer) heroTick();
-    const join = (path) => (S.me ? path : `/signup?next=${encodeURIComponent(path)}`);
-    const shot = (src, alt, cls = 'phone') => h('div', { class: `hero-visual ${cls}` }, h('img', { src, alt, loading: 'lazy', width: cls === 'tv' ? 640 : 390 }));
-    const sportCount = liveSports().length || 13;
-    // A paper fixture sheet, the way organisers run it today, with the app on top.
-    const paperApp = () => h('div', { class: 'hero-visual paper-app' },
-      h('div', { class: 'paper-sheet', role: 'img', 'aria-label': 'A handwritten fixture sheet: pairs by level, a late pair, a walkover and the semi-final pairings' },
-        h('p', { class: 'ink' }, 'OPEN — Men\'s Doubles ₹600'),
-        h('p', { class: 'ink' }, 'BEG: Arun/Bala ✓ Charan ✓'),
-        h('p', { class: 'ink' }, 'INT: Mohan ✓ ', h('s', {}, 'Om/Prakash'), h('span', { class: 'ink-red' }, ' → Ravi')),
-        h('p', { class: 'ink-red' }, 'Arun/Bala not here?? 10:40'),
-        h('p', { class: 'ink-red' }, 'Om v Sanjay — W/O ?'),
-        h('p', { class: 'ink' }, '₹ paid: 9 of 13'),
-        h('p', { class: 'ink circled' }, 'SF: BEG v INT')),
-      h('div', { class: 'paper-phone' }, h('img', { src: '/guide/pools-dark.jpg', alt: 'The same draw in Tonament: groups by level with live standings', loading: 'lazy', width: 390 })));
-    const slides = [
-      {
-        label: 'Your way',
-        eyebrow: ['Run it your way', h('b', {}, 'Without the paperwork')],
-        title: [['Flexible as paper.', h('br')], 'Easy as an app.'],
-        lead: 'Split by level, squeeze in a late pair, give a walkover, swap who meets who — just like on paper. Tonament keeps the groups, bracket and order of play up to date, and everyone follows the scores live.',
-        chips: ['Your format', 'Change anything on the day', 'Live for everyone'],
-        actions: [
-          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/blog/from-paper-to-live' }, 'See how it compares'),
-        ],
-        visual: paperApp(),
-      },
-      {
-        label: 'Tournaments',
-        eyebrow: ['One platform.', 'Every sport.', h('b', {}, 'Every tournament.')],
-        title: ['Run your tournament. ', 'Score it live.'],
-        lead: 'Entries and UPI fees, team rosters, groups, a league, a knockout bracket and an order of play across your courts — and everyone follows every point on their phone.',
-        chips: ['League + Knockout', 'Live point-by-point scoring', 'Auto standings & bracket'],
-        actions: [
-          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/', onclick: explore }, 'Explore tournaments'),
-        ],
-        visual: shot('/guide/umpire-dark.jpg', 'An umpire scoring a badminton match point by point'),
-      },
-      {
-        label: 'By level',
-        eyebrow: ['Open events', h('b', {}, 'Split by level')],
-        title: ['One Open event. ', 'Every level.'],
-        lead: 'Beginners play Beginners in the groups, Advanced play Advanced — and the level winners meet in the semis or the final. Just like your paper draw, but live. Move anyone to the right group until they\'ve played.',
-        chips: ['2 or 4 level pools', 'Meet in the semis or final', 'You can always override'],
-        actions: [
-          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/features#everything' }, 'All features'),
-        ],
-        visual: shot('/guide/pools-dark.jpg', 'Groups split by level: Group A Beginner, Group B Beginner+, Group C Intermediate'),
-      },
-      {
-        label: 'On the day',
-        eyebrow: ['On the day', h('b', {}, 'Things change. You\'re ready.')],
-        title: ['Late players? ', 'No problem.'],
-        lead: 'Mark who\'s not here yet and the next ready match goes on instead. Walkovers, retirements, substitute partners and spot entries in a tap — and collect fees by UPI or cash at the desk.',
-        chips: ['Not here yet', 'Walkovers & retirements', 'Spot entries', 'Fees by UPI or cash'],
-        actions: [
-          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/how-it-works' }, 'How it works'),
-        ],
-        visual: shot('/guide/onday-dark.jpg', 'Courts and the order of play: a pair marked not here yet waits, with Is here and Walkover buttons'),
-      },
-      {
-        label: 'Groups',
-        eyebrow: ['Groups', h('b', {}, 'Your daily games')],
-        title: ['Your daily games, ', 'sorted.'],
-        lead: 'One link in the group chat. Tap "I\'m in" and say when you\'re coming, get fair teams at the court, score live or add it at the end — and a leaderboard settles who\'s best.',
-        chips: ['I\'m in + coming at', 'Add players by name', 'Fair games', 'Group leaderboard'],
-        actions: [
-          h('a', { class: 'btn btn-primary btn-lg', href: join('/groups/new') }, 'Start a group'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/features#groups' }, 'How groups work'),
-        ],
-        visual: shot('/guide/group-rsvp-dark.jpg', 'A group session: I\'m in, coming at 7:30 pm, and who else is coming', 'card'),
-      },
-      {
-        label: 'Big screen',
-        eyebrow: ['On the day', h('b', {}, 'The big screen')],
-        title: ['Your venue, ', 'on the big screen.'],
-        lead: 'Courts, live scores, who\'s up next and the standings on any TV or projector — just open a link. No app, no cables, no whiteboard.',
-        chips: ['Live courts', 'Up next', 'Standings', 'Your logo and sponsors'],
-        actions: [
-          h('a', { class: 'btn btn-primary btn-lg', href: S.me ? '/new' : '/signup' }, S.me ? 'Create tournament' : 'Get started — it\'s free'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/features' }, 'All features'),
-        ],
-        visual: shot('/guide/display.jpg', 'The venue display: courts with live scores, up next and standings', 'tv'),
-      },
-      {
-        label: 'Sports',
-        eyebrow: [`${sportCount} sports`, h('b', {}, 'Each with its own rules')],
-        title: ['Every sport. ', 'Its own rules.'],
-        lead: 'Badminton rally scoring, pickleball side-out, tennis tie-breaks, football penalties, kabaddi raids, basketball overtime, snooker ball by ball — score live, or just enter the result at the end.',
-        chips: ['Scored live or at the end', 'Serve and side called for you', 'Singles, doubles and teams'],
-        actions: [
-          h('a', { class: 'btn btn-primary btn-lg', href: '/sports' }, 'See all sports'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/rankings' }, 'Player rankings'),
-        ],
-        visual: h('div', { class: 'hero-visual sports' }, liveSports().map((s) => h('a', { href: `/${s.id}`, title: s.name }, icon(s.id), h('span', {}, s.name)))),
-      },
-      {
-        label: 'Venues',
-        eyebrow: ['Venues & academies', h('b', {}, 'Fill your courts')],
-        title: ['Daily slots, ', 'by level.'],
-        lead: 'Post your slots — Beginners at 6, Intermediates at 7. Players find them on your page and join in one tap, and you see who actually turned up. For academies, it\'s your batch register.',
-        chips: ['Your own page', 'Beginner · Intermediate · Advanced', 'Attendance'],
-        actions: [
-          h('a', { class: 'btn btn-primary btn-lg', href: join('/clubs/new') }, 'Start your club'),
-          h('a', { class: 'btn btn-lg btn-ghost', href: '/pricing' }, 'Pricing'),
-        ],
-        visual: shot('/guide/venue-slots-dark.jpg', 'A venue page listing daily slots by level with how many are going'),
-      },
+  function viewCompete() {
+    document.title = 'Compete · Tonament';
+    const tab = S.route.tab;
+    const tabs = [['tournaments', 'Tournaments'], ['races', 'Races'], ['meets', 'Meets'], ['racing', 'Racing']];
+    const go = (t) => navigate(t === 'tournaments' ? '/compete' : `/compete?tab=${t}`);
+    const body = {
+      tournaments: () => [
+        S.me && S.myEntries && S.myEntries.length ? h('section', { class: 'section' }, h('h2', {}, 'My entries'), h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
+        S.me && S.mine && S.mine.length ? h('section', { class: 'section' },
+          h('div', { class: 'card-head' }, h('h2', {}, 'Tournaments I run'), h('a', { class: 'btn btn-small btn-primary', href: '/new' }, '+ Tournament')),
+          h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role])))) : null,
+        findSection(),
+        S.me && S.mine && !S.mine.length ? h('div', { class: 'card hub-cta' }, h('strong', {}, 'Run your own tournament'), h('p', { class: 'muted small' }, 'Entries and UPI fees, groups and knockouts, an order of play and live scores. Free for up to 16 entries.'), h('a', { class: 'btn btn-primary', href: '/new' }, 'Create a tournament')) : null,
+      ],
+      races: () => viewRaces(true),
+      meets: () => viewMeets(true),
+      racing: () => viewChamps(true),
+    }[tab]();
+    return [
+      h('h1', {}, 'Compete'),
+      h('p', { class: 'muted' }, 'Find an event and enter, follow it live, or run your own — tournaments, races, track and pool meets, and racing.'),
+      h('div', { class: 'seg hub-seg', role: 'group', 'aria-label': 'Kind of event' }, tabs.map(([id, label]) => h('button', { 'aria-pressed': String(tab === id), onclick: () => go(id) }, label))),
+      body,
     ];
-    const n = slides.length;
-    let x0 = null;
-    const root = h('section', {
-      class: 'hero hero-slider',
-      'aria-roledescription': 'carousel',
-      'aria-label': 'What Tonament does',
-      onpointerdown: (e) => { x0 = e.pointerType === 'mouse' ? null : e.clientX; },
-      onpointerup: (e) => {
-        if (x0 == null) return;
-        const dx = e.clientX - x0;
-        x0 = null;
-        if (Math.abs(dx) > 50) heroGo(S.heroSlide + (dx < 0 ? 1 : -1), true);
-      },
-      onkeydown: (e) => {
-        if (e.target.closest('.hero-dots') && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
-          e.preventDefault();
-          heroGo(S.heroSlide + (e.key === 'ArrowRight' ? 1 : -1), true);
-          root.querySelector('.hero-dots [aria-current="true"]')?.focus();
-        }
-      },
-    },
-    h('div', { class: 'hero-track' }, slides.map((s, k) => h('div', {
-      class: `hero-slide${k === S.heroSlide ? ' active' : ''}`,
-      role: 'group', 'aria-roledescription': 'slide', 'aria-label': `${k + 1} of ${n}: ${s.label}`,
-      'aria-hidden': String(k !== S.heroSlide), inert: k === S.heroSlide ? null : true,
-    },
-    h('div', { class: 'hero-text' },
-      h('p', { class: 'eyebrow' }, s.eyebrow.map((x, i) => [i ? h('br') : null, x])),
-      // Only the first slide's headline is the page's h1.
-      h(k ? 'h2' : 'h1', { class: 'hero-title' }, s.title[0], h('span', { class: 'accent' }, s.title[1])),
-      h('p', { class: 'lead' }, s.lead),
-      h('ul', { class: 'features' }, s.chips.map((x) => h('li', {}, x))),
-      h('div', { class: 'actions' }, s.actions)),
-    s.visual))),
-    h('div', { class: 'hero-nav' },
-      h('button', { class: 'hero-arrow', type: 'button', 'aria-label': 'Previous', onclick: () => heroGo(S.heroSlide - 1, true) }, '‹'),
-      h('div', { class: 'hero-dots', role: 'group', 'aria-label': 'Choose a slide' }, slides.map((s, k) => h('button', {
-        type: 'button', 'aria-label': s.label, 'aria-current': String(k === S.heroSlide), onclick: () => heroGo(k, true),
-      }, h('span', { class: 'hero-dot-label' }, s.label)))),
-      h('button', { class: 'hero-arrow', type: 'button', 'aria-label': 'Next', onclick: () => heroGo(S.heroSlide + 1, true) }, '›')));
-    return root;
+  }
+
+  function viewYou() {
+    document.title = 'You · Tonament';
+    const me = S.me;
+    const row = (href, label, hint, onClick) => h(href ? 'a' : 'button', { class: 'you-row', ...(href ? { href } : { type: 'button', onclick: onClick }) }, h('span', {}, label), hint ? h('small', { class: 'muted' }, hint) : null);
+    return [
+      h('div', { class: 'card you-head' },
+        h('span', { class: 'avatar big', 'aria-hidden': 'true' }, me.name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()),
+        h('div', {}, h('h1', {}, me.name), h('p', { class: 'muted small' }, me.email))),
+      h('div', { class: 'card you-list' },
+        row('/me/profile', 'Your profile', 'Results, ratings, the club you represent'),
+        row('/notifications', 'Notifications', 'What\'s new, and how you\'re told'),
+        row('/compete', 'My entries and tournaments', 'Everything you\'ve entered or run')),
+      (S.myOrgs || []).length || me.isAdmin || (S.billing && S.billing.enabled) ? h('div', { class: 'card you-list' },
+        (S.myOrgs || []).map((o) => row(`/@${o.slug}/edit`, o.name, o.live ? 'Your public page' : 'Your page (draft)')),
+        S.billing && S.billing.enabled ? row('/invite', 'Invite organisers 🎁', 'Their first tournament free; a free upgrade for you') : null,
+        me.isAdmin ? row('/admin', 'Admin', 'Site administration') : null) : null,
+      h('div', { class: 'card you-list' },
+        h('div', { class: 'you-row' }, h('span', {}, 'Theme'), themeSwitch()),
+        canInstall() ? row(null, 'Install the app', 'On your home screen, works offline', () => installApp()) : null,
+        row(null, 'Sign out', null, signOut)),
+      h('p', { class: 'muted small center' }, h('a', { href: '/features' }, 'Features'), ' · ', h('a', { href: '/faq' }, 'Help'), ' · ', h('a', { href: '/contact' }, 'Contact')),
+    ];
   }
 
   function viewHome() {
-    document.title = 'Tournament App with Live Scoring — Badminton, Pickleball & 16 More Sports | Tonament';
-    const explore = (e) => {
-      e.preventDefault();
-      document.getElementById('all-tournaments')?.scrollIntoView({ behavior: 'smooth' });
-    };
+    document.title = 'Tonament — Run tournaments, races and leagues with live scores. Play more with your club.';
+    return S.me ? homeSignedIn() : landing();
+  }
+
+  // Signed in: what's next for you, quick ways in, and your feed.
+  function homeSignedIn() {
+    const first = S.me.name.split(' ')[0];
+    const quick = [['⏱️', 'Log a run', '/runs'], ['⚔️', 'Challenge someone', '/challenges/new'], ['🔎', 'Find an event', '/compete'], ['🏠', 'Your clubs', '/clubs']];
     return [
       installBanner(),
-      heroSlider(explore),
-      S.me ? homeFeed() : null,
-      S.me && S.myEntries && S.myEntries.length ? h('section', { class: 'section' },
-        h('h2', {}, 'My entries'),
-        h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
-      S.me ? h('section', { class: 'section' },
-        h('h2', {}, 'My tournaments'),
-        S.mine == null ? loading()
-          : S.mine.length === 0 ? empty('Tournaments you create, or are added to as an organiser or umpire, show up here.')
-            : h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role]))),
-        S.mine && S.mine.some((t) => t.role === 'owner') && S.billing && S.billing.enabled
-          ? h('a', { class: 'card invite-nudge', href: '/invite' }, h('span', { 'aria-hidden': 'true' }, '🎁'),
-            h('span', {}, h('strong', {}, 'Invite another organiser'), h('small', { class: 'muted' }, ' — their first tournament is free, and you get a free upgrade.')))
-          : null) : null,
+      h('div', { class: 'home-hello' }, h('h1', {}, `Hi, ${first}`)),
+      h('div', { class: 'quick-row' }, quick.map(([e, label, href]) => h('a', { class: 'quick-chip', href }, h('span', { 'aria-hidden': 'true' }, e), label))),
+      S.myEntries && S.myEntries.length ? h('section', { class: 'section' },
+        h('div', { class: 'card-head' }, h('h2', {}, 'Up next'), h('a', { class: 'btn btn-small btn-ghost', href: '/compete' }, 'All')),
+        h('div', { class: 'card-list' }, S.myEntries.slice(0, 3).map(myEntryCard))) : null,
+      homeFeed(),
+    ];
+  }
+
+  // Signed out: what Tonament is for, who it's for, the problems it solves.
+  function landing() {
+    const go = S.me ? '/new' : '/signup';
+    const find = (e) => { e.preventDefault(); document.getElementById('all-tournaments')?.scrollIntoView({ behavior: 'smooth' }); };
+    const roles = [
+      ['🏆', 'Organisers', 'Run the event, not the paperwork', ['Tournaments in 18 sports: groups, leagues, knockouts, team ties', 'Races, track and pool meets, and racing championships', 'Online entries, UPI fees, an order of play, live scores on any phone'], '/features'],
+      ['🏸', 'Players', 'Play more, and keep a record of it', ['Weekly games with your regulars, and challenges to friends', 'A rating that moves with every game, and ladders to climb', 'Every result, title and best on your profile'], '/signup'],
+      ['🏠', 'Clubs & academies', 'Give your club something to play for', ['Members, a club feed and a leaderboard — free', 'Club v club ties, seasons against other clubs, club runs', 'Honours, and a place in the club rankings'], '/clubs'],
+      ['🏃', 'Runners & athletes', 'From your weekly run to race day', ['Log runs, beat your 5K and 10K bests, top the week with friends', 'Enter races and meets, and get your bib', 'Results by age group, medals and personal bests'], '/races'],
+    ];
+    const problems = [
+      ['A paper draw that\'s out of date by 10 am', 'Groups, brackets and the order of play update themselves — and you can still change anything, like on paper.'],
+      ['"What\'s the score?" in five WhatsApp groups', 'Every point live on everyone\'s phone, and on the venue TV.'],
+      ['Chasing entry fees and who\'s paid', 'Entries online, fees by UPI or cash, and a list of who\'s paid.'],
+      ['"Who\'s coming on Sunday?"', 'Groups and club runs where people say they\'re in, and the courts or start are set.'],
+      ['Games that leave no trace', 'Results, ratings, bests and titles on your profile — shareable as a card.'],
+      ['Clubs with nothing to play for between tournaments', 'Club v club, seasons, ladders, goals and the club rankings.'],
+    ];
+    const steps = [
+      ['1', 'Start it', 'A tournament, a race, a group or a club — in a couple of minutes, free.'],
+      ['2', 'Share the link', 'Players enter, join and pay from their phones. No app to install.'],
+      ['3', 'Play it live', 'Score on any phone; results go to everyone\'s profile, feed and club.'],
+    ];
+    return [
+      installBanner(),
+      h('section', { class: 'hero landing-hero' },
+        h('div', { class: 'landing-copy' },
+          h('p', { class: 'eyebrow' }, 'One platform. Every sport. ', h('b', {}, 'Every tournament.')),
+          h('h1', {}, 'Organise it. Play it. ', h('span', { class: 'hl' }, 'Follow it live.')),
+          h('p', { class: 'lead' }, 'Tonament runs tournaments, leagues, races and meets with live scores — and keeps players and clubs playing in between, with weekly games, challenges, club v club and runs. Free to start, on any phone.'),
+          h('div', { class: 'actions' },
+            h('a', { class: 'btn btn-primary btn-lg', href: go }, S.me ? 'Create a tournament' : 'Get started — it\'s free'),
+            h('a', { class: 'btn btn-lg btn-ghost', href: '#all-tournaments', onclick: find }, 'Find an event')),
+          h('p', { class: 'muted small' }, `${liveSports().length || 18} sports · tournaments, races, meets and racing · used by clubs, academies and venues`)),
+        h('div', { class: 'landing-visual' }, h('img', { src: '/guide/umpire-dark.jpg', alt: 'Scoring a badminton match point by point on a phone', width: 390, loading: 'eager' }))),
+      h('section', { class: 'section' },
+        h('h2', { class: 'landing-h2' }, 'What you can do'),
+        h('div', { class: 'role-grid' }, roles.map(([e, who, promise, list, href]) => h('div', { class: 'card role-card' },
+          h('span', { class: 'hub-emoji', 'aria-hidden': 'true' }, e),
+          h('h3', {}, who), h('p', { class: 'role-promise' }, promise),
+          h('ul', {}, list.map((x) => h('li', {}, x))),
+          h('a', { class: 'link-arrow', href }, 'See how →'))))),
+      h('section', { class: 'section' },
+        h('h2', { class: 'landing-h2' }, 'The problems it solves'),
+        h('div', { class: 'problem-grid' }, problems.map(([before, after]) => h('div', { class: 'card problem' },
+          h('p', { class: 'problem-before' }, before), h('p', { class: 'problem-after' }, after))))),
+      h('section', { class: 'section' },
+        h('h2', { class: 'landing-h2' }, 'How it works'),
+        h('ol', { class: 'how-steps' }, steps.map(([n, t, d]) => h('li', { class: 'card how-step' }, h('span', { class: 'how-n', 'aria-hidden': 'true' }, n), h('strong', {}, t), h('small', { class: 'muted' }, d))))),
       findSection(),
       sportsSection(),
+      h('section', { class: 'card landing-cta' },
+        h('h2', {}, 'Your next event starts here'),
+        h('p', { class: 'muted' }, 'Free for up to 16 entries. Clubs, groups, challenges and runs are always free.'),
+        h('div', { class: 'actions', style: 'justify-content:center' }, h('a', { class: 'btn btn-primary btn-lg', href: go }, 'Get started — it\'s free'), h('a', { class: 'btn btn-lg btn-ghost', href: '/features' }, 'All features'))),
     ];
   }
 
@@ -1344,10 +1317,11 @@
   async function search() {
     const seq = ++searchSeq;
     const qs = filterQuery(S.filters);
-    history.replaceState(null, '', qs ? `/?${qs}` : '/');
+    const base = S.route.name === 'compete' ? '/compete' : '/';
+    history.replaceState(null, '', qs ? `${base}?${qs}` : base);
     try { localStorage.setItem(FILTERS_KEY, JSON.stringify(S.filters)); } catch { /* fine */ }
     const list = await api('GET', `/tournaments?${filterQuery(S.filters, true)}`).catch(() => null);
-    if (seq !== searchSeq || S.route.name !== 'home') return;
+    if (seq !== searchSeq || !['home', 'compete'].includes(S.route.name)) return;
     S.list = list || [];
     // Only the results change, so typing in the search box keeps its focus.
     const box = document.getElementById('find-results');
@@ -5181,34 +5155,77 @@
     const initials = (name) => name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
     nav.replaceChildren(...(S.me
       ? [
-        // On narrow phones the button says just "New", so the 🔔 and the menu fit.
-        h('a', { class: 'btn btn-small btn-primary nav-new', href: '/new', 'aria-label': 'New tournament' }, h('span', { class: 'long' }, 'New tournament'), h('span', { class: 'short' }, '+ New')),
+        // The hubs (on wide screens; phones get the bar at the bottom).
+        h('div', { class: 'top-hubs' }, HUBS.map(([id, label, , href]) => h('a', { href, 'data-hub': id }, label))),
+        h('button', { class: 'btn btn-small btn-primary nav-new', type: 'button', 'aria-haspopup': 'dialog', onclick: createSheet }, '+ New'),
         h('a', { class: 'bell', href: '/notifications', 'aria-label': 'Notifications', title: 'Notifications' }, '🔔', h('span', { class: 'bell-count', hidden: true })),
-        h('details', { class: 'menu' },
-          h('summary', { class: 'avatar', title: S.me.email, 'aria-label': 'Account menu' }, initials(S.me.name)),
-          h('div', { class: 'menu-panel' },
-            h('div', { class: 'menu-head' }, h('strong', {}, S.me.name), h('div', { class: 'muted small' }, S.me.email)),
-            h('a', { href: '/me/profile', onclick: closeMenu }, 'Your profile'),
-            h('a', { href: '/groups', onclick: closeMenu }, 'Your groups'),
-            h('a', { href: '/clubs', onclick: closeMenu }, 'Clubs'),
-            h('a', { href: '/challenges', onclick: closeMenu }, 'Challenges'),
-            h('a', { href: '/goals', onclick: closeMenu }, 'Goals'),
-            h('a', { href: '/runs', onclick: closeMenu }, 'Runs'),
-            h('a', { href: '/races', onclick: closeMenu }, 'Races'),
-            h('a', { href: '/meets', onclick: closeMenu }, 'Meets'),
-            h('a', { href: '/champs', onclick: closeMenu }, 'Racing'),
-            h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
-            (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
-            S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
-            S.billing && S.billing.enabled ? h('a', { href: '/invite', onclick: closeMenu }, 'Invite organisers 🎁') : null,
-            canInstall() ? h('button', { onclick: (e) => { closeMenu(e); installApp(); } }, 'Install the app') : null,
-            h('button', { onclick: signOut }, 'Sign out'),
-            h('div', { class: 'menu-theme' }, 'Theme', themeSwitch()))),
+        h('a', { class: 'avatar', href: '/you', title: S.me.name, 'aria-label': 'You — your profile and settings', 'data-hub': 'you' }, initials(S.me.name)),
       ]
       : [
         h('a', { class: 'nav-link', href: '/signin' }, 'Sign in'),
         h('a', { class: 'btn btn-small btn-primary', href: '/signup' }, 'Sign up'),
       ]).filter(Boolean));
+  }
+
+  // ---------- the five hubs: Home · Play · Compete · Clubs · You
+  const HUBS = [['home', 'Home', 'hub-home', '/'], ['play', 'Play', 'hub-play', '/play'], ['compete', 'Compete', 'hub-compete', '/compete'], ['clubs', 'Clubs', 'hub-clubs', '/clubs'], ['you', 'You', 'hub-you', '/you']];
+  const HUB_OF = {
+    home: 'home', item: 'home',
+    play: 'play', groups: 'play', groupNew: 'play', group: 'play', groupGame: 'play', challenges: 'play', challengeNew: 'play', challenge: 'play', goals: 'play', goalNew: 'play', goal: 'play', runs: 'play',
+    compete: 'compete', new: 'compete', tournament: 'compete', match: 'compete', races: 'compete', raceNew: 'compete', race: 'compete', meets: 'compete', meetNew: 'compete', meet: 'compete', champs: 'compete', champNew: 'compete', champ: 'compete',
+    clubs: 'clubs', club: 'clubs', orgNew: 'clubs', clubChallenge: 'clubs', season: 'clubs', clubRun: 'clubs', clubRankings: 'clubs',
+    you: 'you', profile: 'you', notifications: 'you', admin: 'you', invite: 'you', org: 'you',
+  };
+  const NO_HUBS = ['display', 'signin', 'signup', 'forgot', 'reset', 'link'];
+  let hubBar = null;
+  function renderHubs() {
+    const show = Boolean(S.me) && !NO_HUBS.includes(S.route.name);
+    if (show && !hubBar) {
+      hubBar = h('nav', { class: 'hubbar', 'aria-label': 'Main' }, HUBS.map(([id, label, ic, href]) => h('a', { href, 'data-hub': id }, icon(ic), h('span', {}, label))));
+      document.body.append(hubBar);
+    }
+    if (hubBar) hubBar.hidden = !show;
+    document.body.classList.toggle('has-hubbar', show);
+    const current = HUB_OF[S.route.name] || null;
+    for (const a of document.querySelectorAll('[data-hub]')) {
+      const on = a.dataset.hub === current;
+      a.classList.toggle('active', on);
+      if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    }
+  }
+
+  // + New: everything you can start, grouped.
+  function createSheet() {
+    const groups = [
+      ['Run an event', [
+        ['🏆', 'Tournament', 'Racket and team sports: groups, knockouts, live scores', '/new'],
+        ['🏃', 'Race', 'Distances, bibs and results by age group', '/races/new'],
+        ['🏅', 'Meet', 'Athletics, swimming, track cycling', '/meets/new'],
+        ['🏁', 'Championship', 'Karting and club racing', '/champs/new'],
+      ]],
+      ['Play', [
+        ['👥', 'Group', 'Weekly games with your regulars', '/groups/new'],
+        ['⚔️', 'Challenge', 'Take on a friend', '/challenges/new'],
+        ['🎯', 'Goal', '30 games, 100 km — with friends or your club', '/goals/new'],
+        ['⏱️', 'Log a run', 'Distance and time', '/runs'],
+      ]],
+      ['Club', [
+        ['🏠', 'Club', 'Free: members, a feed, club v club and seasons', '/clubs/new'],
+      ]],
+    ];
+    const opener = document.activeElement;
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); if (opener && opener.isConnected) opener.focus(); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const box = h('div', { class: 'sheet-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Start something', onclick: (e) => { if (e.target === box) close(); } },
+      h('div', { class: 'sheet create-sheet' },
+        h('h2', {}, 'Start something'),
+        groups.map(([title, items]) => h('section', {}, h('h3', {}, title),
+          h('div', { class: 'create-grid' }, items.map(([emoji, label, hint, href]) => h('a', { class: 'create-tile', href, onclick: () => close() },
+            h('span', { class: 'create-emoji', 'aria-hidden': 'true' }, emoji), h('span', {}, h('strong', {}, label), h('small', { class: 'muted' }, hint))))))),
+        h('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel')));
+    document.body.append(box);
+    document.addEventListener('keydown', onKey);
+    box.querySelector('a').focus();
   }
 
   // The 🔔's count: on each page change and every minute while the app is open.
@@ -5225,10 +5242,6 @@
   }
   setInterval(() => { if (!document.hidden) refreshBell(true); }, 60000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshBell(); });
-
-  function closeMenu(e) {
-    e.target.closest('details')?.removeAttribute('open');
-  }
 
   // ---------- invites (referrals): organisers invite organisers.
   // A ?ref=code link is remembered for 60 days and sent with the sign-up; the
@@ -7181,15 +7194,15 @@
   }
 
   // ---------- motorsport championships: drivers, rounds, grids, standings
-  function viewChamps() {
-    document.title = 'Racing · Tonament';
+  function viewChamps(embedded = false) {
+    if (!embedded) document.title = 'Racing · Tonament';
     const L = S.champs;
     const card = (c) => h('a', { class: 'card goal-card', href: `/champ/${c.id}` },
       h('p', { class: 'eyebrow' }, [c.series || 'Motorsport', c.status === 'done' ? 'Finished' : `Round ${c.done} of ${c.rounds} done`].join(' · ')),
       h('strong', { class: 'goal-title' }, c.name),
       h('small', { class: 'muted' }, `${c.drivers} drivers${c.mine ? ' · you\'re in ✓' : ''}`));
     return [
-      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Racing'), S.me ? h('a', { class: 'btn btn-primary', href: '/champs/new' }, 'Set up a championship') : null),
+      h('div', { class: `card-head${embedded ? '' : ' page-head'}` }, embedded ? null : h('h1', {}, 'Racing'), S.me ? h('a', { class: 'btn btn-primary', href: '/champs/new' }, 'Set up a championship') : null),
       h('p', { class: 'muted' }, 'Karting and club racing: qualifying, the grid, results, the fastest lap and the championship standings.'),
       L == null ? loading() : L.length ? h('div', { class: 'card-list' }, L.map(card)) : empty('No championships yet — set one up.'),
     ];
@@ -7334,15 +7347,15 @@
   const STAGE = { entries: ['waiting', 'Entries'], heats: ['org', 'Heats'], final: ['org', 'Final'], done: ['done', 'Results'] };
   const MEDAL = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
-  function viewMeets() {
-    document.title = 'Meets · Tonament';
+  function viewMeets(embedded = false) {
+    if (!embedded) document.title = 'Meets · Tonament';
     const L = S.meets;
     const card = (m) => h('a', { class: 'card goal-card', href: `/meet/${m.id}` },
       h('p', { class: 'eyebrow' }, [m.sport, raceWhen(m.startsAt), m.city].filter(Boolean).join(' · ')),
       h('strong', { class: 'goal-title' }, m.name),
       h('small', { class: 'muted' }, `${m.events} events · ${m.entries} entries${m.mine ? ' · you\'re in ✓' : ''}${m.status === 'done' ? ' · results' : m.status === 'on' ? ' · on now' : ''}`));
     return [
-      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Meets'), S.me ? h('a', { class: 'btn btn-primary', href: '/meets/new' }, 'Set up a meet') : null),
+      h('div', { class: `card-head${embedded ? '' : ' page-head'}` }, embedded ? null : h('h1', {}, 'Meets'), S.me ? h('a', { class: 'btn btn-primary', href: '/meets/new' }, 'Set up a meet') : null),
       h('p', { class: 'muted' }, 'Athletics, swimming and track cycling: heats, finals, personal bests and team points.'),
       L == null ? loading() : [
         L.upcoming.length ? h('section', { class: 'section' }, h('h2', {}, 'Coming up and on'), h('div', { class: 'card-list' }, L.upcoming.map(card))) : empty('No meets yet — set one up.'),
@@ -7496,15 +7509,15 @@
   const raceWhen = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
   const ordinal = (n) => `${n}${[11, 12, 13].includes(n % 100) ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
 
-  function viewRaces() {
-    document.title = 'Races · Tonament';
+  function viewRaces(embedded = false) {
+    if (!embedded) document.title = 'Races · Tonament';
     const L = S.races;
     const card = (r) => h('a', { class: 'card goal-card', href: `/race/${r.id}` },
       h('p', { class: 'eyebrow' }, [raceWhen(r.startsAt), r.city].filter(Boolean).join(' · ')),
       h('strong', { class: 'goal-title' }, r.name),
       h('small', { class: 'muted' }, `${r.distances} · ${r.entries} in${r.mine ? ' · you\'re in ✓' : ''}${r.organiser ? ' · yours' : ''}${r.status === 'done' ? ' · results out' : ''}`));
     return [
-      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Races'), S.me ? h('a', { class: 'btn btn-primary', href: '/races/new' }, 'Set up a race') : null),
+      h('div', { class: `card-head${embedded ? '' : ' page-head'}` }, embedded ? null : h('h1', {}, 'Races'), S.me ? h('a', { class: 'btn btn-primary', href: '/races/new' }, 'Set up a race') : null),
       h('p', { class: 'muted' }, 'Enter, get your bib, and see where you finished — overall, by gender and by age group. Your time goes straight onto your runs.'),
       L == null ? loading() : [
         L.upcoming.length ? h('section', { class: 'section' }, h('h2', {}, 'Coming up'), h('div', { class: 'card-list' }, L.upcoming.map(card))) : empty('No races coming up yet — set one up.'),
@@ -9466,7 +9479,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new|\/rankings)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|meets(?:\/new)?$|meet\/\d+$|champs(?:\/new)?$|champ\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|play$|compete$|you$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new|\/rankings)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|races(?:\/new)?$|race\/\d+$|meets(?:\/new)?$|meet\/\d+$|champs(?:\/new)?$|champ\/\d+$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

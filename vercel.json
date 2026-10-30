@@ -108,6 +108,18 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/play",
+      "destination": "/api/index?__path=app"
+    },
+    {
+      "source": "/compete",
+      "destination": "/api/index?__path=app"
+    },
+    {
+      "source": "/you",
+      "destination": "/api/index?__path=app"
+    },
+    {
       "source": "/runs",
       "destination": "/api/index?__path=app"
     },

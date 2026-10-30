@@ -82,7 +82,7 @@ test('a public tournament page: details, preview tags and event data', async () 
   for (const text of ['City Sports Hall', '19th Cross Street', 'Men&#39;s Singles', 'Winner: ₹5,000 + Trophy', 'Drinking water', 'Our yearly &lt;/script&gt; open.']) {
     assert.ok(html.includes(text), text);
   }
-  assert.ok(!html.includes('Flexible as paper. Easy as an app.')); // not the home page's content
+  assert.ok(!html.includes('Organise it. Play it. Follow it live.')); // not the home page's content
 
   const data = ld(html);
   assert.equal(data['@type'], 'SportsEvent');
@@ -177,7 +177,7 @@ test('sitemap, robots.txt, app routes and real 404s', async () => {
     assert.ok(page.html.includes('<script src="/app.js"></script>'), path);
   }
   const home = await get('/');
-  assert.match(home.html, /<h1>Flexible as paper\. Easy as an app\.<\/h1>/);
+  assert.match(home.html, /<h1>Organise it\. Play it\. Follow it live\.<\/h1>/);
   assert.match(home.html, /"@type":"Organization"/);
   const nope = await get('/no-such-page');
   assert.equal(nope.res.status, 404);
