@@ -1226,14 +1226,27 @@
       meets: () => viewMeets(true),
       racing: () => viewChamps(true),
     }[tab]();
+    const tpls = S.me ? myTemplates() : [];
     const mineRail = tab === 'tournaments' && S.me ? [
-      S.myEntries && S.myEntries.length ? railCard('My entries', h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard))) : null,
-      S.mine && S.mine.length ? railCard('Tournaments I run', h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role]))), h('a', { class: 'btn btn-small btn-primary', href: '/new' }, '+ Tournament')) : null,
+      S.myEntries && S.myEntries.length ? railCard('My entries', h('div', { class: 'card-list' }, S.myEntries.map(myEntryCard)), null, 'my-entries') : null,
+      S.mine && S.mine.length ? railCard('Tournaments I run', h('div', { class: 'card-list' }, S.mine.map((t) => tournamentCard(t, ROLE_NAMES[t.role]))),
+        h('span', { class: 'actions' }, h('a', { class: 'btn btn-small btn-primary', href: '/new' }, '+ Tournament')), 'i-run') : null,
+      tpls.length ? railCard('Your templates', h('ul', { class: 'rail-list template-list' }, tpls.slice(0, 3).map((x) => h('li', {},
+        h('span', {}, h('strong', {}, x.name), h('small', { class: 'muted' }, x.events.join(' · '))),
+        h('a', { class: 'btn btn-small', href: `/new?from=tpl:${x.id}` }, 'Use it')))),
+      h('a', { class: 'btn btn-small btn-ghost', href: '/templates' }, tpls.length > 3 ? `All ${tpls.length}` : 'Manage'), 'my-templates') : null,
     ] : null;
+    // Phones: the rail comes after the search, so a row of links up top jumps to it.
+    const jumps = mineRail ? [
+      S.myEntries && S.myEntries.length ? ['#my-entries', `My entries (${S.myEntries.length})`] : null,
+      S.mine && S.mine.length ? ['#i-run', `I run (${S.mine.length})`] : null,
+      tpls.length ? ['#my-templates', `Templates (${tpls.length})`] : null,
+    ].filter(Boolean) : [];
     return withRail([
       h('h1', {}, 'Compete'),
       h('p', { class: 'muted' }, 'Find an event and enter, follow it live, or run your own — tournaments, races, track and pool meets, and racing.'),
       h('div', { class: 'seg hub-seg', role: 'group', 'aria-label': 'Kind of event' }, tabs.map(([id, label]) => h('button', { 'aria-pressed': String(tab === id), onclick: () => go(id) }, label))),
+      jumps.length ? h('nav', { class: 'mine-jump', 'aria-label': 'Yours' }, jumps.map(([href, label]) => h('a', { class: 'btn btn-small btn-ghost', href, onclick: (e) => { e.preventDefault(); document.querySelector(href)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, label))) : null,
       body,
     ], mineRail);
   }
@@ -1245,8 +1258,6 @@
       [
         { href: '/me/profile', label: 'Your profile', hint: 'Results, ratings, the club you represent' },
         { href: '/notifications', label: 'Notifications', hint: 'What\'s new, and how you\'re told' },
-        { href: '/compete', label: 'My entries and tournaments', hint: 'Everything you\'ve entered or run' },
-        { href: '/templates', label: 'Tournament templates', hint: 'Start new tournaments from your favourite setups' },
       ],
       [
         ...(S.myOrgs || []).map((o) => ({ href: `/@${o.slug}/edit`, label: o.name, hint: o.live ? 'Your public page' : 'Your page (draft)' })),
@@ -2073,7 +2084,7 @@
     const live = liveSports();
     if (!live.length) return loading();
     const d = (S.newDraft ||= { from: S.route.from || '', sport: live[0].id, types: null, custom: false, events: null, format: 'league_knockout', name: S.route.title || '', startsOn: '', startTime: '', only: null, sourceEvents: null });
-    if (S.newTemplates === undefined) { S.newTemplates = null; api('GET', '/me/templates').then((r) => { S.newTemplates = r.templates; render(); }).catch(() => { S.newTemplates = []; }); }
+    myTemplates();
     if (S.mine === undefined) { S.mine = null; api('GET', '/me/tournaments').then((l) => { S.mine = l; render(); }, () => { S.mine = []; }); }
     const templates = S.newTemplates || [];
     const past = (S.mine || []).filter((t) => ['owner', 'organiser'].includes(t.role)).slice(0, 8);
@@ -5876,13 +5887,14 @@
   }
   // A page with a column on the side (wide screens; below the page on narrow ones).
   const withRail = (main, rail) => h('div', { class: 'with-rail' }, h('div', { class: 'rail-main' }, main), rail && [rail].flat(Infinity).filter(Boolean).length ? h('aside', { class: 'rail' }, rail) : null);
-  const railCard = (title, body, link) => h('section', { class: 'card rail-card' }, h('div', { class: 'card-head' }, h('h2', {}, title), link || null), body);
+  const railCard = (title, body, link, id) => h('section', { class: 'card rail-card', ...(id && { id }) }, h('div', { class: 'card-head' }, h('h2', {}, title), link || null), body);
 
   // + New: everything you can start, grouped.
   function createSheet() {
     const groups = [
       ['Run an event', [
         ['🏆', 'Tournament', 'Racket and team sports: groups, knockouts, live scores', '/new'],
+        ...(S.me && myTemplates().length ? [['📋', 'From a template', `${myTemplates().length} saved setup${myTemplates().length === 1 ? '' : 's'} — pick one and a date`, '/templates']] : []),
         ['🏃', 'Race', 'Distances, bibs and results by age group', '/races/new'],
         ['🏅', 'Meet', 'Athletics, swimming, track cycling', '/meets/new'],
         ['🏁', 'Championship', 'Karting and club racing', '/champs/new'],
@@ -6007,10 +6019,15 @@
   }
 
   // ---------- templates and new editions
+  // The signed-in user's templates (loaded once; [] until then).
+  function myTemplates() {
+    if (S.newTemplates === undefined) { S.newTemplates = null; api('GET', '/me/templates').then((r) => { S.newTemplates = r.templates; render(); }).catch(() => { S.newTemplates = []; }); }
+    return S.newTemplates || [];
+  }
   const saveAsTemplate = (t) => {
     const name = prompt('Name the template (you\'ll pick a date each time you use it):', t.name.replace(/\s*\b20\d\d\b\s*/g, ' ').trim());
     if (name === null) return;
-    act(async () => { await api('POST', `${tPath(t)}/template`, { name: name.trim() || t.name.replace(/\s*\b20\d\d\b\s*/g, ' ').trim() }, t.id); S.newTemplates = undefined; }, 'Saved — find it under You › Tournament templates, or when you create a tournament');
+    act(async () => { await api('POST', `${tPath(t)}/template`, { name: name.trim() || t.name.replace(/\s*\b20\d\d\b\s*/g, ' ').trim() }, t.id); S.newTemplates = undefined; }, 'Saved — find it under Compete › Your templates, or when you create a tournament');
   };
   const runAgainHref = (t) => `/new?from=t:${encodeURIComponent(t.id)}&name=${encodeURIComponent(nextEdition(t.name))}`;
   // On the Setup › Events section: reuse this tournament.
@@ -6060,6 +6077,7 @@
       act(async () => { S.templates = (await api('DELETE', `/templates/${x.id}`)).templates; S.newTemplates = undefined; }, 'Template deleted');
     };
     return [
+      h('a', { class: 'back-link', href: '/compete' }, '← Compete'),
       h('h1', {}, 'Tournament templates'),
       h('p', { class: 'muted' }, 'A template is a tournament\'s events, format, scoring, fees, prizes and venue. Start a new tournament from one and pick the date.'),
       list.length
