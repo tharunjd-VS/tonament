@@ -90,6 +90,81 @@ the station can light up and beep. Events carry a sequence number and are
 queued on the device if the connection drops (same idea as offline scoring
 today). Connection: open question — Wi-Fi, 4G, or Bluetooth to a phone.
 
+## Parts list and cost
+
+Approximate Indian retail prices (Robu.in, Robocraze, Amazon.in), 2026, for
+prototype quantities. Check current prices before ordering.
+
+### Station (one per court): prototype parts
+
+| Part | Suggested module | Qty | Approx. cost (Rs) |
+|---|---|---|---|
+| Brain (Wi-Fi + Bluetooth) | ESP32-S3 dev board | 1 | 450–700 |
+| NFC readers | PN532 (reliable with NTAG and iPhone-friendly tags); RC522 is cheaper at Rs 120–180 each | 2 | 700–900 |
+| Score display, readable from the court | MAX7219 8×32 LED matrix | 1 | 300–450 |
+| Pad light rings | WS2812B 16-LED ring | 2 | 300–500 |
+| "Open spot" buttons (press without a tag) | 60 mm arcade button, mounted beside each pad (metal under a pad blocks NFC) | 2 | 160–300 |
+| Beeper | Active buzzer | 1 | 20–40 |
+| Power, mains | 5 V 2 A USB adapter + USB-C cable | 1 | 250–400 |
+| Power, battery backup (optional) | 2× 18650 cells + holder + charger/boost board | 1 set | 400–600 |
+| Enclosure | 3D-printed PETG case with frosted acrylic pad windows | 1 | 500–900 |
+| Mount | Fence clamp, velcro straps, cable ties | 1 set | 100–200 |
+| Wiring | Perfboard, jumper wires, connectors, screws | 1 set | 200–300 |
+| **Station total** | | | **about 3,000–4,700 on mains** (about 3,400–5,300 with the battery backup) |
+
+### Wrist remote (one per court): two routes
+
+**A. Custom (recommended for the prototype).** We control the firmware, it pairs reliably with the station, the battery lasts weeks, and it vibrates to confirm.
+
+| Part | Suggested module | Qty | Approx. cost (Rs) |
+|---|---|---|---|
+| Brain (Bluetooth LE, low power) | Seeed XIAO nRF52840 (or XIAO ESP32-C3 at Rs 500–700, with shorter battery life) | 1 | 900–1,200 |
+| Buttons A / B | 12 mm tactile buttons with large caps | 2 | 30–60 |
+| Battery | 150–300 mAh LiPo (the XIAO charges it over USB-C) | 1 | 200–300 |
+| Vibration motor (confirms each point) | Coin vibration motor | 1 | 40–80 |
+| Case | 3D-printed TPU/PETG pod | 1 | 200–300 |
+| Strap | Silicone watch strap (20 mm) or clip | 1 | 100–200 |
+| **Remote total** | | | **about 1,500–2,100** |
+
+**B. Off the shelf (cheapest trial).**
+- What: a Bluetooth "selfie" or camera remote, Rs 150–300; or a 2-button presentation clicker, Rs 500–900.
+- How: the station connects to it as a Bluetooth keyboard and reads its key presses.
+- Downsides: pairing is less reliable, there's no vibration, and some have only one useful button.
+- Use: good for proving the idea in week one.
+
+### Player tags
+- NTAG213 sticker (plastic handle caps, phone cases): Rs 10–25 each, in packs of 50–100.
+- Anti-metal sticker (carbon or metal frames): Rs 40–90.
+- Silicone NFC wristband (always on the player): Rs 50–120.
+
+### Totals: example group with 2 courts and 20 players
+| Item | Qty | Approx. cost (Rs) |
+|---|---|---|
+| Stations (on mains) | 2 | 6,000–9,400 |
+| Wrist remotes (custom) | 2 | 3,000–4,200 |
+| Tags (stickers, with spares) | 25 | 300–600 |
+| **Total, prototype** | | **about 9,300–14,200** |
+| …with off-the-shelf selfie remotes instead (2 × Rs 150–300) | | about 6,600–10,600 |
+
+One-time tools, if building in-house: a soldering kit (Rs 800–1,500), a multimeter (Rs 500–800), and the 3D printing done by a local service.
+
+### At volume (100+ units, custom PCB): rough parts cost per unit
+- **Station:** about Rs 1,200–1,800.
+  - Two RC522-class readers on the board, an ESP32-S3 module, an LED matrix, an injection-moulded or batch-printed case.
+  - Excludes one-time PCB design and mould costs, typically Rs 50,000–2,00,000 for moulds; batch 3D printing avoids those.
+- **Wrist remote:** about Rs 400–700.
+  - An nRF52 module, LiPo, motor and a moulded pod.
+- **Tags:** about Rs 8–15 each in bulk, and can be printed with the Tonament logo.
+- A selling price would sit above these figures; that's for the founder to set.
+
+### Notes for the builder
+- **Pad and reader placement:**
+  - Put each NFC reader's antenna directly under a 2–3 mm acrylic or plastic window. Nothing metal above it.
+  - Keep the arcade button beside the pad, not on top of it.
+  - Space the two readers at least 10 cm apart so they don't interfere.
+- **Weatherproofing:** for outdoor courts, use an IP54 enclosure and seal the display window.
+- **Firmware:** the station acts as the Bluetooth host for the remote; the messages to Tonament are listed above.
+
 ## NFC tag facts (for choosing hardware)
 - **Chip:** NTAG213/215 (NFC Forum Type 2). Read by every NFC phone,
   including iPhones; cheap; 144/504 bytes of storage. Avoid MIFARE Classic
@@ -105,16 +180,4 @@ today). Connection: open question — Wi-Fi, 4G, or Bluetooth to a phone.
 - **Metal and carbon:** frames and shafts can block the signal. Put the tag on
   the plastic butt cap of the handle, or use "anti-metal" (on-metal) tags.
 - **Write/lock:** tags can store a URL and be write-locked.
-- **Typical prices in India** (approximate, retail, 2026; check before buying):
-  - NTAG213 stickers, round 25 mm: Rs 10–25 each in packs of 50–100
-  - Anti-metal (on-metal) stickers: Rs 40–90
-  - Epoxy coin / keyfob tags: Rs 30–60
-  - Silicone wristbands: Rs 50–120
-  - NTAG 424 DNA (secure): Rs 80–200
-  - Reader modules for the station: RC522 Rs 100–200, PN532 Rs 300–450
-    (two per station, one per side)
-  - Wrist remote: off-the-shelf Bluetooth remote Rs 150–400, plus a
-    silicone wristband or clip
-- A starter kit for a 20-player group: 20 stickers plus a few spares, about
-  Rs 300–600; about Rs 300–900 per station for the readers; Rs 150–400 per
-  court for the wrist remote.
+- **Prices:** see "Parts list and cost" above.
