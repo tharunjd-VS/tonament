@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const sports = require('./sports');
 const { createService } = require('./service');
+const { createCron } = require('./cron');
 const { createAuth } = require('./auth');
 const { HttpError } = require('./errors');
 const pages = require('./pages');
@@ -209,9 +210,10 @@ const deviceOf = (req) => {
   return typeof d === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(d) ? d : null;
 };
 
-function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
-  const svc = createService(db, { mailer, fetchImpl });
-  const auth = createAuth(db, { mailer, onSignup: (q, user, ref) => svc.referrals.attach(q, user, ref) });
+function createApp(db, { mailer = createMailer(), fetchImpl, messaging } = {}) {
+  const svc = createService(db, { mailer, fetchImpl, messaging });
+  const auth = createAuth(db, { mailer, messaging: svc.messaging, onSignup: (q, user, ref) => svc.referrals.attach(q, user, ref) });
+  const cron = createCron({ db, svc, fail: (status, message) => { throw new HttpError(status, message); }, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, '') });
 
   const T = '/api/tournaments/([a-z0-9-]+)';
   const ev = (c) => c.body.event ?? (c.query.get('event') || undefined);
@@ -289,7 +291,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `${T}/scoring/preview`, (c, id) => svc.previewScoringChange(id, c.actor, c.body)],
     ['POST', `${T}/scoring`, (c, id) => svc.changeScoring(id, c.actor, c.body)],
 
-    ['GET', '/api/auth/me', async (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled, gift: c.actor.user ? await svc.referrals.welcomeFor(c.actor.user) : null })],
+    ['GET', '/api/auth/me', async (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled, phoneEnabled: svc.messaging.phoneEnabled(), gift: c.actor.user ? await svc.referrals.welcomeFor(c.actor.user) : null })],
     ['POST', '/api/auth/forgot', async (c) => {
       const url = baseUrl(c.req);
       if (!url) throw new HttpError(503, 'Set APP_URL in the project settings to enable password reset');
@@ -316,6 +318,16 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
       c.setCookie(r.cookie);
       return { user: r.user, next: r.next };
     }],
+    // Codes by WhatsApp or SMS: 503 until one of them is switched on.
+    ['POST', '/api/auth/otp/request', (c) => auth.requestOtp(c.req, c.body, c.actor)],
+    ['POST', '/api/auth/otp/verify', async (c) => {
+      const r = await auth.verifyOtp(c.req, c.body, c.actor);
+      if (!r.cookie) return r;
+      c.setCookie(r.cookie);
+      return { user: r.user };
+    }],
+    ['GET', '/api/me/phone', (c) => auth.phoneSettings(c.actor)],
+    ['PATCH', '/api/me/phone', (c) => auth.phoneSettings(c.actor, c.body)],
     ['POST', '/api/auth/reset', async (c) => {
       const { user, cookie } = await auth.resetPassword(c.req, c.body);
       c.setCookie(cookie);
@@ -378,6 +390,11 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', `/api/admin/users/${N}/reset`, (c, id) => auth.adminResetLink(c.actor, id, baseUrl(c.req) || SITE)],
     ['DELETE', `/api/admin/users/${N}`, (c, id) => auth.deleteUser(c.actor, id)],
     ['GET', '/api/admin/stats', (c) => svc.adminStats(c.actor)],
+    ['GET', '/api/admin/funnel', (c) => svc.adminFunnel(c.actor, { days: c.query.get('days') })],
+    ['GET', '/api/admin/cron', (c) => cron.status(c.actor)],
+    // Scheduled jobs (vercel.json crons): the CRON_SECRET, or a site admin.
+    ['GET', '/api/cron/(hourly|weekly|reminders)', (c, job) => cron.run(job, c.req, c.actor, { force: c.query.get('force') === '1' && Boolean(c.actor.user?.isAdmin) })],
+    ['POST', '/api/cron/(hourly|weekly|reminders)', (c, job) => cron.run(job, c.req, c.actor, { force: c.body.force === true && Boolean(c.actor.user?.isAdmin) })],
     ['GET', '/api/admin/tournaments', (c) => svc.adminTournaments(c.actor, Object.fromEntries(c.query))],
     ['POST', `/api/admin/payments/${N}/refund`, (c, id) => svc.refundPayment(c.actor, id, c.body)],
 

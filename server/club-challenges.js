@@ -53,7 +53,7 @@ function createClubChallenges({ db, fail, text, social, notify, match }) {
     return x;
   }
   // Unanswered for two weeks: expired.
-  const expire = (q) => q(`UPDATE club_challenges SET status = 'expired' WHERE status = 'sent' AND created_at < now() - interval '${EXPIRE_DAYS} days'`);
+  const expire = (q) => q(`UPDATE club_challenges SET status = 'expired' WHERE status = 'sent' AND created_at < now() - interval '${EXPIRE_DAYS} days' RETURNING id`);
 
   // ---------- sending one
 
@@ -337,7 +337,7 @@ function createClubChallenges({ db, fail, text, social, notify, match }) {
     return { eyebrow, title: `${x.from_name} v ${x.to_name}`, subtitle: [when, x.place].filter(Boolean).join(' · ') || (x.status === 'sent' ? 'The challenge is out' : 'It\'s on'), big: 'VS', bigLabel: x.status === 'sent' ? 'Challenge sent' : 'Match on' };
   }
 
-  return { create, respond, cancel, setTeam, view, forClub, finished, reopened, card, kindOf };
+  return { create, respond, cancel, setTeam, view, forClub, finished, reopened, card, kindOf, expire: () => expire(db.query) };
 }
 
 module.exports = { createClubChallenges };

@@ -975,11 +975,56 @@ ALTER TABLE matches ADD COLUMN IF NOT EXISTS rally_times JSONB;
 ALTER TABLE rubbers ADD COLUMN IF NOT EXISTS rally_times JSONB;
 ALTER TABLE challenges ADD COLUMN IF NOT EXISTS rally_times JSONB;
 ALTER TABLE group_games ADD COLUMN IF NOT EXISTS rally_times JSONB;
+-- v49: messaging (email now; WhatsApp and SMS once switched on, see
+-- server/messaging.js), phone sign-in codes, scheduled jobs, and where
+-- people and tournaments come from (users.source: the first touch).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_opt_in_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS source JSONB;
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS source JSONB;
+ALTER TABLE sign_in_links ADD COLUMN IF NOT EXISTS source JSONB;
+CREATE UNIQUE INDEX IF NOT EXISTS users_phone_verified ON users (phone) WHERE phone_verified_at IS NOT NULL;
+CREATE TABLE IF NOT EXISTS otp_codes (
+  id          SERIAL PRIMARY KEY,
+  target      TEXT NOT NULL,                   -- a phone (E.164)
+  purpose     TEXT NOT NULL,                   -- login | reset | verify
+  code_hash   TEXT NOT NULL,
+  ip          TEXT,
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  used_at     TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS otp_codes_target ON otp_codes (target, created_at);
+CREATE TABLE IF NOT EXISTS message_log (
+  id          SERIAL PRIMARY KEY,
+  user_id     INTEGER,
+  channel     TEXT NOT NULL,                   -- email | whatsapp | sms
+  template    TEXT NOT NULL,
+  provider    TEXT,
+  recipient   TEXT,
+  provider_id TEXT,
+  status      TEXT NOT NULL,                   -- sent | failed | skipped
+  error       TEXT,
+  cost_paise  INTEGER NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS message_log_day ON message_log (channel, created_at);
+CREATE TABLE IF NOT EXISTS cron_runs (
+  id          SERIAL PRIMARY KEY,
+  job         TEXT NOT NULL,
+  started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  ok          BOOLEAN,
+  detail      JSONB
+);
+CREATE INDEX IF NOT EXISTS cron_runs_job ON cron_runs (job, started_at);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 48;
+const SCHEMA_VERSION = 49;
 
 async function migrate(db) {
   try {

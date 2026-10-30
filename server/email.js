@@ -304,4 +304,21 @@ function noticeEmail({ title, body, button = 'Open Tonament', url, unsubscribeUr
   };
 }
 
-module.exports = { noticeEmail, referralEarnedEmail, createMailer, passwordResetEmail, signInLinkEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };
+// The admins' Monday summary: rows of [label, this week, last week].
+function adminWeeklyEmail({ rows, notes = [], url }) {
+  const cell = `font:400 14px ${FONT};color:${NAVY};padding:6px 0;border-bottom:1px solid #E5E7EB`;
+  const num = `${cell};text-align:right;font-weight:700`;
+  const table = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+<tr><td style="${cell};color:${SLATE}"></td><td style="${num};color:${SLATE};font-weight:600">This week</td><td style="${num};color:${SLATE};font-weight:600">Last week</td></tr>
+${rows.map(([label, now, before]) => `<tr><td style="${cell}">${esc(label)}</td><td style="${num}">${esc(String(now))}</td><td style="${num};color:${SLATE};font-weight:400">${esc(String(before))}</td></tr>`).join('\n')}
+</table>`;
+  const short = rows.slice(0, 3).map(([label, now, before]) => `${label} ${now} (${before})`).join(', ');
+  return {
+    subject: `Tonament this week: ${short}`,
+    html: layout({ heading: 'Tonament this week', body: [table, ...notes.map(esc)], button: 'Open the funnel', url }),
+    text: `Tonament this week (last week in brackets)\n\n${rows.map(([label, now, before]) => `${label}: ${now} (${before})`).join('\n')}${notes.length ? `\n\n${notes.join('\n')}` : ''}\n\n${url}`,
+    short,
+  };
+}
+
+module.exports = { adminWeeklyEmail, noticeEmail, referralEarnedEmail, createMailer, passwordResetEmail, signInLinkEmail, inviteEmail, receiptEmail, orgReceiptEmail, entryReceiptEmail, waitingEmail, feeReceivedEmail, feeMissingEmail, partnerEmail };

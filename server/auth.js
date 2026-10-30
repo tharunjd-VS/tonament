@@ -7,6 +7,8 @@ const crypto = require('node:crypto');
 const { promisify } = require('node:util');
 const { HttpError } = require('./errors');
 const { passwordResetEmail, signInLinkEmail } = require('./email');
+const { normalizePhone, maskPhone } = require('./messaging');
+const { cleanSource } = require('./sources');
 
 const scrypt = promisify(crypto.scrypt);
 const COOKIE = 'tn_session';
@@ -17,6 +19,11 @@ const MAX_FAILED_LOGINS = 10;
 const LOCK_MINUTES = 15;
 const SCRYPT = { N: 16384, r: 8, p: 1 };
 const RESET_MINUTES = 60;
+// Codes by WhatsApp or SMS (once one is switched on): 6 digits, 10 minutes,
+// 5 tries; 3 codes a number per 10 minutes, 10 an address per hour.
+const OTP_MINUTES = 10;
+const OTP_TRIES = 5;
+const OTP_PURPOSES = ['login', 'reset', 'verify'];
 
 const fail = (status, message) => {
   throw new HttpError(status, message);
@@ -77,7 +84,7 @@ function checkPassword(password) {
   if (password.length > 200) fail(400, 'Password is too long');
 }
 
-function createAuth(db, { mailer, onSignup = null } = {}) {
+function createAuth(db, { mailer, messaging = null, onSignup = null } = {}) {
   // onSignup(q, user, ref): a new account (referrals.attach), in the same transaction.
   const joined = (q, row, ref) => (onSignup && ref ? onSignup(q, row, String(ref).slice(0, 40)) : null);
   function sessionCookie(req, token, maxAgeSeconds) {
@@ -105,7 +112,7 @@ function createAuth(db, { mailer, onSignup = null } = {}) {
     const hash = await hashPassword(password);
     try {
       row = await db.tx(async (q) => {
-        const [created] = await q('INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING *', [email, name, hash]);
+        const [created] = await q('INSERT INTO users (email, name, password_hash, source) VALUES ($1, $2, $3, $4::jsonb) RETURNING *', [email, name, hash, JSON.stringify(cleanSource(input.source, input.ref))]);
         await joined(q, created, input.ref);
         return created;
       });
@@ -175,8 +182,8 @@ function createAuth(db, { mailer, onSignup = null } = {}) {
     const poll = crypto.randomBytes(24).toString('base64url');
     const ref = typeof input.ref === 'string' && /^[a-z0-9]{4,24}$/.test(input.ref) ? input.ref : null;
     await db.query(
-      `INSERT INTO sign_in_links (id, email, next, expires_at, poll_hash, ref) VALUES ($1, $2, $3, now() + interval '${LINK_MINUTES} minutes', $4, $5)`,
-      [tokenHash(token), email, next, tokenHash(poll), ref],
+      `INSERT INTO sign_in_links (id, email, next, expires_at, poll_hash, ref, source) VALUES ($1, $2, $3, now() + interval '${LINK_MINUTES} minutes', $4, $5, $6::jsonb)`,
+      [tokenHash(token), email, next, tokenHash(poll), ref, input.source && typeof input.source === 'object' ? JSON.stringify(input.source) : null],
     );
     // The token stays after the #, so it's never sent to the server or logged.
     const url = `${baseUrl}/#/link?token=${token}&code=${code}`;
@@ -224,8 +231,9 @@ function createAuth(db, { mailer, onSignup = null } = {}) {
         if (!name) return { needsName: true, email: link.email };
         if (name.length > 60) fail(400, 'Enter your name (up to 60 characters)');
         // No password yet ("link" never matches one); they can set one with "Forgot password".
-        [row] = await q('INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING *', [link.email, name, 'link']);
-        await joined(q, row, input.ref || link.ref);
+        const ref = input.ref || link.ref;
+        [row] = await q('INSERT INTO users (email, name, password_hash, source) VALUES ($1, $2, $3, $4::jsonb) RETURNING *', [link.email, name, 'link', JSON.stringify(cleanSource(link.source || input.source, ref))]);
+        await joined(q, row, ref);
       }
       await q('UPDATE sign_in_links SET used_at = COALESCE(used_at, now()), uses = uses + 1, user_id = $2 WHERE id = $1', [link.id, row.id]);
       await q('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1', [row.id]);
@@ -301,6 +309,110 @@ function createAuth(db, { mailer, onSignup = null } = {}) {
       [tokenHash(token)],
     );
     return row ? userView(row) : null;
+  }
+
+
+  // ---------- codes by WhatsApp or SMS (off until a channel is switched on)
+
+  const ipOf = (req) => String(req?.headers?.['x-forwarded-for'] || req?.socket?.remoteAddress || '').split(',')[0].trim().slice(0, 64) || null;
+  const otpHash = (target, purpose, code) => tokenHash(`${target}:${purpose}:${code}`);
+  function phoneReady() {
+    if (!messaging?.phoneEnabled()) fail(503, 'Phone sign-in isn\'t available yet — use your email');
+  }
+
+  // Sends a code to a phone. login and reset: only to a confirmed number, but
+  // the answer is the same either way (so it can't find out whose number is
+  // whose). verify: the signed-in person confirming their number.
+  async function requestOtp(req, input = {}, actor = null) {
+    phoneReady();
+    const purpose = OTP_PURPOSES.includes(input.purpose) ? input.purpose : 'login';
+    const phone = normalizePhone(input.phone);
+    if (!phone) fail(400, 'Enter a mobile number, like 98765 43210');
+    if (purpose === 'verify' && !actor?.user) fail(401, 'Sign in first');
+    const ip = ipOf(req);
+    const [{ recent, fromIp }] = await db.query(
+      `SELECT COUNT(*) FILTER (WHERE target = $1 AND created_at > now() - interval '10 minutes')::int AS recent,
+              COUNT(*) FILTER (WHERE ip = $2 AND created_at > now() - interval '1 hour')::int AS "fromIp"
+       FROM otp_codes WHERE (target = $1 OR ip = $2) AND created_at > now() - interval '1 hour'`,
+      [phone, ip],
+    );
+    if (recent >= 3 || (ip && fromIp >= 10)) fail(429, 'Too many codes — wait a few minutes and try again');
+    const sent = { sent: true, to: maskPhone(phone), minutes: OTP_MINUTES };
+    if (purpose !== 'verify') {
+      const [owner] = await db.query('SELECT id FROM users WHERE phone = $1 AND phone_verified_at IS NOT NULL AND disabled_at IS NULL', [phone]);
+      if (!owner) {
+        // Recorded (with a hash no code matches) so it counts toward the limits.
+        await db.query(`INSERT INTO otp_codes (target, purpose, code_hash, ip, expires_at, used_at) VALUES ($1, $2, '-', $3, now(), now())`, [phone, purpose, ip]);
+        return sent;
+      }
+    } else {
+      const [taken] = await db.query('SELECT 1 FROM users WHERE phone = $1 AND phone_verified_at IS NOT NULL AND id <> $2', [phone, actor.user.id]);
+      if (taken) fail(409, 'That number is already on another account');
+    }
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    await db.query(
+      `INSERT INTO otp_codes (target, purpose, code_hash, ip, expires_at) VALUES ($1, $2, $3, $4, now() + interval '${OTP_MINUTES} minutes')`,
+      [phone, purpose, otpHash(phone, purpose, code), ip],
+    );
+    const out = await messaging.send(db.query, {
+      user: actor?.user?.id ?? null, to: { phone }, template: `otp.${purpose}`, data: { code, minutes: OTP_MINUTES },
+      channels: input.channel === 'sms' ? ['sms', 'whatsapp'] : ['whatsapp', 'sms'], first: true,
+    });
+    if (!out.some((x) => x.status === 'sent')) fail(502, 'Couldn\'t send the code — try again in a minute');
+    return { ...sent, by: out.find((x) => x.status === 'sent').channel };
+  }
+
+  // Checks a code. login: signs in. reset: a one-time reset link's token.
+  // verify: the number is confirmed on the signed-in account (and, if they
+  // ticked it, WhatsApp messages are turned on).
+  async function verifyOtp(req, input = {}, actor = null) {
+    phoneReady();
+    const purpose = OTP_PURPOSES.includes(input.purpose) ? input.purpose : 'login';
+    const phone = normalizePhone(input.phone);
+    const code = String(input.code || '').replace(/\D/g, '');
+    if (!phone || code.length !== 6) fail(400, 'Enter the 6-digit code');
+    if (purpose === 'verify' && !actor?.user) fail(401, 'Sign in first');
+    const ok = await db.tx(async (q) => {
+      const [row] = await q(
+        `SELECT * FROM otp_codes WHERE target = $1 AND purpose = $2 AND used_at IS NULL AND expires_at > now() AND attempts < ${OTP_TRIES}
+         ORDER BY id DESC LIMIT 1 FOR UPDATE`, [phone, purpose]);
+      if (!row) return false;
+      const match = crypto.timingSafeEqual(Buffer.from(row.code_hash), Buffer.from(otpHash(phone, purpose, code)));
+      await q(`UPDATE otp_codes SET attempts = attempts + 1${match ? ', used_at = now()' : ''} WHERE id = $1`, [row.id]);
+      return match;
+    });
+    if (!ok) fail(400, 'That code isn\'t right, or it has expired — ask for a new one');
+    if (purpose === 'verify') {
+      await db.query(
+        `UPDATE users SET phone = $2, phone_verified_at = now(), whatsapp_opt_in_at = CASE WHEN $3 THEN COALESCE(whatsapp_opt_in_at, now()) ELSE whatsapp_opt_in_at END WHERE id = $1`,
+        [actor.user.id, phone, Boolean(input.whatsapp)],
+      );
+      return { phone: maskPhone(phone), whatsapp: Boolean(input.whatsapp) };
+    }
+    const [row] = await db.query('SELECT * FROM users WHERE phone = $1 AND phone_verified_at IS NOT NULL', [phone]);
+    if (!row) fail(400, 'That code isn\'t right, or it has expired — ask for a new one');
+    if (row.disabled_at) fail(403, 'This account is disabled. Contact support if you think this is a mistake.');
+    if (purpose === 'reset') {
+      const token = crypto.randomBytes(32).toString('base64url');
+      await db.query(`INSERT INTO password_resets (id, user_id, expires_at) VALUES ($1, $2, now() + interval '${RESET_MINUTES} minutes')`, [tokenHash(token), row.id]);
+      return { resetToken: token };
+    }
+    await db.query('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1', [row.id]);
+    return { user: userView(row), cookie: await startSession(req, row.id) };
+  }
+
+  // The signed-in person's number and WhatsApp consent.
+  async function phoneSettings(actor, input = null) {
+    if (!actor?.user) fail(401, 'Sign in first');
+    if (input && 'whatsapp' in input) {
+      await db.query(`UPDATE users SET whatsapp_opt_in_at = ${input.whatsapp ? 'COALESCE(whatsapp_opt_in_at, now())' : 'NULL'} WHERE id = $1 AND phone_verified_at IS NOT NULL`, [actor.user.id]);
+    }
+    if (input && input.remove) await db.query('UPDATE users SET phone = NULL, phone_verified_at = NULL, whatsapp_opt_in_at = NULL WHERE id = $1', [actor.user.id]);
+    const [u] = await db.query('SELECT phone, phone_verified_at, whatsapp_opt_in_at FROM users WHERE id = $1', [actor.user.id]);
+    return {
+      available: Boolean(messaging?.phoneEnabled()), channels: messaging ? messaging.channels() : {},
+      phone: u.phone_verified_at ? maskPhone(u.phone) : null, whatsapp: Boolean(u.whatsapp_opt_in_at),
+    };
   }
 
   // ---------- site admin: users
@@ -382,7 +494,7 @@ function createAuth(db, { mailer, onSignup = null } = {}) {
     return { ok: true };
   }
 
-  return { signup, login, logout, requestLink, useLink, pollLink, forgotPassword, resetPassword, userFromRequest, listUsers, userById, setAdmin, setDisabled, adminResetLink, deleteUser };
+  return { signup, login, logout, requestLink, useLink, pollLink, requestOtp, verifyOtp, phoneSettings, forgotPassword, resetPassword, userFromRequest, listUsers, userById, setAdmin, setDisabled, adminResetLink, deleteUser };
 }
 
 module.exports = { createAuth, normalizeEmail, validEmail, hashPassword, verifyPassword, parseCookies };

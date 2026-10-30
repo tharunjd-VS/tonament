@@ -4,12 +4,13 @@
 // ones that need an answer. Each kind can be turned off per channel
 // (users.notify_prefs). Push needs VAPID keys in the environment:
 // VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY (and VAPID_SUBJECT, a mailto: link);
-// without them there's no push, and everything else still works.
+// without them there's no push, and everything else still works. Email (and
+// WhatsApp, once it's switched on) go through server/messaging.js.
 
 const crypto = require('node:crypto');
-const { noticeEmail } = require('./email');
 
-// in-app is always on; push on unless turned off; email only where marked.
+// in-app is always on; push on unless turned off; email only where marked;
+// WhatsApp only when someone turns it on (and has opted in to WhatsApp).
 const KINDS = {
   comment: { label: 'Comments on your posts', email: false },
   kudos: { label: 'Kudos', email: false },
@@ -30,7 +31,7 @@ const KINDS = {
 const PAGE = 40;
 const DELIVERY_MS = 4000;
 
-function createNotify({ db, fail, mailer = null, baseUrl = 'https://tonament.com' }) {
+function createNotify({ db, fail, messaging = null, baseUrl = 'https://tonament.com' }) {
   const keys = () => (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
     ? { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY, subject: process.env.VAPID_SUBJECT || 'mailto:support@tonament.com' }
     : null);
@@ -38,6 +39,7 @@ function createNotify({ db, fail, mailer = null, baseUrl = 'https://tonament.com
   const wants = (prefs, kind, channel) => {
     const p = (prefs || {})[kind] || {};
     if (channel === 'email') return p.email ?? KINDS[kind].email;
+    if (channel === 'whatsapp') return p.whatsapp === true;
     return p[channel] !== false;
   };
 
@@ -68,7 +70,7 @@ function createNotify({ db, fail, mailer = null, baseUrl = 'https://tonament.com
 
   // Push and email, briefly (a slow push service never holds things up).
   async function deliver(q, ids, n) {
-    const people = await q('SELECT id, email, notify_prefs, notify_token FROM users WHERE id = ANY($1::int[]) AND disabled_at IS NULL', [ids]);
+    const people = await q('SELECT id, email, phone, phone_verified_at, whatsapp_opt_in_at, notify_prefs, notify_token FROM users WHERE id = ANY($1::int[]) AND disabled_at IS NULL', [ids]);
     const jobs = [];
     const k = keys();
     if (k) {
@@ -87,12 +89,16 @@ function createNotify({ db, fail, mailer = null, baseUrl = 'https://tonament.com
         }
       }
     }
-    if (mailer && mailer.enabled) {
-      for (const p of people.filter((x) => wants(x.notify_prefs, n.kind, 'email'))) {
+    const email = messaging?.enabled('email');
+    const whatsapp = messaging?.enabled('whatsapp');
+    if (email || whatsapp) {
+      const url = n.url.startsWith('http') ? n.url : baseUrl + n.url;
+      for (const p of people) {
+        const channels = [email && wants(p.notify_prefs, n.kind, 'email') && 'email', whatsapp && wants(p.notify_prefs, n.kind, 'whatsapp') && 'whatsapp'].filter(Boolean);
+        if (!channels.length) continue;
         const token = p.notify_token || await tokenFor(q, p.id);
-        const url = n.url.startsWith('http') ? n.url : baseUrl + n.url;
-        jobs.push(mailer.send({ to: p.email, ...noticeEmail({ title: n.title, body: n.body, url, unsubscribeUrl: `${baseUrl}/api/notifications/unsubscribe?t=${token}&k=${n.kind}` }) })
-          .catch((err) => console.error('Notification email:', err.message)));
+        const unsubscribeUrl = `${baseUrl}/api/notifications/unsubscribe?t=${token}&k=${n.kind}`;
+        jobs.push(messaging.send(q, { user: p, template: 'notice', channels, data: { title: n.title, body: n.body, url, unsubscribeUrl } }));
       }
     }
     if (!jobs.length) return;
@@ -134,17 +140,23 @@ function createNotify({ db, fail, mailer = null, baseUrl = 'https://tonament.com
 
   async function settings(actor) {
     const me = needUser(actor);
-    const [u] = await db.query('SELECT notify_prefs FROM users WHERE id = $1', [me.id]);
+    const [u] = await db.query('SELECT notify_prefs, phone_verified_at, whatsapp_opt_in_at FROM users WHERE id = $1', [me.id]);
     const [{ n }] = await db.query('SELECT COUNT(*)::int AS n FROM push_subscriptions WHERE user_id = $1', [me.id]);
     return {
       push: { available: Boolean(keys()), publicKey: keys()?.publicKey || null, devices: n },
-      email: Boolean(mailer && mailer.enabled),
-      kinds: Object.entries(KINDS).map(([kind, k]) => ({ kind, label: k.label, push: wants(u.notify_prefs, kind, 'push'), email: wants(u.notify_prefs, kind, 'email') })),
+      email: Boolean(messaging?.enabled('email')),
+      // WhatsApp: shown once it's switched on; it needs a confirmed number and an opt-in.
+      whatsapp: messaging?.enabled('whatsapp') ? { phone: Boolean(u.phone_verified_at), optedIn: Boolean(u.whatsapp_opt_in_at) } : null,
+      kinds: Object.entries(KINDS).map(([kind, k]) => ({
+        kind, label: k.label, push: wants(u.notify_prefs, kind, 'push'), email: wants(u.notify_prefs, kind, 'email'),
+        ...(messaging?.enabled('whatsapp') && { whatsapp: wants(u.notify_prefs, kind, 'whatsapp') }),
+      })),
     };
   }
   async function setPref(actor, { kind, channel, on }) {
     const me = needUser(actor);
-    if (!KINDS[kind] || !['push', 'email'].includes(channel)) fail(400, 'Unknown setting');
+    if (!KINDS[kind] || !['push', 'email', 'whatsapp'].includes(channel)) fail(400, 'Unknown setting');
+    if (channel === 'whatsapp' && !messaging?.enabled('whatsapp')) fail(400, 'WhatsApp isn\'t available yet');
     await db.query(
       `UPDATE users SET notify_prefs = jsonb_set(notify_prefs, $2::text[], $3::jsonb, true) WHERE id = $1`,
       [me.id, `{${kind}}`, JSON.stringify({ ...(await prefOf(me.id, kind)), [channel]: Boolean(on) })],

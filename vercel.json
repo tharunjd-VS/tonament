@@ -6,6 +6,16 @@
   "regions": [
     "sin1"
   ],
+  "crons": [
+    {
+      "path": "/api/cron/hourly",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/weekly",
+      "schedule": "31 3 * * 1"
+    }
+  ],
   "rewrites": [
     {
       "source": "/t/:path*",

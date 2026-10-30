@@ -19,6 +19,8 @@ const { createSocial } = require('./social');
 const { createClubs } = require('./clubs');
 const { createCards } = require('./cards');
 const { createNotify } = require('./notify');
+const { createMessaging } = require('./messaging');
+const { sourceLabel } = require('./sources');
 const { createChallenges } = require('./challenges');
 const { createLadders } = require('./ladders');
 const { createClubChallenges } = require('./club-challenges');
@@ -226,7 +228,7 @@ const nextSlotColumn = (m) => (m.slot % 2 ? 'b_id' : 'a_id');
 // Every write runs in a transaction that first locks the tournament row, so
 // concurrent requests for one tournament (two umpires, retries, several
 // serverless instances) are applied one at a time.
-function createService(db, { mailer, fetchImpl } = {}) {
+function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db, mailer, fetchImpl }) } = {}) {
   // Site-wide settings the admin changes, and academy / venue pages (set up at the end).
   const settings = createSettings(db);
   let orgs;
@@ -1305,9 +1307,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
     let gift = null;
     await db.tx(async (q) => {
       await q(
-        `INSERT INTO tournaments (id, name, sport, format, config, admin_key, scorer_key, visibility)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
-        [id, name, sport.id, format, JSON.stringify(config), adminKey, scorerKey, visibility],
+        `INSERT INTO tournaments (id, name, sport, format, config, admin_key, scorer_key, visibility, source)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, (SELECT source FROM users WHERE id = $9))`,
+        [id, name, sport.id, format, JSON.stringify(config), adminKey, scorerKey, visibility, actor.user.id],
       );
       await saveDetails(q, { id }, details);
       for (const [i, e] of events.entries()) await insertEvent(q, id, i, e, eventConfigOf(config));
@@ -3418,6 +3420,64 @@ function createService(db, { mailer, fetchImpl } = {}) {
     return { users, tournaments, entries, matches, revenue, bySport, byPlan, byStatus, byVisibility, days, log, currency: billingConfig().currency };
   }
 
+
+  // The funnel: organisers who signed up in the last `days` (a cohort) and how
+  // far they got; what everyone did in that time; where sign-ups came from;
+  // and what messages cost. Club v club and season tournaments are left out
+  // (the app makes those).
+  async function adminFunnel(actor, { days = 30 } = {}) {
+    requireSiteAdmin(actor);
+    const d = [7, 30, 90].includes(Number(days)) ? Number(days) : 30;
+    const since = `now() - interval '${d} days'`;
+    const own = `SELECT t.*, u.id AS uid FROM tournaments t JOIN members m ON m.tournament_id = t.id AND m.role = 'owner' JOIN users u ON lower(u.email) = lower(m.email)
+      WHERE t.club_challenge_id IS NULL AND t.season_id IS NULL`;
+    const [[cohort], [activity], sources, organisers, messages] = await Promise.all([
+      db.query(`WITH c AS (SELECT id, email FROM users WHERE NOT guest AND created_at > ${since}),
+          o AS (${own}),
+          per AS (SELECT c.id, COUNT(o.id)::int AS made, COUNT(o.id) FILTER (WHERE o.status <> 'setup')::int AS started,
+                    COUNT(o.id) FILTER (WHERE o.status = 'completed')::int AS finished,
+                    EXISTS (SELECT 1 FROM payments p WHERE lower(p.user_email) = lower(c.email) AND p.status IN ('paid', 'refunded') AND p.kind = 'plan') AS paid
+                  FROM c LEFT JOIN o ON o.uid = c.id GROUP BY c.id, c.email)
+        SELECT COUNT(*)::int AS signed, COUNT(*) FILTER (WHERE made > 0)::int AS created, COUNT(*) FILTER (WHERE started > 0)::int AS started,
+               COUNT(*) FILTER (WHERE finished > 0)::int AS finished, COUNT(*) FILTER (WHERE made > 1)::int AS repeat, COUNT(*) FILTER (WHERE paid)::int AS paid
+        FROM per`),
+      db.query(`SELECT
+          (SELECT COUNT(*)::int FROM users WHERE NOT guest AND created_at > ${since}) AS signups,
+          (SELECT COUNT(*)::int FROM tournaments WHERE club_challenge_id IS NULL AND season_id IS NULL AND created_at > ${since}) AS tournaments,
+          (SELECT COUNT(DISTINCT lower(COALESCE(ep.email, e.name)))::int FROM entries e JOIN tournaments t ON t.id = e.tournament_id
+             LEFT JOIN entry_players ep ON ep.entry_id = e.id WHERE e.created_at > ${since}) AS players,
+          (SELECT COUNT(*)::int FROM orgs WHERE created_at > ${since}) AS clubs,
+          (SELECT COUNT(*)::int FROM club_members WHERE status = 'active' AND joined_at > ${since}) AS members,
+          (SELECT COUNT(*)::int FROM groups WHERE created_at > ${since}) AS groups,
+          (SELECT COUNT(*)::int FROM group_games WHERE started_at > ${since}) AS games,
+          (SELECT COUNT(*)::int FROM challenges WHERE created_at > ${since}) AS challenges,
+          (SELECT COUNT(*)::int FROM runs WHERE created_at > ${since}) AS runs,
+          (SELECT COUNT(*)::int FROM races WHERE created_at > ${since}) AS races,
+          (SELECT COUNT(*)::int FROM meets WHERE created_at > ${since}) AS meets`),
+      db.query(`SELECT COALESCE(source->>'class', 'unknown') AS class, COUNT(*)::int AS n FROM users WHERE NOT guest AND created_at > ${since} GROUP BY 1 ORDER BY n DESC, class`),
+      db.query(`SELECT source, COUNT(*)::int AS n FROM tournaments WHERE club_challenge_id IS NULL AND season_id IS NULL AND created_at > ${since} GROUP BY source ORDER BY n DESC LIMIT 200`),
+      db.query(`SELECT channel, COUNT(*) FILTER (WHERE status = 'sent')::int AS sent, COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+                  COALESCE(SUM(cost_paise) FILTER (WHERE status = 'sent'), 0)::int AS cost FROM message_log WHERE created_at > ${since} GROUP BY channel ORDER BY channel`),
+    ]);
+    // Tournaments by where their organiser came from, by label ("whatsapp", "google.com").
+    const by = new Map();
+    for (const r of organisers) {
+      const label = sourceLabel(r.source);
+      const x = by.get(label) || { label, class: r.source?.class || 'unknown', n: 0 };
+      x.n += r.n;
+      by.set(label, x);
+    }
+    const stages = [
+      ['signed', 'Signed up'], ['created', 'Created a tournament'], ['started', 'Started one'],
+      ['finished', 'Finished one'], ['repeat', 'Ran a second'], ['paid', 'Paid for a plan'],
+    ].map(([key, label]) => ({ key, label, n: cohort[key] }));
+    return {
+      days: d, stages, activity, sources,
+      tournamentSources: [...by.values()].sort((a, b) => b.n - a.n).slice(0, 12),
+      messages, channels: messaging.channels(),
+    };
+  }
+
   // Every tournament, private ones too, 50 at a time.
   async function adminTournaments(actor, filters = {}) {
     requireSiteAdmin(actor);
@@ -3707,7 +3767,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     tournamentAccess: (q, id, actor) => lockWith(q, id, actor, 'manage'),
   });
 
-  const notify = createNotify({ db, fail, mailer: mailer?.enabled ? mailer : null, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, '') });
+  const notify = createNotify({ db, fail, messaging, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, '') });
   social = createSocial({ db, fail, text, mediaUrl, notify });
   const challenges = createChallenges({ db, fail, text, social, notify });
   const groups = createGroups({ db, fail, text, orgs, social, notify, ratings: challenges });
@@ -3931,6 +3991,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
     setEntryFee,
     adminPayments,
     adminStats,
+    adminFunnel,
+    messaging,
     adminTournaments,
     adminUserDetail,
     paymentsCsv,

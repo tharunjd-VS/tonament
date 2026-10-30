@@ -122,7 +122,7 @@ npm run dev        # restarts on file changes
 npm test
 ```
 
-To test emails locally without sending anything, run `EMAIL_LOG=1 npm start`; emails are printed in the terminal instead. You don't need to install a database to run it locally. Without `DATABASE_URL`, the app uses an embedded Postgres ([PGlite](https://pglite.dev)) and stores its files in `data/pglite`; delete that folder to start fresh. To use a real Postgres server instead, set `DATABASE_URL=postgres://…`. To run the tests against a real server, set `TEST_DATABASE_URL`.
+To test emails locally without sending anything, run `EMAIL_LOG=1 npm start`; emails are printed in the terminal instead (`MESSAGING_LOG=1` does the same for WhatsApp and SMS). You don't need to install a database to run it locally. Without `DATABASE_URL`, the app uses an embedded Postgres ([PGlite](https://pglite.dev)) and stores its files in `data/pglite`; delete that folder to start fresh. To use a real Postgres server instead, set `DATABASE_URL=postgres://…`. To run the tests against a real server, set `TEST_DATABASE_URL`.
 
 ## Deploying to Vercel
 
@@ -136,7 +136,14 @@ To test emails locally without sending anything, run `EMAIL_LOG=1 npm start`; em
    - `APP_URL`: `https://tonament.com` (the base for links in emails)
 
    Without these the app works normally; it just doesn't send email.
-6. **Add the domain.** Under *Settings → Domains*, add `tonament.com` and `www.tonament.com`, then follow the DNS instructions Vercel shows.
+6. **Turn on the scheduled jobs.** Add `CRON_SECRET`: any long random string you make yourself (for example `openssl rand -hex 32`). Vercel Cron (set in `vercel.json`) sends it to `/api/cron/hourly` every hour (it settles challenges, ladder forfeits, club challenges and goal badges) and `/api/cron/weekly` on Mondays at 09:01 IST (the admins' summary email). Each run is recorded and shown under *Admin → Overview → Scheduled jobs*, where a site admin can also run one by hand.
+7. **Later: WhatsApp and SMS.** Messages go through `server/messaging.js`, which already handles email. WhatsApp and SMS stay off (and nothing about them shows in the app) until their settings are added:
+   - WhatsApp with Meta's Cloud API: `WHATSAPP_PROVIDER=meta`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_ID` (or `WHATSAPP_PROVIDER=gupshup` with `WHATSAPP_TOKEN`, `WHATSAPP_SENDER`, `WHATSAPP_APP`). Get the templates named in `server/message-templates.js` approved in Meta's WhatsApp Manager first (`tonament_otp` as an Authentication template).
+   - SMS with MSG91: `SMS_PROVIDER=msg91`, `SMS_KEY`, `SMS_SENDER` and `SMS_TEMPLATES` (JSON mapping each template name, like `otp.login`, to its DLT template id); or Twilio: `SMS_PROVIDER=twilio`, `SMS_KEY` (`SID:token`), `SMS_SENDER`.
+   - `MESSAGING_DAILY_CAP` (default 500) limits WhatsApp and SMS messages per channel per day.
+
+   Once either is on, people can confirm their mobile on the Notifications page, sign in with a code, and choose WhatsApp per kind of notification (WhatsApp only after they opt in; SMS only for codes and reminders). Locally, `MESSAGING_LOG=1 npm start` turns both on in log-only mode: messages are printed in the terminal.
+8. **Add the domain.** Under *Settings → Domains*, add `tonament.com` and `www.tonament.com`, then follow the DNS instructions Vercel shows.
 
 How it works on Vercel:
 - `public/` is served as static files from Vercel's CDN.
@@ -168,6 +175,10 @@ server/
   service.js          tournament lifecycle and role checks: entries, draw, scoring, team
   auth.js             sign up / sign in, password hashing, sessions, password reset
   email.js            Resend sender and email templates (invites, resets, receipts)
+  messaging.js        messages by channel: email, WhatsApp, SMS (off until configured), logged and capped
+  message-templates.js  every message by name, in each channel's form
+  sources.js          where sign-ups come from (first touch: utm, shared links, referrer)
+  cron.js             scheduled jobs (/api/cron/*): hourly settling, the weekly admin email
   billing.js          Razorpay orders, signature checks, billing settings
   formats.js          re-exports public/formats.js: round-robin, snake groups, bracket seeding, standings
   pages.js            server-rendered pages: tournaments, sports, cities, clubs, players, rankings, blog
@@ -185,7 +196,7 @@ docs/BRAND.md         brand guidelines
 docs/BLOG.md          how to write a blog post
 scripts/brand/        logo generator and PNG renderer
 test/                 unit and integration tests
-vercel.json           Vercel config: static output and API rewrite
+vercel.json           Vercel config: static output, API rewrite and crons
 ```
 
 ### Sports roadmap

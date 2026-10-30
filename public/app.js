@@ -165,11 +165,13 @@
         if (e.name !== 'AbortError') toast('Couldn\'t make the image — try again', true);
       }
     };
+    // ?src= tells us which way a shared link came in (see firstTouch).
+    const via = (src) => { try { const u = new URL(url, location.origin); u.searchParams.set('src', src); return u.toString(); } catch { return url; } };
     actionSheet(title, [
-      { label: 'WhatsApp', hint: 'Send it to a chat or your group', onClick: () => window.open(`https://wa.me/?text=${encodeURIComponent(`${text}\n${url}`)}`, '_blank', 'noopener') },
+      { label: 'WhatsApp', hint: 'Send it to a chat or your group', onClick: () => window.open(`https://wa.me/?text=${encodeURIComponent(`${text}\n${via('wa')}`)}`, '_blank', 'noopener') },
       image ? { label: 'Instagram story', hint: 'A picture sized for stories', onClick: story } : null,
-      { label: 'Copy link', onClick: () => copy(url, 'Link copied') },
-      navigator.share ? { label: 'More…', hint: 'Other apps', onClick: () => navigator.share({ title, text, url }).catch(() => {}) } : null,
+      { label: 'Copy link', onClick: () => copy(via('copy'), 'Link copied') },
+      navigator.share ? { label: 'More…', hint: 'Other apps', onClick: () => navigator.share({ title, text, url: via('share') }).catch(() => {}) } : null,
     ]);
   }
   const pad2 = (n) => String(n).padStart(2, '0');
@@ -639,9 +641,10 @@
         S.route = { name: 'notifications' };
         S.inbox = null;
         render();
-        [S.inbox, S.notifySettings] = await Promise.all([
+        [S.inbox, S.notifySettings, S.phone] = await Promise.all([
           api('GET', '/notifications').catch(() => ({ items: [] })),
           api('GET', '/notifications/settings').catch(() => null),
+          api('GET', '/me/phone').catch(() => null),
         ]);
         render();
         // Seen: the count goes, the dots stay until the next visit.
@@ -5434,6 +5437,27 @@
     const code = new URLSearchParams(location.search).get('ref');
     if (code && REF_CODE.test(code)) try { localStorage.setItem(REF_KEY, JSON.stringify({ code, at: Date.now() })); } catch { /* this visit only */ }
   })();
+  // Where this browser first came from (kept 60 days, sent with sign-up):
+  // utm_ tags, ?src= on shared links, the referring site and the first page.
+  const TOUCH_KEY = 'tonament:touch';
+  function firstTouch() {
+    try {
+      const t = JSON.parse(localStorage.getItem(TOUCH_KEY) || 'null');
+      return t && Date.now() - Date.parse(t.at) < 60 * 86400000 ? t : null;
+    } catch { return null; }
+  }
+  (() => {
+    const p = new URLSearchParams(location.search);
+    const ref = document.referrer && !document.referrer.startsWith(location.origin) ? document.referrer : '';
+    const tagged = ['utm_source', 'utm_medium', 'utm_campaign', 'src'].some((k) => p.get(k));
+    // A tagged visit replaces an untagged first touch; otherwise the first one stays.
+    if (firstTouch() && !(tagged && !firstTouch().tagged)) return;
+    const touch = { at: new Date().toISOString(), landing: location.pathname.slice(0, 120), tagged };
+    for (const k of ['utm_source', 'utm_medium', 'utm_campaign']) if (p.get(k)) touch[k] = p.get(k).slice(0, 80);
+    if (p.get('src')) touch.s = p.get('src').slice(0, 20);
+    if (ref) touch.referrer = ref.slice(0, 200);
+    try { localStorage.setItem(TOUCH_KEY, JSON.stringify(touch)); } catch { /* this visit only */ }
+  })();
   async function loadInviter() {
     const code = savedRef();
     if (!code || S.me || S.invitedBy !== undefined) return;
@@ -5569,6 +5593,8 @@
       setTimeout(() => { navigate(next); });
       return loading();
     }
+    // A code to a confirmed mobile (once WhatsApp or SMS is switched on).
+    if (!signup && S.phoneEnabled && S.route.phone) return phoneSignIn(next);
     // Email me a link: no password, and this phone stays signed in.
     if (S.emailEnabled && !S.route.password) return linkCard(signup, next);
     const btn = h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, signup ? 'Create account' : 'Sign in');
@@ -5578,7 +5604,7 @@
         e.preventDefault();
         btn.disabled = true;
         try {
-          const body = { ...Object.fromEntries(new FormData(form)), ...(signup && savedRef() && { ref: savedRef() }) };
+          const body = { ...Object.fromEntries(new FormData(form)), ...(signup && savedRef() && { ref: savedRef() }), ...(signup && { source: firstTouch() }) };
           const { user } = await api('POST', signup ? '/auth/signup' : '/auth/login', body);
           S.me = user;
           if (signup) { clearRef(); await refreshMe(); }
@@ -5615,7 +5641,9 @@
       signup ? 'Already have an account? ' : 'New to Tonament? ',
       h('a', { href: `/${signup ? 'signin' : 'signup'}?next=${encodeURIComponent(next)}` }, signup ? 'Sign in' : 'Create an account')),
     S.emailEnabled ? h('p', { class: 'center small', style: 'margin:0' },
-      h('button', { type: 'button', class: 'link-btn', onclick: () => { S.route.password = false; render(); } }, 'Email me a sign-in link instead')) : null);
+      h('button', { type: 'button', class: 'link-btn', onclick: () => { S.route.password = false; render(); } }, 'Email me a sign-in link instead')) : null,
+    !signup && S.phoneEnabled ? h('p', { class: 'center small', style: 'margin:0' },
+      h('button', { type: 'button', class: 'link-btn', onclick: () => { S.route.phone = true; render(); } }, 'Get a code on my mobile instead')) : null);
     return form;
   }
 
@@ -5662,7 +5690,7 @@
     const send = async (address) => {
       btn.disabled = true;
       try {
-        const { code, poll } = await api('POST', '/auth/link', { email: address, next, ...(savedRef() && { ref: savedRef() }) });
+        const { code, poll } = await api('POST', '/auth/link', { email: address, next, ...(savedRef() && { ref: savedRef() }), source: firstTouch() });
         S.route.sent = { email: address, code };
         render();
         waitForLink(poll);
@@ -5693,15 +5721,50 @@
     field('Email', email),
     btn,
     usePassword,
+    !signup && S.phoneEnabled ? h('p', { class: 'center small', style: 'margin:0' },
+      h('button', { type: 'button', class: 'link-btn', onclick: () => { S.route.phone = true; render(); } }, 'Get a code on my mobile instead')) : null,
     h('p', { class: 'center small muted', style: 'margin:0' }, 'New here? The same link creates your free account.'));
     return form;
+  }
+
+  // Signing in with a code sent by WhatsApp or SMS to a number confirmed on the account.
+  function phoneSignIn(next) {
+    const d = S.route.otp || (S.route.otp = { phone: '', code: '', sent: null });
+    const go = (fn) => async (e) => { e.preventDefault(); try { await fn(); } catch (err) { toast(err.message, true); } render(); };
+    const back = h('p', { class: 'center small', style: 'margin:0' },
+      h('button', { type: 'button', class: 'link-btn', onclick: () => { S.route.phone = false; render(); } }, 'Use my email instead'));
+    if (!d.sent) {
+      return h('form', { class: 'card form auth-card', onsubmit: go(async () => { d.sent = await api('POST', '/auth/otp/request', { phone: d.phone, purpose: 'login' }); }) },
+        h('h1', {}, 'Sign in'),
+        h('p', { class: 'muted' }, 'We\'ll send a code to the mobile number on your account.'),
+        field('Mobile number', h('input', { name: 'phone', type: 'tel', required: true, autocomplete: 'tel', placeholder: '98765 43210', value: d.phone, oninput: (e) => { d.phone = e.target.value; } })),
+        h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Send me a code'),
+        back);
+    }
+    return h('form', {
+      class: 'card form auth-card',
+      onsubmit: go(async () => {
+        const { user } = await api('POST', '/auth/otp/verify', { phone: d.phone, code: d.code, purpose: 'login' });
+        S.me = user;
+        S.t = null;
+        await refreshMe();
+        toast(`Signed in as ${user.name}`);
+        navigate(next, { replace: true });
+      }),
+    },
+    h('h1', {}, 'Enter your code'),
+    h('p', { class: 'muted' }, `If ${d.sent.to} is on a Tonament account, a code is on its way. It's good for ${d.sent.minutes} minutes.`),
+    field('Code', h('input', { name: 'code', required: true, inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, value: d.code, oninput: (e) => { d.code = e.target.value; } })),
+    h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Sign in'),
+    h('p', { class: 'center small', style: 'margin:0' }, h('button', { type: 'button', class: 'link-btn', onclick: () => { d.sent = null; d.code = ''; render(); } }, 'Use another number')),
+    back);
   }
 
   // Opening the emailed link: signs in, or asks a new player's name first.
   async function useLink(name) {
     const r = S.route;
     try {
-      const res = await api('POST', '/auth/link/use', { token: r.token, ...(name && { name }), ...(savedRef() && { ref: savedRef() }) });
+      const res = await api('POST', '/auth/link/use', { token: r.token, ...(name && { name }), ...(savedRef() && { ref: savedRef() }), source: firstTouch() });
       if (res.needsName) {
         Object.assign(r, { state: 'name', email: res.email });
         render();
@@ -8599,7 +8662,43 @@
             h('small', { class: 'muted' }, ago(n.at))))))
         : empty('Nothing yet. Comments, kudos, new followers and results to confirm show up here.'),
       notifySettingsCard(),
+      phoneCard(),
     ];
+  }
+
+  // Your mobile number, for WhatsApp messages and signing in with a code.
+  // Hidden until WhatsApp or SMS is switched on for the site.
+  function phoneCard() {
+    const P = S.phone;
+    if (!P || !P.available) return null;
+    const refresh = async () => { [S.phone, S.notifySettings] = await Promise.all([api('GET', '/me/phone'), api('GET', '/notifications/settings')]); };
+    if (P.phone) {
+      return h('div', { class: 'card' }, h('h2', {}, 'Your mobile'),
+        h('p', {}, h('strong', {}, P.phone), h('small', { class: 'muted' }, ' · confirmed')),
+        P.channels.whatsapp ? h('label', { class: 'check-field' },
+          h('input', { type: 'checkbox', checked: P.whatsapp, onchange: (e) => act(async () => { await api('PATCH', '/me/phone', { whatsapp: e.target.checked }); await refresh(); }, e.target.checked ? 'WhatsApp messages on' : 'WhatsApp messages off') }),
+          h('span', {}, 'Send me messages on WhatsApp (pick which ones above)')) : null,
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-small btn-ghost', onclick: () => act(async () => { await api('PATCH', '/me/phone', { remove: true }); await refresh(); }, 'Number removed') }, 'Remove number')));
+    }
+    const draft = S.phoneDraft || (S.phoneDraft = { phone: '', code: '', whatsapp: true, sent: null });
+    const send = () => act(async () => { draft.sent = await api('POST', '/auth/otp/request', { phone: draft.phone, purpose: 'verify' }); }, null);
+    const verify = () => act(async () => {
+      await api('POST', '/auth/otp/verify', { phone: draft.phone, code: draft.code, purpose: 'verify', whatsapp: P.channels.whatsapp && draft.whatsapp });
+      S.phoneDraft = null;
+      await refresh();
+    }, 'Number confirmed ✓');
+    return h('div', { class: 'card' }, h('h2', {}, 'Your mobile'),
+      h('p', { class: 'muted small' }, 'Add your number to sign in with a code and, if you like, get messages on WhatsApp.'),
+      draft.sent
+        ? h('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); verify(); } },
+          h('label', {}, `The 6-digit code we sent to ${draft.sent.to}`,
+            h('input', { name: 'code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, value: draft.code, oninput: (e) => { draft.code = e.target.value; } })),
+          P.channels.whatsapp ? h('label', { class: 'check-field' }, h('input', { type: 'checkbox', checked: draft.whatsapp, onchange: (e) => { draft.whatsapp = e.target.checked; } }), h('span', {}, 'Also send me messages on WhatsApp')) : null,
+          h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Confirm'),
+            h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { draft.sent = null; render(); } }, 'Change number')))
+        : h('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); send(); } },
+          h('label', {}, 'Mobile number', h('input', { name: 'phone', type: 'tel', autocomplete: 'tel', placeholder: '98765 43210', value: draft.phone, oninput: (e) => { draft.phone = e.target.value; } })),
+          h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Send a code'))));
   }
 
   // Push on this phone, and which notifications come by push or email.
@@ -8641,11 +8740,13 @@
           S.pushHere ? h('button', { class: 'btn btn-small btn-ghost', onclick: pushOff }, 'Turn off') : h('button', { class: 'btn btn-small btn-primary', onclick: pushOn, disabled: S.pushHere === null }, 'Turn on'))
         : h('p', { class: 'muted small' }, st.push.available ? 'This browser can\'t show notifications. Add Tonament to your home screen to get them.' : 'You\'ll see everything here; phone notifications are coming soon.'),
       h('div', { class: 'table-wrap' }, h('table', { class: 'notify-prefs' },
-        h('thead', {}, h('tr', {}, h('th', {}, ''), st.push.available ? h('th', { class: 'num' }, 'Phone') : null, st.email ? h('th', { class: 'num' }, 'Email') : null)),
+        h('thead', {}, h('tr', {}, h('th', {}, ''), st.push.available ? h('th', { class: 'num' }, 'Phone') : null, st.email ? h('th', { class: 'num' }, 'Email') : null, st.whatsapp ? h('th', { class: 'num' }, 'WhatsApp') : null)),
         h('tbody', {}, st.kinds.map((k) => h('tr', {},
           h('td', {}, k.label),
           st.push.available ? h('td', { class: 'num' }, h('input', { type: 'checkbox', checked: k.push, 'aria-label': `${k.label} on your phone`, onchange: (e) => set(k.kind, 'push', e.target.checked) })) : null,
-          st.email ? h('td', { class: 'num' }, h('input', { type: 'checkbox', checked: k.email, 'aria-label': `${k.label} by email`, onchange: (e) => set(k.kind, 'email', e.target.checked) })) : null))))));
+          st.email ? h('td', { class: 'num' }, h('input', { type: 'checkbox', checked: k.email, 'aria-label': `${k.label} by email`, onchange: (e) => set(k.kind, 'email', e.target.checked) })) : null,
+          st.whatsapp ? h('td', { class: 'num' }, h('input', { type: 'checkbox', checked: k.whatsapp, disabled: !st.whatsapp.optedIn, 'aria-label': `${k.label} on WhatsApp`, onchange: (e) => set(k.kind, 'whatsapp', e.target.checked) })) : null)))),
+      st.whatsapp && !st.whatsapp.optedIn ? h('p', { class: 'muted small' }, 'To get messages on WhatsApp, confirm your mobile below and turn WhatsApp on.') : null));
   }
 
   // ---------- the feed
@@ -9244,7 +9345,10 @@
     const A = adminState();
     try {
       if (tab === 'overview') {
-        [A.stats, S.interest] = await Promise.all([api('GET', '/admin/stats'), api('GET', '/sports/interest').catch(() => null)]);
+        [A.stats, S.interest, A.funnel, A.cron] = await Promise.all([
+          api('GET', '/admin/stats'), api('GET', '/sports/interest').catch(() => null),
+          api('GET', `/admin/funnel?days=${A.funnelDays || 30}`).catch(() => null), api('GET', '/admin/cron').catch(() => null),
+        ]);
       } else if (tab === 'tournaments') {
         const T = A.tournaments;
         const r = await api('GET', `/admin/tournaments?${qs({ ...T.filters, offset: more ? T.list.length : 0 })}`);
@@ -9339,6 +9443,49 @@
         h('span', { class: 'num' }, r.n)))) : empty('Nothing yet.'));
   }
 
+  // The funnel: organisers who joined in the window and how far they got,
+  // where sign-ups came from, what was done, and what messages cost.
+  const SOURCE_CLASS = { referral: 'Invite links', shared: 'Shared links', campaign: 'Campaigns (utm)', social: 'Social apps', search: 'Search', web: 'Other sites', direct: 'Direct', unknown: 'Not recorded' };
+  function adminFunnel() {
+    const A = adminState();
+    const f = A.funnel;
+    if (!f) return null;
+    const pick = (d) => { A.funnelDays = d; api('GET', `/admin/funnel?days=${d}`).then((r) => { A.funnel = r; render(); }).catch((e) => toast(e.message, true)); };
+    const top = Math.max(1, f.stages[0].n);
+    const a = f.activity;
+    const jobs = A.cron ? A.cron.jobs : [];
+    const when = (at) => (at ? new Date(at).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : 'never');
+    return h('section', { class: 'funnel' },
+      h('div', { class: 'section-head' }, h('h2', {}, 'Funnel'),
+        choiceGroup({ name: 'funnel-days', label: 'Window', value: String(f.days), options: [7, 30, 90].map((d) => ({ value: String(d), label: `${d} days` })), onchange: (e) => pick(Number(e.target.value)) })),
+      h('div', { class: 'chart-grid' },
+        h('div', { class: 'card' }, h('h3', {}, 'Organisers who joined'),
+          h('ul', { class: 'hbars funnel-stages' }, f.stages.map((x, i) => h('li', {},
+            h('span', { class: 'hbar-label' }, x.label),
+            h('span', { class: 'hbar-track' }, h('span', { class: 'hbar', style: `width:${(x.n / top) * 100}%` })),
+            h('span', { class: 'num' }, x.n, i ? h('small', { class: 'muted' }, ` ${Math.round((x.n / top) * 100)}%`) : null)))),
+          h('p', { class: 'muted small' }, 'People who signed up in the window, and how far they have got since (% of those who signed up).')),
+        breakdown('Sign-ups by source', f.sources.map((r) => ({ key: r.class, n: r.n })), (k) => SOURCE_CLASS[k] || k),
+        breakdown('Tournaments by organiser\'s source', f.tournamentSources.map((r) => ({ key: r.label, n: r.n })))),
+      h('div', { class: 'stat-tiles' },
+        [['Sign-ups', a.signups], ['Tournaments', a.tournaments], ['Players entered', a.players], ['Clubs', a.clubs], ['Club joins', a.members],
+          ['Groups', a.groups], ['Group games', a.games], ['Challenges', a.challenges], ['Runs', a.runs], ['Races', a.races], ['Meets', a.meets]]
+          .map(([label, n]) => h('div', { class: 'stat' }, h('span', { class: 'stat-label' }, label), h('strong', {}, n)))),
+      h('div', { class: 'chart-grid' },
+        h('div', { class: 'card' }, h('h3', {}, 'Messages'),
+          h('ul', { class: 'plain-list' }, ['email', 'whatsapp', 'sms'].map((c) => {
+            const m = f.messages.find((x) => x.channel === c);
+            const label = { email: 'Email', whatsapp: 'WhatsApp', sms: 'SMS' }[c];
+            return h('li', {}, h('strong', {}, label), ' ',
+              f.channels[c] ? h('span', { class: 'muted' }, m ? `${m.sent} sent${m.failed ? ` · ${m.failed} failed` : ''}${m.cost ? ` · ${money(m.cost)}` : ''}` : 'none sent') : pill('setup', 'Off'));
+          }))),
+        h('div', { class: 'card' }, h('h3', {}, 'Scheduled jobs'),
+          A.cron && !A.cron.secret ? h('p', { class: 'muted small' }, 'Set CRON_SECRET in the Vercel project so these run on their own.') : null,
+          h('ul', { class: 'plain-list' }, jobs.map((j) => h('li', {}, h('span', {}, h('strong', {}, j.job), ' ',
+            h('span', { class: 'muted' }, `last run ${when(j.at)}`), j.at ? [' ', j.ok ? pill('done', 'OK') : pill('failed', 'Failed')] : null),
+            h('button', { class: 'btn btn-small btn-ghost', onclick: () => act(async () => { await api('POST', `/cron/${j.job}`, { force: true }); A.cron = await api('GET', '/admin/cron'); }, `${j.job} ran`) }, 'Run now')))))));
+  }
+
   const ACTION_TEXT = {
     'tournament.plan': (x) => `plan ${PLAN_LABELS[x.detail.from] || 'Free'} → ${PLAN_LABELS[x.detail.to] || 'Free'} · ${x.detail.name}`,
     'tournament.official': (x) => `marked official · ${x.detail.name}`,
@@ -9374,6 +9521,7 @@
         tile('Matches finished', st.matches.done, `${st.matches.points.toLocaleString()} points scored`),
         tile('Revenue this month', money(st.revenue.month), `${money(st.revenue.total)} all time`),
         tile('Refunded', money(st.revenue.refunded), `Plans ${money(st.revenue.plans)} · entry fees ${money(st.revenue.entries)}`)),
+      adminFunnel(),
       h('div', { class: 'chart-grid' },
         dayBars('Sign-ups', st.days, 'signups'),
         dayBars('Tournaments created', st.days, 'tournaments'),
@@ -9724,6 +9872,7 @@
     S.me = me.user;
     S.gift = me.gift || null;
     S.emailEnabled = Boolean(me.emailEnabled);
+    S.phoneEnabled = Boolean(me.phoneEnabled);
     route();
     loadInviter();
   });

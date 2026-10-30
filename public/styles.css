@@ -1766,3 +1766,14 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .landing-visuals .landing-visual.back { right: 150px; top: 40px; transform: rotate(-5deg); opacity: 0.92; }
 @media (max-width: 760px) { .landing-visuals { display: none; } }
 @media (min-width: 1200px) { .container { max-width: 1180px; } }
+
+/* ---------- admin: the funnel */
+.funnel { display: grid; gap: 16px; margin: 20px 0; }
+.funnel .section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.funnel .section-head h2 { margin: 0; }
+.funnel .num small { font-weight: 400; }
+.funnel .plain-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.funnel .plain-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.funnel .plain-list li:has(> .btn) { flex-wrap: nowrap; justify-content: space-between; }
+.funnel .plain-list .btn { margin-left: auto; flex: none; }
+.pill.failed { background: transparent; color: var(--danger); box-shadow: inset 0 0 0 1px currentColor; }
