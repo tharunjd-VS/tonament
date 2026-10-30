@@ -1032,11 +1032,27 @@ CREATE TABLE IF NOT EXISTS tournament_templates (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS tournament_templates_user ON tournament_templates (user_id, created_at);
+-- v51: AI setup (server/ai.js): every call and its cost; a tournament's
+-- saved column mapping for importing its Google Form's responses.
+CREATE TABLE IF NOT EXISTS ai_calls (
+  id            SERIAL PRIMARY KEY,
+  user_id       INTEGER,
+  tournament_id TEXT,
+  kind          TEXT NOT NULL,                  -- draft | mapping
+  model         TEXT NOT NULL,
+  tokens_in     INTEGER NOT NULL DEFAULT 0,
+  tokens_out    INTEGER NOT NULL DEFAULT 0,
+  cost_paise    INTEGER NOT NULL DEFAULT 0,
+  ok            BOOLEAN NOT NULL DEFAULT true,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ai_calls_day ON ai_calls (kind, created_at);
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS import_mapping JSONB;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 50;
+const SCHEMA_VERSION = 51;
 
 async function migrate(db) {
   try {

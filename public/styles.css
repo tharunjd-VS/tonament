@@ -1791,3 +1791,32 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .copy-sheet .copy-list { display: grid; gap: 8px; margin: 12px 0; max-height: 50vh; overflow: auto; }
 .template-card .card-head { align-items: flex-start; }
 .template-card p { margin: 8px 0; }
+
+/* ---------- AI setup: start from a poster or form; the draft to check */
+.ai-start { display: grid; gap: 12px; border-color: var(--accent); }
+.ai-start h2 { margin: 0; }
+.ai-file { justify-self: start; display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
+.ai-row { display: flex; gap: 8px; }
+.ai-row input { flex: 1; min-width: 0; }
+.ai-row.stack { flex-direction: column; align-items: flex-start; }
+.ai-row.stack textarea { width: 100%; }
+.ai-or { margin: 0; }
+.progress .indeterminate { display: block; height: 100%; width: 40%; background: var(--accent); border-radius: inherit; animation: indeterminate 1.2s ease-in-out infinite; }
+@keyframes indeterminate { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.check-this { margin-left: 8px; font-size: 0.75rem; font-weight: 700; color: var(--accent-text); }
+.check-this small { font-weight: 400; color: var(--muted); }
+.field.unsure input, .field.unsure select, .field.unsure textarea, .ev-draft.unsure { box-shadow: 0 0 0 2px var(--accent-soft); }
+.ev-drafts { display: grid; gap: 8px; }
+.ev-draft { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 5.5rem auto; gap: 6px; align-items: center; border-radius: 10px; padding: 6px; background: var(--surface-2); }
+.ev-draft.bad select, .ev-draft.bad input { border-color: var(--danger); }
+.ev-problem { grid-column: 1 / -1; color: var(--danger); }
+@media (max-width: 560px) { .ev-draft { grid-template-columns: 1fr 1fr 1fr; } }
+
+/* ---------- importing a form's responses */
+.import-card h3 { margin: 14px 0 8px; font-size: 1rem; }
+.import-cols { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+.import-col { display: grid; gap: 4px; }
+.import-head { font-size: 0.85rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-totals, .import-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.import-rows { max-height: 360px; overflow: auto; }
+.banner.warn ul { margin: 6px 0 0; padding-left: 18px; }
