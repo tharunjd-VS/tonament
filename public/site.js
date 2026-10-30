@@ -76,6 +76,10 @@
         var t = tiers[el.getAttribute('data-tier-limit')];
         if (t) el.textContent = String(t.limit);
       });
+      document.querySelectorAll('[data-ai-price]').forEach(function (el) {
+        var p = (cfg.aiPrices || {})[el.getAttribute('data-ai-price')];
+        if (p) el.textContent = inr(p);
+      });
       if (cfg.orgPrice) document.querySelectorAll('[data-org-price]').forEach(function (el) { el.textContent = inr(cfg.orgPrice); });
       document.querySelectorAll('[data-org-branding]').forEach(function (el) { el.hidden = !cfg.orgIncludesBranding; });
       document.querySelectorAll('[data-tier-diff]').forEach(function (el) {

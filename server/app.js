@@ -445,7 +445,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
     ['POST', `/api/admin/payments/${N}/refund`, (c, id) => svc.refundPayment(c.actor, id, c.body)],
 
     // Payments (Razorpay). The webhook is handled separately (raw body).
-    ['GET', '/api/billing/config', async () => ({ ...publicBillingConfig(billingConfig()), orgIncludesBranding: Boolean(await svc.settings.get('orgIncludesBranding')) })],
+    ['GET', '/api/billing/config', async () => ({ ...publicBillingConfig(billingConfig()), orgIncludesBranding: Boolean(await svc.settings.get('orgIncludesBranding')), aiPrices: await svc.credits.prices() })],
     // Social: follows, the feed, kudos, comments, blocks and reports
     ['POST', '/api/follow', (c) => svc.social.follow(c.actor, c.body)],
     ['GET', '/api/follow', (c) => svc.social.followStatus(c.actor, c.query.get('kind'), c.query.get('id'))],
