@@ -24,6 +24,7 @@ const KINDS = {
   club_challenge: { label: 'Challenges to your club', email: true },
   club_result: { label: 'Club v club results', email: false },
   season: { label: 'Club seasons', email: false },
+  club_run: { label: 'Club runs', email: false },
 };
 const PAGE = 40;
 const DELIVERY_MS = 4000;

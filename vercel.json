@@ -68,6 +68,10 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/club-run/:id(\\d{1,12})",
+      "destination": "/api/index?__path=app"
+    },
+    {
       "source": "/runs",
       "destination": "/api/index?__path=app"
     },

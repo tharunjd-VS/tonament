@@ -80,21 +80,28 @@ function createRuns({ db, fail, text, social }) {
   async function post(q, r, u, pbs = []) {
     await social.forget(q, 'run', r.id);
     if (r.visibility === 'private') return;
+    // A club run's: on the club's feed too.
+    const [club] = r.club_run_id ? await q('SELECT o.id, o.name, o.slug FROM club_runs c JOIN orgs o ON o.id = c.org_id WHERE c.id = $1', [r.club_run_id]) : [];
     await social.record(q, {
-      dedupe: `run:${r.id}`, actor: u.id, sport: 'running', verb: 'run', object: ['run', r.id], at: new Date(r.ran_at).toISOString(),
-      data: { run: r.id, km: km(r.distance_m), time: clock(r.duration_s), pace: pace(r), title: r.title, place: r.place, pbs },
+      dedupe: `run:${r.id}`, actor: u.id, org: club ? club.id : null, sport: 'running', verb: 'run', object: ['run', r.id], at: new Date(r.ran_at).toISOString(),
+      data: { run: r.id, km: km(r.distance_m), time: clock(r.duration_s), pace: pace(r), title: r.title, place: r.place, pbs, ...(club && { club: club.name, slug: club.slug, clubRun: r.club_run_id }) },
       visibility: r.visibility === 'public' && u.profile_public ? 'public' : 'followers',
     });
   }
 
-  async function log(actor, input = {}) {
+  // clubRun: { id, date } when it's a club's run (club-runs.js checks it first).
+  async function log(actor, input = {}, clubRun = null) {
     const me = needUser(actor);
     const x = readRun(input);
     return db.tx(async (q) => {
+      if (clubRun) {
+        const [dup] = await q('SELECT 1 FROM runs WHERE user_id = $1 AND club_run_id = $2 AND on_date = $3', [me.id, clubRun.id, clubRun.date]);
+        if (dup) fail(409, 'You\'ve logged this run already');
+      }
       const before = await bests(q, me.id);
       const [r] = await q(
-        'INSERT INTO runs (user_id, distance_m, duration_s, ran_at, title, place, visibility) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-        [me.id, x.distance, x.duration, x.at.toISOString(), x.title, x.place, x.visibility],
+        'INSERT INTO runs (user_id, distance_m, duration_s, ran_at, title, place, visibility, club_run_id, on_date) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+        [me.id, x.distance, x.duration, x.at.toISOString(), x.title, x.place, x.visibility, clubRun ? clubRun.id : null, clubRun ? clubRun.date : null],
       );
       // New bests this run set (not the first ever at a distance: that's just a start).
       const after = await bests(q, me.id);

@@ -692,6 +692,13 @@
           render();
           S.challenges = await api('GET', '/challenges').catch(() => ({ incoming: [], outgoing: [], toPlay: [], toConfirm: [], played: [] }));
         }
+      } else if (parts[0] === 'club-run' && /^\d+$/.test(parts[1] || '')) {
+        S.route = { name: 'clubRun', id: Number(parts[1]) };
+        if (!S.clubRun || S.clubRun.id !== S.route.id) S.clubRun = null;
+        S.clubRunMark = null;
+        render();
+        await loadClubRun();
+        return;
       } else if (parts[0] === 'season' && /^\d+$/.test(parts[1] || '')) {
         S.route = { name: 'season', id: Number(parts[1]) };
         if (!S.season || S.season.id !== S.route.id) S.season = null;
@@ -929,6 +936,7 @@
     else if (S.route.name === 'challenge') view = viewChallenge();
     else if (S.route.name === 'clubChallenge') view = viewClubChallenge();
     else if (S.route.name === 'season') view = viewSeason();
+    else if (S.route.name === 'clubRun') view = viewClubRun();
     else if (S.route.name === 'profile') view = viewProfile();
     else if (S.route.name === 'groups') view = viewGroups();
     else if (S.route.name === 'groupNew') view = viewGroupNew();
@@ -6850,6 +6858,7 @@
     S.clubGoalsList = null;
     S.clubVersus = null;
     S.clubSeasons = null;
+    S.clubRuns = null;
     try {
       S.club = await api('GET', `${clubPath(slug)}${join ? `?join=${encodeURIComponent(join)}` : ''}`);
       S.error = null;
@@ -6923,7 +6932,7 @@
             S.me && !member ? { label: 'Report this club', onClick: () => report('club', c.id) } : null,
           ]))));
     const body = {
-      feed: () => [clubGoals(c), feedList(S.clubFeed, member ? 'Nothing here yet. Results, titles and new members show up here.' : 'Nothing public here yet.')],
+      feed: () => [clubRunsCard(c), clubGoals(c), feedList(S.clubFeed, member ? 'Nothing here yet. Results, titles and new members show up here.' : 'Nothing public here yet.')],
       members: () => clubMembers(c),
       leaderboard: () => clubLeaderboard(c),
       ladder: () => [clubVersus(c), clubSeasons(c), clubLadders(c)],
@@ -7094,6 +7103,117 @@
           : h('p', { class: 'muted' }, 'Take on another club: a team tie in racket sports, or a friendly in team sports. Results go on both clubs\' records and feeds.'),
         V.admin && !S.ccForm ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => { S.ccForm = true; render(); } }, '⚔️ Challenge a club')) : null),
       V.admin && S.ccForm ? form() : null);
+  }
+
+  // ---------- club runs: a club's weekly run, who's in, who ran
+  const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const runWhen = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' }); // club run times are set in India time
+
+  function clubRunsCard(c) {
+    const L = S.clubRuns;
+    if (!L || L.slug !== c.slug) {
+      S.clubRuns = { slug: c.slug, loading: true };
+      api('GET', `${clubPath(c.slug)}/club-runs`).then((r) => { S.clubRuns = { slug: c.slug, ...r }; render(); }, () => { S.clubRuns = { slug: c.slug, items: [] }; render(); });
+      return null;
+    }
+    if (L.loading || (!L.items.length && !L.admin)) return null;
+    const member = c.me && c.me.status === 'active';
+    const form = () => {
+      const d = (S.clubRunDraft ||= { weekday: 0, time: '06:00', place: '', distance: '', name: '' });
+      return h('form', {
+        class: 'card form',
+        onsubmit: (e) => {
+          e.preventDefault();
+          act(async () => {
+            const x = await api('POST', `${clubPath(c.slug)}/club-runs`, { ...d, weekday: Number(d.weekday), name: d.name || null, distance: d.distance || null });
+            S.clubRunForm = false; S.clubRunDraft = null; S.clubRuns = null; S.clubRun = x;
+            navigate(`/club-run/${x.id}`);
+          }, 'Weekly run set — members have been told');
+        },
+      },
+      h('h2', {}, 'A weekly club run'),
+      groupField('Day', choiceGroup({ name: 'crDay', label: 'Day', value: d.weekday, options: WEEKDAYS.map((w, i) => ({ value: i, label: w.slice(0, 3) })), onchange: (e) => { d.weekday = Number(e.target.value); } })),
+      field('Time', h('input', { type: 'time', required: true, value: d.time, oninput: (e) => { d.time = e.target.value; } })),
+      field('Meeting point', h('input', { required: true, maxlength: 80, placeholder: 'Lighthouse gate, Marina Beach', value: d.place, oninput: (e) => { d.place = e.target.value; } })),
+      field('Distance', h('input', { maxlength: 40, placeholder: '5 / 10 km', value: d.distance, oninput: (e) => { d.distance = e.target.value; } })),
+      field('Name', h('input', { maxlength: 60, placeholder: 'Sunrise run', value: d.name, oninput: (e) => { d.name = e.target.value; } })),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Set it up'), h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { S.clubRunForm = false; render(); } }, 'Cancel')));
+    };
+    const rsvp = (x) => act(async () => { await api('POST', `/club-runs/${x.id}/rsvp`, { going: !x.me }); S.clubRuns = null; }, x.me ? 'You\'re out this time' : 'You\'re in 🏃');
+    return [
+      L.items.length || L.admin ? h('div', { class: 'card club-runs' },
+        h('div', { class: 'card-head' }, h('h2', {}, 'Club runs'), L.admin && !S.clubRunForm ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => { S.clubRunForm = true; render(); } }, '+ Weekly run') : null),
+        L.items.length ? h('ul', { class: 'cc-list' }, L.items.map((x) => h('li', {},
+          h('a', { href: `/club-run/${x.id}` }, h('strong', {}, x.name)),
+          h('span', { class: 'muted small' }, ` · ${runWhen(x.startsAt)} · ${x.place}${x.going ? ` · ${x.going} in` : ''}`),
+          member ? h('button', { class: `btn btn-small${x.me ? '' : ' btn-primary'}`, style: 'margin-left:auto', 'aria-pressed': String(x.me), onclick: () => rsvp(x) }, x.me ? 'In ✓' : 'I\'m in') : null)))
+          : h('p', { class: 'muted' }, 'Set a weekly run: members say they\'re in, you mark who ran, and everyone\'s run goes on the club feed.')) : null,
+      L.admin && S.clubRunForm ? form() : null,
+    ];
+  }
+
+  async function loadClubRun() {
+    try {
+      S.clubRun = await api('GET', `/club-runs/${S.route.id}`);
+      S.error = null;
+    } catch (e) {
+      S.error = e.message;
+    }
+    render();
+  }
+
+  function viewClubRun() {
+    const x = S.clubRun;
+    if (!x || x.id !== S.route.id) return loading();
+    document.title = `${x.name} · ${x.club.name}`;
+    const post = (what, body, msg) => act(async () => { S.clubRun = await api('POST', `/club-runs/${x.id}/${what}`, body || {}); }, msg);
+    const names = (list) => list.map((p, i) => [i ? ', ' : '', p.handle ? h('a', { href: `/@${p.handle}` }, p.name) : p.name]);
+    const share = () => shareSheet({ title: `${x.club.name}: ${x.name}`, text: `Run with ${x.club.name} — every ${x.day} at ${x.time}, ${x.place}. Join us:`, url: `${location.origin}/club-run/${x.id}`, image: `/img/club/${x.club.slug}.png` });
+    // The date to log and mark: the one on now, or the last one.
+    const md = x.markDate;
+    const dated = [x.next, x.last].find((d) => d && d.date === md);
+    const canLog = dated && dated.me && (dated.me.going || dated.me.attended) && !dated.me.logged;
+    const logForm = () => {
+      const d = (S.clubRunLog ||= { km: '', time: '' });
+      return h('form', {
+        class: 'run-row',
+        onsubmit: (e) => { e.preventDefault(); act(async () => { const r = await api('POST', `/club-runs/${x.id}/log`, { date: md, km: Number(d.km), time: d.time }); S.clubRunLog = null; S.lastRun = r; await loadClubRun(); }, 'Logged — it\'s on the club feed 🏃'); },
+      },
+      field('Distance (km)', h('input', { type: 'number', step: '0.01', min: '0.1', required: true, inputmode: 'decimal', placeholder: '5', value: d.km, oninput: (e) => { d.km = e.target.value; } })),
+      field('Time', h('input', { required: true, placeholder: '28:30', inputmode: 'numeric', value: d.time, oninput: (e) => { d.time = e.target.value; } })),
+      h('div', { class: 'actions', style: 'grid-column:1/-1' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Log my run')));
+    };
+    const marking = S.clubRunMark && S.clubRunMark.id === x.id;
+    const markCard = () => {
+      const chosen = S.clubRunMark.ids;
+      const toggle = (id) => { const i = chosen.indexOf(id); if (i >= 0) chosen.splice(i, 1); else chosen.push(id); render(); };
+      return h('div', { class: 'card' }, h('h2', {}, `Who ran · ${fmtDates(md)}`),
+        h('ul', { class: 'cc-pick' }, x.members.map((p) => h('li', {}, h('label', { class: 'check-field' }, h('input', { type: 'checkbox', checked: chosen.includes(p.id), onchange: () => toggle(p.id) }), h('span', {}, p.name))))),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn btn-primary', onclick: () => act(async () => { S.clubRun = await api('POST', `/club-runs/${x.id}/mark`, { date: md, ran: chosen }); S.clubRunMark = null; }, `${chosen.length} marked — it's on the club feed`) }, `Save (${chosen.length})`),
+          h('button', { class: 'btn btn-ghost', onclick: () => { S.clubRunMark = null; render(); } }, 'Cancel')));
+    };
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: `/club/${x.club.slug}` }, `← ${x.club.name}`)),
+      h('div', { class: 'card challenge-head' },
+        h('p', { class: 'eyebrow' }, ['Club run', `Every ${x.day}`, x.distance].filter(Boolean).join(' · ')),
+        h('h1', {}, x.name),
+        h('p', { class: 'muted small' }, `${x.time} · ${x.place}`),
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-small', onclick: share }, 'Invite runners'),
+          x.can.stop ? h('button', { class: 'btn btn-small btn-ghost', onclick: () => confirm('Stop this weekly run?') && act(async () => { await api('POST', `/club-runs/${x.id}/stop`); navigate(`/club/${x.club.slug}`); }, 'Stopped') }, 'Stop it') : null)),
+      x.next ? h('div', { class: 'card' },
+        h('div', { class: 'card-head' }, h('h2', {}, x.next.started ? 'On now' : `Next: ${runWhen(x.next.startsAt)}`),
+          x.can.rsvp ? h('button', { class: `btn${x.next.me && x.next.me.going ? '' : ' btn-primary'}`, onclick: () => post('rsvp', { going: !(x.next.me && x.next.me.going) }, x.next.me && x.next.me.going ? 'You\'re out this time' : 'You\'re in 🏃') }, x.next.me && x.next.me.going ? 'In ✓' : 'I\'m in') : null),
+        x.next.going.length ? h('p', {}, h('strong', {}, `${x.next.going.length} in: `), names(x.next.going)) : h('p', { class: 'muted' }, 'Nobody\'s said yet — be the first.'),
+        !x.can.rsvp && S.me ? h('p', { class: 'muted small' }, h('a', { href: `/club/${x.club.slug}` }, `Join ${x.club.name}`), ' to say you\'re in.') : null) : null,
+      md ? h('div', { class: 'card' },
+        h('div', { class: 'card-head' }, h('h2', {}, `Ran · ${fmtDates(md)}`), x.can.mark && !marking ? h('button', { class: 'btn btn-small', onclick: () => { S.clubRunMark = { id: x.id, ids: (dated ? dated.ran.length ? dated.ran : dated.going : []).map((p) => p.id) }; render(); } }, 'Mark who ran') : null),
+        dated && dated.ran.length ? h('p', {}, names(dated.ran.map((p) => ({ ...p, name: `${p.name}${p.logged ? ' ✓' : ''}` })))) : h('p', { class: 'muted small' }, x.can.mark ? 'Mark who ran — they\'re asked to log it, and the club feed says so.' : 'Not marked yet.'),
+        canLog ? [h('h3', {}, 'Log your run'), logForm()] : null) : null,
+      marking ? markCard() : null,
+      x.regulars.length ? h('div', { class: 'card' }, h('h2', {}, 'Regulars'), h('p', { class: 'muted small' }, 'Most runs with the club in the last 90 days.'),
+        h('ol', { class: 'entries run-board' }, x.regulars.map((p) => h('li', {}, p.handle ? h('a', { href: `/@${p.handle}` }, p.name) : h('span', {}, p.name), h('strong', {}, `${p.runs}`))))) : null,
+    ];
   }
 
   // ---------- club seasons: a league between clubs
@@ -7802,8 +7922,12 @@
         ? ['🏆 ', club(d.winner, winSlug), ' beat ', club(d.loser, loseSlug), ' ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score), ` in a club v club ${d.kind === 'tie' ? 'tie' : 'friendly'}`]
         : ['🤝 ', club(d.from, d.fromSlug), ' and ', club(d.to, d.toSlug), ' drew ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score)];
     }
+    if (x.verb === 'club_run') {
+      const others = x.people.length - 1;
+      return ['🏃 ', who, others > 0 ? ` and ${others} other${others === 1 ? '' : 's'}` : '', ' ran with ', h('a', { href: `/club/${d.slug}` }, d.club), ' · ', h('a', { href: `/club-run/${d.clubRun}` }, d.name)];
+    }
     if (x.verb === 'run') {
-      return ['🏃 ', who, ` ran ${d.km} km in ${d.time} at `, h('span', { class: 'feed-score' }, `${d.pace} /km`), d.title ? ` · ${d.title}` : '', d.place && !d.title ? ` · ${d.place}` : '',
+      return ['🏃 ', who, ` ran ${d.km} km in ${d.time} at `, h('span', { class: 'feed-score' }, `${d.pace} /km`), d.club ? [' with ', h('a', { href: `/club-run/${d.clubRun}` }, d.club)] : d.title ? ` · ${d.title}` : '', d.place && !d.title && !d.club ? ` · ${d.place}` : '',
         d.pbs && d.pbs.length ? [' · ', h('strong', {}, `New best ${d.pbs.join(', ')} 🎉`)] : ''];
     }
     if (x.verb === 'season_match') {
@@ -8735,7 +8859,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|club-run\/\d+$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

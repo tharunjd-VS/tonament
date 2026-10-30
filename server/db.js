@@ -803,11 +803,37 @@ CREATE TABLE IF NOT EXISTS runs (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS runs_user ON runs(user_id, ran_at DESC);
+-- v43: club runs. A club's weekly run (day, time, meeting point); members say
+-- they're coming to a date, an admin marks who ran, and runners log it with
+-- one tap (runs.club_run_id / on_date link a logged run to that date).
+CREATE TABLE IF NOT EXISTS club_runs (
+  id         SERIAL PRIMARY KEY,
+  org_id     INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  weekday    INTEGER NOT NULL,                  -- 0 Sunday … 6 Saturday
+  at_time    TEXT NOT NULL,                     -- HH:MM, India time
+  place      TEXT NOT NULL,
+  distance   TEXT,                              -- e.g. 5 / 10 km
+  active     BOOLEAN NOT NULL DEFAULT true,
+  created_by INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS club_runs_org ON club_runs(org_id);
+CREATE TABLE IF NOT EXISTS club_run_people (
+  club_run_id INTEGER NOT NULL REFERENCES club_runs(id) ON DELETE CASCADE,
+  on_date     DATE NOT NULL,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  going       BOOLEAN NOT NULL DEFAULT false,
+  attended    BOOLEAN NOT NULL DEFAULT false,
+  PRIMARY KEY (club_run_id, on_date, user_id)
+);
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS club_run_id INTEGER;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS on_date DATE;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 42;
+const SCHEMA_VERSION = 43;
 
 async function migrate(db) {
   try {

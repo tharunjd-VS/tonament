@@ -32,7 +32,7 @@ function currentAppVersion() {
   return appVersion;
 }
 // The app's pages other than tournaments (served the app page; see vercel.json).
-const APP_ROUTES = /^\/(?:new|notifications|goals|goals\/new|runs|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|season\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
+const APP_ROUTES = /^\/(?:new|notifications|goals|goals\/new|runs|club-run\/\d{1,12}|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|season\/\d{1,12}|invite|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
 const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
 const TYPES = {
@@ -440,6 +440,14 @@ function createApp(db, { mailer = createMailer(), fetchImpl } = {}) {
     ['POST', '/api/runs', (c) => svc.runs.log(c.actor, c.body)],
     ['PATCH', `/api/runs/${N}`, (c, id) => svc.runs.update(id, c.actor, c.body)],
     ['DELETE', `/api/runs/${N}`, (c, id) => svc.runs.remove(id, c.actor)],
+    // Club runs
+    ['GET', `${C}/club-runs`, (c, slug) => svc.clubRuns.forClub(slug, c.actor)],
+    ['POST', `${C}/club-runs`, (c, slug) => svc.clubRuns.create(slug, c.actor, c.body)],
+    ['GET', `/api/club-runs/${N}`, (c, id) => svc.clubRuns.get(id, c.actor)],
+    ['POST', `/api/club-runs/${N}/rsvp`, (c, id) => svc.clubRuns.rsvp(id, c.actor, c.body)],
+    ['POST', `/api/club-runs/${N}/mark`, (c, id) => svc.clubRuns.mark(id, c.actor, c.body)],
+    ['POST', `/api/club-runs/${N}/log`, (c, id) => svc.clubRuns.log(id, c.actor, c.body)],
+    ['POST', `/api/club-runs/${N}/stop`, (c, id) => svc.clubRuns.stop(id, c.actor)],
     // Club seasons
     ['GET', `${C}/seasons`, (c, slug) => svc.seasons.forClub(slug, c.actor)],
     ['POST', `${C}/seasons`, (c, slug) => svc.seasons.create(slug, c.actor, c.body)],
