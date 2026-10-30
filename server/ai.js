@@ -108,7 +108,18 @@ async function formText(url, fetchImpl, fail) {
 
 // ---------- the client
 
-function createAi({ db, fail, env = process.env, client = null, fetchImpl = globalThis.fetch }) {
+function createAi({ db, fail, env = process.env, client = null, fetchImpl = globalThis.fetch, getCredits = () => null }) {
+  // Credits (credits.js): spent before a call, given back if it fails.
+  async function paid(spendArgs, run) {
+    const credits = getCredits();
+    const ids = credits ? await credits.spend(db.query, spendArgs) : [];
+    try {
+      return await run();
+    } catch (err) {
+      if (credits && ids.length) await credits.refund(db.query, ids).catch((e) => console.error('AI refund:', e.message));
+      throw err;
+    }
+  }
   const enabled = () => Boolean(client || env.ANTHROPIC_API_KEY);
   let sdk = client;
   const getClient = () => {
@@ -193,7 +204,10 @@ function createAi({ db, fail, env = process.env, client = null, fetchImpl = glob
       if (input.text.length > TEXT_MAX) fail(400, `Paste up to ${TEXT_MAX.toLocaleString('en-IN')} characters`);
       content.push({ type: 'text', text: `This is the tournament's announcement:\n\n${input.text.trim()}` });
     } else fail(400, 'Add a poster, a form link or the announcement\'s text');
-    const draft = await call({ kind: 'draft', user: actor.user.id, system: DRAFT_SYSTEM(), content, schema: draftSchema(), effort: 'medium' });
+    const cost = input.image ? 'draftImage' : input.pdf ? 'draftPdf' : input.formUrl ? 'draftForm' : 'draftText';
+    const { COSTS } = require('./credits');
+    const draft = await paid({ user: actor.user.id, scope: 'create', cost: COSTS[cost], note: 'draft' },
+      () => call({ kind: 'draft', user: actor.user.id, system: DRAFT_SYSTEM(), content, schema: draftSchema(), effort: 'medium' }));
     return { draft, problems: checkDraft(draft) };
   }
 
@@ -207,7 +221,9 @@ function createAi({ db, fail, env = process.env, client = null, fetchImpl = glob
       `Sample rows (masked): ${JSON.stringify(sample.samples)}`,
       `Repeating answers by column: ${JSON.stringify(sample.repeating)}`,
     ].join('\n\n');
-    return call({ kind: 'mapping', user: actor.user.id, tournament, system: MAPPING_SYSTEM, content: [{ type: 'text', text }], schema: MAPPING_SCHEMA, effort: 'low' });
+    const { COSTS } = require('./credits');
+    return paid({ user: actor.user.id, tournament, scope: 'create', cost: COSTS.mapping, note: 'mapping' },
+      () => call({ kind: 'mapping', user: actor.user.id, tournament, system: MAPPING_SYSTEM, content: [{ type: 'text', text }], schema: MAPPING_SCHEMA, effort: 'low' }));
   }
 
   // Totals for the admin overview.

@@ -1820,3 +1820,6 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .import-totals, .import-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .import-rows { max-height: 360px; overflow: auto; }
 .banner.warn ul { margin: 6px 0 0; padding-left: 18px; }
+.credits-line { margin: 0; }
+.credits-line.low, .muted.low { color: var(--accent-text); font-weight: 600; }
+.plain-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }

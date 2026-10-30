@@ -20,6 +20,7 @@ const { createClubs } = require('./clubs');
 const { createCards } = require('./cards');
 const { createNotify } = require('./notify');
 const { createMessaging } = require('./messaging');
+const { createCredits, PACKS: AI_PACKS } = require('./credits');
 const { sourceLabel } = require('./sources');
 const csv = require('./csv');
 const importer = require('./importer');
@@ -234,6 +235,8 @@ const nextSlotColumn = (m) => (m.slot % 2 ? 'b_id' : 'a_id');
 function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db, mailer, fetchImpl }), ai = null } = {}) {
   // Site-wide settings the admin changes, and academy / venue pages (set up at the end).
   const settings = createSettings(db);
+  // AI credits (credits.js): charged only when payments are set up.
+  const credits = createCredits({ db, fail, settings, billingEnabled: () => billingConfig().enabled });
   let orgs;
   let profiles;
   let social;
@@ -2417,7 +2420,9 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
   // first one earns their inviter a reward (referrals.js).
   async function start(id, actor, opts = {}) {
     const result = await startEvent(id, actor, opts);
-    await referrals.qualify(db.query, id).catch((err) => console.error('Referral:', err.message));
+    const reward = await referrals.qualify(db.query, id).catch((err) => { console.error('Referral:', err.message); return null; });
+    // …and AI help on the day for their next tournament.
+    if (reward) await credits.grantPack(db.query, { pack: 'manage', user: reward.inviter.id, reason: 'referral', ref: `refearn:${id}` }).catch((err) => console.error('AI credits:', err.message));
     return result;
   }
 
@@ -3172,6 +3177,43 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
 
   // Step 1: create a Razorpay order for a plan (the next one up by default).
   // Upgrading from a paid plan charges only the difference.
+  // The Championship plan includes AI setup and AI on the day (once).
+  const planAiCredits = (q, tid) => credits.grantPack(q, { pack: 'both', tournament: tid, reason: 'plan', ref: `plan:${tid}` });
+
+  // An AI pack (credits.js): for a tournament, or AI setup on the account (from /new).
+  async function aiCheckout(actor, input = {}) {
+    const cfg = billingConfig();
+    if (!cfg.enabled) fail(503, 'Payments aren\'t set up yet');
+    if (!actor.user) fail(401, 'Sign in first');
+    const pack = String(input.pack || '');
+    if (!AI_PACKS[pack]) fail(400, 'Unknown AI pack');
+    const amount = (await credits.prices())[pack];
+    const { t, paymentId } = await db.tx(async (q) => {
+      let t = null;
+      if (input.tournament) t = (await lockWith(q, String(input.tournament), actor, 'manage')).t;
+      else if (pack !== 'create') fail(400, 'Pick the tournament');
+      const [row] = await q(
+        `INSERT INTO payments (tournament_id, tournament_name, user_email, amount, currency, tier, kind) VALUES ($1, $2, $3, $4, $5, $6, 'ai') RETURNING id`,
+        [t ? t.id : null, t ? t.name : null, actor.user.email, amount, cfg.currency, pack],
+      );
+      return { t, paymentId: row.id };
+    });
+    let order;
+    try {
+      order = await razorpay(cfg).createOrder({ amount, currency: cfg.currency, receipt: `tn_${paymentId}`, notes: { tournament_id: t ? t.id : '', pack, email: actor.user.email } });
+    } catch (err) {
+      console.error('Razorpay order failed:', err.message);
+      await db.query(`UPDATE payments SET status = 'failed' WHERE id = $1`, [paymentId]);
+      fail(502, 'Couldn\'t start the payment — please try again in a moment');
+    }
+    await db.query('UPDATE payments SET order_id = $1 WHERE id = $2', [order.id, paymentId]);
+    return {
+      orderId: order.id, keyId: cfg.keyId, amount, currency: cfg.currency, pack,
+      name: cfg.business.name || 'Tonament', description: `${AI_PACKS[pack].name}${t ? ` — ${t.name}` : ''}`,
+      prefill: { name: actor.user.name ?? '', email: actor.user.email ?? '' },
+    };
+  }
+
   async function checkout(id, actor, input = {}) {
     const cfg = billingConfig();
     if (!cfg.enabled) fail(503, 'Payments aren\'t set up yet');
@@ -3231,11 +3273,16 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
         await settleEntryFee(q, paid);
       } else if (p.kind === 'org') {
         await orgs.applyPayment(q, paid);
+      } else if (p.kind === 'ai') {
+        // An AI pack: on the tournament, or (bought on /new) on the account.
+        const [u] = await q('SELECT id FROM users WHERE lower(email) = lower($1)', [p.user_email]);
+        await credits.grantPack(q, { pack: p.tier, user: u ? u.id : null, tournament: p.tournament_id, reason: 'purchase', ref: `pay:${p.id}` });
       } else if (p.tournament_id) {
         // Payments made before tiers existed bought the unlimited Event Pass.
         await q(`UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2`, [p.tier || 'pass', p.tournament_id]);
         const [t] = await q('SELECT * FROM tournaments WHERE id = $1 FOR UPDATE', [p.tournament_id]);
         if (t) await confirmWaiting(q, t);
+        if (p.tier === 'championship') await planAiCredits(q, p.tournament_id);
       }
       return { payment: paid, activated: true };
     });
@@ -3344,6 +3391,7 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     const { payment, activated } = await markPaid(orderId, paymentId, { source: 'checkout', paymentId });
     if (activated) await sendReceipt(payment, baseUrl);
     if (row.kind === 'entry') return { ok: true, tournamentId: row.tournament_id, kind: 'entry', event: row.event_id };
+    if (row.kind === 'ai') return { ok: true, tournamentId: row.tournament_id, kind: 'ai', pack: row.tier };
     return { ok: true, tournamentId: row.tournament_id, plan: row.tier || 'pass' };
   }
 
@@ -3387,6 +3435,7 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     return mutate(id, actor, async (q, t) => {
       await q('UPDATE tournaments SET plan = $1, plan_updated_at = now() WHERE id = $2', [plan, t.id]);
       await confirmWaiting(q, { ...t, plan });
+      if (plan === 'championship') await planAiCredits(q, t.id);
       await adminLog(q, actor, 'tournament.plan', t.id, { name: t.name, from: t.plan, to: plan });
     });
   }
@@ -3648,6 +3697,14 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
   async function setAdminSettings(actor, input = {}) {
     requireSiteAdmin(actor);
     for (const key of Object.keys(input)) {
+      if (key === 'aiPrices') {
+        const v = input.aiPrices || {};
+        const prices = Object.fromEntries(Object.keys(AI_PACKS).map((k) => [k, int(v[k], 100, 10000000, null, 'Price (in paise)')]).filter(([, x]) => x != null));
+        const from = await settings.get(key);
+        await settings.set(key, prices, actor.user.email);
+        await adminLog(db.query, actor, 'setting.change', key, { from, to: prices });
+        continue;
+      }
       if (!(key in settings.DEFAULTS)) fail(400, `Unknown setting: ${key}`);
       const from = await settings.get(key);
       const to = typeof settings.DEFAULTS[key] === 'boolean' ? Boolean(input[key]) : input[key];
@@ -4476,6 +4533,8 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     adminStats,
     adminFunnel,
     messaging,
+    credits,
+    aiCheckout,
     adminTournaments,
     adminUserDetail,
     paymentsCsv,

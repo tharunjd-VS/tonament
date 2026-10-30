@@ -1048,11 +1048,29 @@ CREATE TABLE IF NOT EXISTS ai_calls (
 );
 CREATE INDEX IF NOT EXISTS ai_calls_day ON ai_calls (kind, created_at);
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS import_mapping JSONB;
+-- v52: AI credits (server/credits.js): a ledger; the balance is its sum.
+-- Grants carry a unique ref (a payment, the free first setup, a referral,
+-- the Championship plan) so they're given once; spends and refunds are
+-- for AI calls. A tournament's AI help can be paused by site admins.
+CREATE TABLE IF NOT EXISTS ai_credits (
+  id            SERIAL PRIMARY KEY,
+  user_id       INTEGER,
+  tournament_id TEXT REFERENCES tournaments(id) ON DELETE SET NULL,
+  scope         TEXT NOT NULL,                  -- create | manage
+  delta         INTEGER NOT NULL,
+  reason        TEXT NOT NULL,                  -- purchase | free | referral | plan | admin | spend | refund
+  ref           TEXT,
+  note          TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ai_credits_ref ON ai_credits (ref) WHERE ref IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ai_credits_owner ON ai_credits (tournament_id, user_id, scope);
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS ai_paused BOOLEAN NOT NULL DEFAULT false;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 51;
+const SCHEMA_VERSION = 52;
 
 async function migrate(db) {
   try {

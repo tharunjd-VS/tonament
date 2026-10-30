@@ -2191,6 +2191,56 @@
     return S.aiEnabled && !d.from ? [aiStartCard(d), form] : form;
   }
 
+  // ---------- AI credits (server/credits.js): a flat fee per tournament, as credits
+  const loadCredits = async (tid = null) => {
+    const key = tid || '';
+    try { S.aiCredits = { ...(S.aiCredits || {}), [key]: await api('GET', `/ai/credits${tid ? `?t=${encodeURIComponent(tid)}` : ''}`) }; } catch { /* AI off or signed out */ }
+    render();
+  };
+  const creditsFor = (tid = null) => {
+    const key = tid || '';
+    const c = (S.aiCredits || {})[key];
+    if (c === undefined) { S.aiCredits = { ...(S.aiCredits || {}), [key]: null }; loadCredits(tid); }
+    return c || null;
+  };
+  // Buys an AI pack in Razorpay Checkout, then refreshes the balance.
+  async function buyAi(pack, tid = null) {
+    try {
+      const order = await api('POST', '/ai/checkout', { pack, ...(tid && { tournament: tid }) });
+      const result = await payEntry(order);
+      if (result === 'paid') { toast('Payment received — AI credits added ✓'); await loadCredits(tid); if (tid) await loadCredits(null); }
+      else if (result === 'cancelled') toast('Payment cancelled — you haven\'t been charged');
+    } catch (e) { toast(e.message, true); }
+  }
+  // Out of credits (a 402 with code ai_credits), or "Get more": the packs, with what they do.
+  function aiPacksSheet(tid = null, why = null) {
+    const c = creditsFor(tid);
+    const price = (k) => (c ? money(c.prices[k]) : '');
+    const items = tid
+      ? [
+        { label: `AI setup + on the day · ${price('both')}`, hint: 'Poster and form setup, the Google Form import, and the on-the-day assistant', onClick: () => buyAi('both', tid) },
+        { label: `AI on the day · ${price('manage')}`, hint: 'Late entries, check-ins and no-shows handled with you, for this tournament', onClick: () => buyAi('manage', tid) },
+        { label: `AI setup · ${price('create')}`, hint: 'Poster and form setup and the Google Form import', onClick: () => buyAi('create', tid) },
+        { label: `Top-up · ${price('topup')}`, hint: '100 more on-the-day credits', onClick: () => buyAi('topup', tid) },
+      ]
+      : [{ label: `AI setup · ${price('create')}`, hint: 'Set up tournaments from posters, forms and messages', onClick: () => buyAi('create') }];
+    actionSheet(why || 'Get AI help', items);
+  }
+  // A one-line balance with a "Get more" link (nothing while payments are off).
+  function creditsLine(tid = null, scope = 'create') {
+    const c = creditsFor(tid);
+    if (!c || !c.enforced) return null;
+    const b = c.balance[scope];
+    const text = scope === 'create' && c.freeFirst ? 'Your first AI setup is free' : b.total ? `${b.total} AI ${scope === 'create' ? 'setup' : 'on-the-day'} credit${b.total === 1 ? '' : 's'} left` : `No AI ${scope === 'create' ? 'setup' : 'on-the-day'} credits left`;
+    return h('p', { class: `muted small credits-line${b.low ? ' low' : ''}` }, text, ' · ', h('button', { class: 'link-btn', type: 'button', onclick: () => aiPacksSheet(tid) }, b.total || (scope === 'create' && c.freeFirst) ? 'Get more' : 'Get AI credits'));
+  }
+  const outOfCredits = (e, tid = null) => {
+    if (e.code !== 'ai_credits') return false;
+    loadCredits(tid);
+    aiPacksSheet(tid, e.message);
+    return true;
+  };
+
   // ---------- AI setup: start from a poster, a Google Form or the announcement's text
   function aiStartCard(d) {
     const read = async (body) => {
@@ -2201,8 +2251,9 @@
         d.draft = { ...r.draft, events: (r.draft.events || []).map((e) => ({ ...e })) };
         d.problems = r.problems || [];
         window.scrollTo(0, 0);
+        loadCredits(null);
       } catch (e) {
-        toast(e.message, true);
+        if (!outOfCredits(e)) toast(e.message, true);
       }
       d.reading = false;
       render();
@@ -2229,6 +2280,7 @@
     return h('div', { class: 'card ai-start' },
       h('h2', {}, 'Start from your poster or Google Form'),
       h('p', { class: 'muted small' }, 'We\'ll fill in the tournament for you to check — nothing is saved until you press Create.'),
+      creditsLine(null, 'create'),
       h('label', { class: 'btn btn-primary ai-file' }, icon('camera'), h('span', {}, 'Take or upload the poster'),
         h('input', { type: 'file', accept: 'image/*,application/pdf', hidden: true, onchange: (e) => pick(e.target.files[0]) })),
       h('form', { class: 'ai-row', onsubmit: (e) => { e.preventDefault(); if (link.value.trim()) read({ formUrl: link.value.trim() }); } },
@@ -2706,7 +2758,8 @@
       try {
         const r = await api('POST', `${tPath(t)}/import/preview`, body, t.id);
         Object.assign(I, { r, source: body.csv ? { csv: body.csv } : { sheetUrl: body.sheetUrl }, skip: new Set(), create: new Set(r.missing.map((m) => m.key)) });
-      } catch (e) { toast(e.message, true); }
+        if (r.mappedBy === 'ai') loadCredits(t.id);
+      } catch (e) { if (!outOfCredits(e, t.id)) toast(e.message, true); }
       I.busy = false;
       render();
     };
@@ -2721,7 +2774,8 @@
             onchange: async (e) => { const f = e.target.files[0]; if (!f) return; if (f.size > 3 * 1024 * 1024) { toast('That file is over 3 MB', true); return; } preview({ csv: await f.text() }); },
           })),
           h('form', { class: 'ai-row', onsubmit: (e) => { e.preventDefault(); if (link.value.trim()) preview({ sheetUrl: link.value.trim() }); } }, link, h('button', { class: 'btn', type: 'submit' }, 'Read the sheet'))],
-        h('p', { class: 'muted small' }, 'Nothing is added until you check the preview. Players aren\'t messaged.'));
+        h('p', { class: 'muted small' }, 'Nothing is added until you check the preview. Players aren\'t messaged.'),
+        S.aiEnabled ? creditsLine(t.id, 'create') : null);
     }
     const r = I.r;
     const m = r.mapping;
@@ -3780,6 +3834,7 @@
             }, '✕')))))),
       panel(t, 'add-events', 'Add events', addForm),
       reuseCard(t),
+      aiCreditsCard(t),
     ];
   }
 
@@ -5806,6 +5861,19 @@
   }
 
   // /invite: your link, how it works, friends and credits.
+  // This tournament's AI credits, and getting more.
+  function aiCreditsCard(t) {
+    if (!S.aiEnabled || !t.can.manage) return null;
+    const c = creditsFor(t.id);
+    if (!c || !c.enforced) return null;
+    const row = (label, b) => h('li', {}, h('strong', {}, label), ' ', h('span', { class: `muted${b.low ? ' low' : ''}` }, b.granted ? `${b.total} of ${b.granted} left` : 'none yet'));
+    return h('div', { class: 'card' },
+      h('h2', {}, 'AI help'),
+      h('ul', { class: 'plain-list' }, row('Setup', c.balance.create), row('On the day', c.balance.manage)),
+      h('p', { class: 'muted small' }, 'Setup credits read posters, forms and Google Form responses. On-the-day credits are for the assistant that handles late entries, check-ins and no-shows with you. Everything still works without them.'),
+      h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: () => aiPacksSheet(t.id) }, 'Get AI credits')));
+  }
+
   // ---------- templates and new editions
   const saveAsTemplate = (t) => {
     const name = prompt('Name the template (you\'ll pick a date each time you use it):', t.name.replace(/\s*\b20\d\d\b\s*/g, ' ').trim());
@@ -9738,6 +9806,7 @@
           api('GET', '/admin/stats'), api('GET', '/sports/interest').catch(() => null),
           api('GET', `/admin/funnel?days=${A.funnelDays || 30}`).catch(() => null), api('GET', '/admin/cron').catch(() => null),
         ]);
+        A.aiCredits = await api('GET', '/admin/ai-credits').catch(() => null);
       } else if (tab === 'tournaments') {
         const T = A.tournaments;
         const r = await api('GET', `/admin/tournaments?${qs({ ...T.filters, offset: more ? T.list.length : 0 })}`);
@@ -9871,11 +9940,31 @@
           f.ai ? h('li', {}, h('strong', {}, 'AI setup'), ' ', f.ai.enabled
             ? h('span', { class: 'muted' }, `${f.ai.drafts} draft${f.ai.drafts === 1 ? '' : 's'} · ${f.ai.mappings} import${f.ai.mappings === 1 ? '' : 's'}${f.ai.failed ? ` · ${f.ai.failed} failed` : ''} · ${money(f.ai.cost)} · ${f.ai.model}`)
             : pill('setup', 'Off')) : null)),
+        A.aiCredits ? adminAiCredits(A) : null,
         h('div', { class: 'card' }, h('h3', {}, 'Scheduled jobs'),
           A.cron && !A.cron.secret ? h('p', { class: 'muted small' }, 'Set CRON_SECRET in the Vercel project so these run on their own.') : null,
           h('ul', { class: 'plain-list' }, jobs.map((j) => h('li', {}, h('span', {}, h('strong', {}, j.job), ' ',
             h('span', { class: 'muted' }, `last run ${when(j.at)}`), j.at ? [' ', j.ok ? pill('done', 'OK') : pill('failed', 'Failed')] : null),
             h('button', { class: 'btn btn-small btn-ghost', onclick: () => act(async () => { await api('POST', `/cron/${j.job}`, { force: true }); A.cron = await api('GET', '/admin/cron'); }, `${j.job} ran`) }, 'Run now')))))));
+  }
+
+  // AI credits: sold and used, revenue against Claude's cost, the busiest, alerts, pause.
+  function adminAiCredits(A) {
+    const x = A.aiCredits;
+    const pause = (row, on) => act(async () => { await api('POST', `/admin/tournaments/${encodeURIComponent(row.id)}/ai-pause`, { paused: on }); A.aiCredits = await api('GET', '/admin/ai-credits'); }, on ? 'AI paused for that tournament' : 'AI back on');
+    const alerted = new Set(x.alerts.map((a) => a.id));
+    return h('div', { class: 'card' }, h('h3', {}, 'AI credits · 30 days'),
+      !x.enforced ? h('p', { class: 'muted small' }, 'Not charged: payments aren\'t set up, so AI help is free.') : null,
+      h('ul', { class: 'plain-list' },
+        h('li', {}, h('strong', {}, 'Sold'), ' ', h('span', { class: 'muted' }, `${x.packs} pack${x.packs === 1 ? '' : 's'} · ${x.bought} credits · ${money(x.revenue)}`)),
+        h('li', {}, h('strong', {}, 'Given'), ' ', h('span', { class: 'muted' }, `${x.given} credit${x.given === 1 ? '' : 's'} (free first setups, referrals, Championship)`)),
+        h('li', {}, h('strong', {}, 'Used'), ' ', h('span', { class: 'muted' }, `${x.spent} credit${x.spent === 1 ? '' : 's'}${x.refunded ? ` · ${x.refunded} given back for failed calls` : ''}`)),
+        h('li', {}, h('strong', {}, 'Claude\'s cost'), ' ', h('span', { class: 'muted' }, `${money(x.cost)}${x.revenue ? ` · ${Math.round(((x.revenue - x.cost) / x.revenue) * 100)}% margin` : ''}`))),
+      x.alerts.length ? h('p', { class: 'banner info small' }, `${x.alerts.length} tournament${x.alerts.length === 1 ? ' is' : 's are'} using a lot of AI this hour — check below.`) : null,
+      x.busy.length ? [h('h3', {}, 'Using the most'), h('ul', { class: 'plain-list' }, x.busy.map((r) => h('li', {},
+        h('a', { href: `/t/${r.id}` }, r.name), ' ', h('span', { class: 'muted small' }, `${r.spent} credits · ${money(r.cost)}`),
+        alerted.has(r.id) ? [' ', pill('failed', 'Busy')] : null, r.paused ? [' ', pill('setup', 'Paused')] : null,
+        h('button', { class: 'btn btn-small btn-ghost', type: 'button', onclick: () => pause(r, !r.paused) }, r.paused ? 'Resume' : 'Pause'))))] : null);
   }
 
   const ACTION_TEXT = {
@@ -10179,6 +10268,18 @@
             ? 'On: every tournament linked to a paid academy page gets the logo, sponsors and organiser-led venue display, without buying Open. Entry limits still follow the tournament\'s plan.'
             : 'Off: tournaments need their own Open or Championship plan for branding, even when linked to an academy page.'))),
       h('p', { class: 'hint' }, 'You can override this for a single academy on the Academies tab. Changes show within a minute and are recorded in the admin log.'),
+      h('h2', {}, 'AI prices'),
+      (() => {
+        const p = { create: 9900, manage: 19900, both: 24900, topup: 9900, ...(A.settings.aiPrices || {}) };
+        const form = h('form', { class: 'form grid-2', onsubmit: (e) => {
+          e.preventDefault();
+          const v = Object.fromEntries(['create', 'manage', 'both', 'topup'].map((k) => [k, Math.round(Number(form[k].value) * 100)]));
+          act(async () => { A.settings = await api('PATCH', '/admin/settings', { aiPrices: v }); }, 'AI prices saved');
+        } },
+        [['create', 'AI setup'], ['manage', 'AI on the day'], ['both', 'Both'], ['topup', 'Top-up (100 credits)']].map(([k, label]) => field(`${label} (₹)`, h('input', { name: k, type: 'number', min: 1, step: 1, value: p[k] / 100 }))),
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save prices')));
+        return form;
+      })(),
       h('h2', {}, 'DUPR'),
       A.dupr && A.dupr.enabled ? [
         h('label', { class: 'check-field switch-field' },

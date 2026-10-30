@@ -213,9 +213,18 @@ const deviceOf = (req) => {
 
 function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient = null, aiEnv = process.env } = {}) {
   // AI setup (server/ai.js): off without ANTHROPIC_API_KEY; tests pass a stand-in client.
-  const ai = createAi({ db, fail: (status, message) => { throw new HttpError(status, message); }, env: aiEnv, client: aiClient, fetchImpl: fetchImpl || globalThis.fetch });
-  const svc = createService(db, { mailer, fetchImpl, messaging, ai });
-  const auth = createAuth(db, { mailer, messaging: svc.messaging, onSignup: (q, user, ref) => svc.referrals.attach(q, user, ref) });
+  let svc = null;
+  const ai = createAi({ db, fail: (status, message) => { throw new HttpError(status, message); }, env: aiEnv, client: aiClient, fetchImpl: fetchImpl || globalThis.fetch, getCredits: () => svc && svc.credits });
+  svc = createService(db, { mailer, fetchImpl, messaging, ai });
+  const auth = createAuth(db, {
+    mailer, messaging: svc.messaging,
+    onSignup: async (q, user, ref) => {
+      await svc.referrals.attach(q, user, ref);
+      // Invited by a friend: their first AI setup is on us too.
+      const [me] = await q('SELECT referred_by FROM users WHERE id = $1', [user.id]);
+      if (me && me.referred_by) await svc.credits.grantPack(q, { pack: 'create', user: user.id, reason: 'referral', ref: `refwelcome:${user.id}` });
+    },
+  });
   const cron = createCron({ db, svc, fail: (status, message) => { throw new HttpError(status, message); }, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, '') });
 
   const T = '/api/tournaments/([a-z0-9-]+)';
@@ -240,6 +249,9 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
     ['POST', `${T}/template`, (c, id) => svc.saveTemplate(id, c.actor, c.body)],
     // AI setup: a draft from a poster, form link or text (nothing saved), then the reviewed draft.
     ['POST', '/api/ai/tournament-draft', (c) => ai.tournamentDraft(c.actor, c.body)],
+    // AI credits: the balance (an account's, or with ?t= a tournament's), and buying a pack.
+    ['GET', '/api/ai/credits', (c) => svc.credits.summary(c.actor, c.query.get('t') || null)],
+    ['POST', '/api/ai/checkout', (c) => svc.aiCheckout(c.actor, c.body)],
     ['POST', '/api/tournaments/from-draft', (c) => svc.createFromDraft(c.actor, c.body)],
     // Google Form responses → entries: a preview, then the import.
     ['POST', `${T}/import/preview`, (c, id) => svc.importPreview(id, c.actor, c.body)],
@@ -407,6 +419,8 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient
     ['GET', '/api/admin/stats', (c) => svc.adminStats(c.actor)],
     ['GET', '/api/admin/funnel', (c) => svc.adminFunnel(c.actor, { days: c.query.get('days') })],
     ['GET', '/api/admin/cron', (c) => cron.status(c.actor)],
+    ['GET', '/api/admin/ai-credits', (c) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return svc.credits.adminUsage({ days: c.query.get('days') }); }],
+    ['POST', `/api/admin${T.replace('/api', '')}/ai-pause`, (c, id) => { if (!c.actor.user?.isAdmin) throw new HttpError(c.actor.user ? 403 : 401, 'Site admins only'); return svc.credits.setPaused(id, c.body.paused); }],
     // Scheduled jobs (vercel.json crons): the CRON_SECRET, or a site admin.
     ['GET', '/api/cron/(hourly|weekly|reminders)', (c, job) => cron.run(job, c.req, c.actor, { force: c.query.get('force') === '1' && Boolean(c.actor.user?.isAdmin) })],
     ['POST', '/api/cron/(hourly|weekly|reminders)', (c, job) => cron.run(job, c.req, c.actor, { force: c.body.force === true && Boolean(c.actor.user?.isAdmin) })],
