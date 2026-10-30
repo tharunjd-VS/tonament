@@ -2148,6 +2148,8 @@
       ];
     }
 
+    // From a poster or form (AI): the draft to review takes over the page.
+    if (d.draft) return draftReview(d, live);
     const year = new Date().getFullYear();
     const form = h('form', {
       class: 'card new-flow form quick-new',
@@ -2186,6 +2188,113 @@
     what,
     h('p', { class: 'muted small' }, d.from ? 'It starts private, with no players — publish it when you\'re ready.' : 'Venue, entry fees, prizes and courts are on your tournament page, whenever you\'re ready.'),
     h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit', disabled: Boolean(d.from && !source) }, 'Create tournament')));
+    return S.aiEnabled && !d.from ? [aiStartCard(d), form] : form;
+  }
+
+  // ---------- AI setup: start from a poster, a Google Form or the announcement's text
+  function aiStartCard(d) {
+    const read = async (body) => {
+      d.reading = true;
+      render();
+      try {
+        const r = await api('POST', '/ai/tournament-draft', body);
+        d.draft = { ...r.draft, events: (r.draft.events || []).map((e) => ({ ...e })) };
+        d.problems = r.problems || [];
+        window.scrollTo(0, 0);
+      } catch (e) {
+        toast(e.message, true);
+      }
+      d.reading = false;
+      render();
+    };
+    const pick = async (file) => {
+      if (!file) return;
+      try {
+        if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
+          if (file.size > 3 * 1024 * 1024) throw new Error('That PDF is over 3 MB — take a photo of the poster instead');
+          const data = await new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = () => reject(new Error('That file couldn\'t be read')); r.readAsDataURL(file); });
+          await read({ pdf: data });
+        } else await read({ image: await prepareImage(file, 'photo') });
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+    if (d.reading) {
+      return h('div', { class: 'card ai-start reading' }, h('h2', {}, 'Reading it…'),
+        h('p', { class: 'muted' }, 'Pulling out the name, dates, venue, events and fees. This takes about half a minute.'),
+        h('div', { class: 'progress' }, h('span', { class: 'indeterminate' })));
+    }
+    const link = h('input', { type: 'url', name: 'formUrl', placeholder: 'https://forms.gle/…', 'aria-label': 'Google Form link', inputmode: 'url' });
+    const text = h('textarea', { name: 'announcement', rows: 3, maxlength: 5000, placeholder: 'Or paste the WhatsApp message or announcement', 'aria-label': 'Announcement text' });
+    return h('div', { class: 'card ai-start' },
+      h('h2', {}, 'Start from your poster or Google Form'),
+      h('p', { class: 'muted small' }, 'We\'ll fill in the tournament for you to check — nothing is saved until you press Create.'),
+      h('label', { class: 'btn btn-primary ai-file' }, icon('camera'), h('span', {}, 'Take or upload the poster'),
+        h('input', { type: 'file', accept: 'image/*,application/pdf', hidden: true, onchange: (e) => pick(e.target.files[0]) })),
+      h('form', { class: 'ai-row', onsubmit: (e) => { e.preventDefault(); if (link.value.trim()) read({ formUrl: link.value.trim() }); } },
+        link, h('button', { class: 'btn', type: 'submit' }, 'Read the form')),
+      h('form', { class: 'ai-row stack', onsubmit: (e) => { e.preventDefault(); if (text.value.trim()) read({ text: text.value }); } },
+        text, h('button', { class: 'btn', type: 'submit' }, 'Read the text')),
+      h('p', { class: 'muted small ai-or' }, 'Or fill it in yourself below.'));
+  }
+
+  // The draft, to check and change before it's created. Guesses are marked.
+  const EV_DISCIPLINES = [['singles', 'Singles'], ['doubles', 'Doubles'], ['team', 'Team'], ['any', 'Singles or pairs']];
+  const EV_GENDERS = [['men', 'Men'], ['women', 'Women'], ['mixed', 'Mixed'], ['open', 'Open']];
+  function draftReview(d, live) {
+    const x = d.draft;
+    const unsure = (key) => (x.unsure || []).find((u) => u.field === key || u.field.startsWith(`${key}.`) || u.field.startsWith(`${key}[`));
+    const check = (key) => { const u = unsure(key); return u ? h('span', { class: 'check-this', title: u.reason }, 'Check this', h('small', {}, ` — ${u.reason}`)) : null; };
+    const problem = (i) => (d.problems || []).find((p) => p.field === `events.${i}`);
+    const input = (key, attrs = {}) => h('input', { value: x[key] ?? '', oninput: (e) => { x[key] = e.target.value || null; }, ...attrs });
+    const labelled = (label, key, control) => h('label', { class: `field${unsure(key) ? ' unsure' : ''}` }, h('span', { class: 'label' }, label, check(key)), control);
+    const sportOk = live.some((s) => s.id === x.sport);
+    const eventRow = (e, i) => h('div', { class: `ev-draft${problem(i) ? ' bad' : ''}${unsure(`events.${i}`) || unsure(`events[${i}]`) ? ' unsure' : ''}` },
+      h('select', { 'aria-label': 'Type', value: e.discipline, onchange: (ev) => { e.discipline = ev.target.value; } }, EV_DISCIPLINES.map(([v, l]) => h('option', { value: v }, l))),
+      h('select', { 'aria-label': 'For', value: e.gender, onchange: (ev) => { e.gender = ev.target.value; } }, EV_GENDERS.map(([v, l]) => h('option', { value: v }, l))),
+      h('input', { 'aria-label': 'Age group', placeholder: 'Open', value: e.age || '', oninput: (ev) => { e.age = ev.target.value || null; } }),
+      h('input', { 'aria-label': 'Level', placeholder: 'Open', value: e.level || '', oninput: (ev) => { e.level = ev.target.value || null; } }),
+      h('input', { 'aria-label': 'Entry fee in rupees', type: 'number', min: 0, step: 1, placeholder: '₹ fee', value: e.feeRupees ?? '', oninput: (ev) => { e.feeRupees = ev.target.value === '' ? null : Number(ev.target.value); } }),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Remove this event', onclick: () => { x.events.splice(i, 1); d.problems = (d.problems || []).filter((p) => !p.field.startsWith('events.')); render(); } }, '✕'),
+      problem(i) ? h('small', { class: 'ev-problem' }, problem(i).message) : null);
+    const details = [x.prizes ? `Prizes: ${x.prizes}` : null, (x.contacts || []).length ? `Contact: ${x.contacts.map((c) => [c.name, c.phone].filter(Boolean).join(' ')).join(', ')}` : null, x.otherDetails].filter(Boolean).join('\n\n');
+    const form = h('form', {
+      class: 'card new-flow form quick-new draft-review',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const btn = form.querySelector('button[type=submit]');
+        btn.disabled = true;
+        try {
+          const { id } = await api('POST', '/tournaments/from-draft', { ...x, prizes: null, contacts: [], otherDetails: form.details.value });
+          S.newDraft = null;
+          toast('Tournament created from your poster — check the details below');
+          navigate(`/t/${id}`);
+        } catch (err) {
+          toast(err.message, true);
+          btn.disabled = false;
+        }
+      },
+    },
+    h('div', { class: 'new-head' }, h('button', { type: 'button', class: 'back-link', onclick: () => { d.draft = null; d.problems = null; render(); } }, '← Start again'), h('span')),
+    h('h1', {}, 'Check your tournament'),
+    h('p', { class: 'muted small' }, 'Filled in from what you gave us. Anything marked "Check this" was a guess. Nothing is saved until you press Create.'),
+    (d.problems || []).filter((p) => !p.field.startsWith('events.')).map((p) => h('p', { class: 'banner info small' }, p.message)),
+    labelled('Tournament name', 'name', input('name', { name: 'name', required: true, maxlength: 80 })),
+    labelled('Sport', 'sport', h('select', { name: 'sport', required: true, value: sportOk ? x.sport : '', onchange: (e) => { x.sport = e.target.value; } },
+      h('option', { value: '' }, 'Pick the sport'), live.map((sp) => h('option', { value: sp.id }, sp.name)))),
+    h('div', { class: 'grid-2' },
+      labelled('Date', 'startsOn', input('startsOn', { type: 'date' })),
+      labelled('Start time', 'startTime', input('startTime', { type: 'time' }))),
+    h('div', { class: 'grid-2' },
+      labelled('Venue', 'venue', input('venue', { maxlength: 80 })),
+      labelled('City', 'city', input('city', { maxlength: 60 }))),
+    labelled('Entries close', 'entriesCloseAt', input('entriesCloseAt', { type: 'datetime-local' })),
+    groupField('Format', choiceGroup({ name: 'format', label: 'Format', value: x.format || 'league_knockout', options: FORMATS.map(([value, label]) => ({ value, label })), onchange: (e) => { x.format = e.target.value; } })),
+    h('div', { class: `field${unsure('events') ? ' unsure' : ''}` }, h('span', { class: 'label' }, `Events (${x.events.length})`, check('events')),
+      h('div', { class: 'ev-drafts' }, x.events.map(eventRow)),
+      h('button', { class: 'link-btn', type: 'button', onclick: () => { x.events.push({ discipline: 'singles', gender: 'open', age: null, level: null, name: null, feeRupees: null, feePer: 'entry' }); render(); } }, '+ Add an event')),
+    labelled('Other details (prizes, contacts, rules)', 'otherDetails', h('textarea', { name: 'details', rows: 4, maxlength: 2000 }, details)),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Create tournament')));
     return form;
   }
 
@@ -2579,7 +2688,93 @@
     }
     // Organisers: just the players and what to do with them. Settings are on the Setup tab.
     if (!setup) return [paymentsToCheck(t), upgradeCard(t), teamEditCard(t), running ? lateEntryCard(t) : null, list, setupLink(t)];
-    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), addEntriesForm(t, usingCheckIn), soloCard(t), teamEditCard(t), list, startCard(t), setupLink(t)];
+    return [setupChecklist(t), paymentsToCheck(t), upgradeCard(t), addEntriesForm(t, usingCheckIn), importCard(t), soloCard(t), teamEditCard(t), list, startCard(t), setupLink(t)];
+  }
+
+  // ---------- Google Form responses → entries: the CSV (or the published
+  // sheet's link), the columns (mapped by Claude, saved, or by hand), a
+  // preview with totals, merged duplicates and problems, then the import.
+  const IMPORT_FIELDS = [['name', 'Name'], ['partner', 'Partner'], ['phone', 'Phone'], ['email', 'Email'], ['category', 'Events chosen'], ['category_flag', 'One event (yes/no)'],
+    ['team', 'Team name'], ['paid', 'Paid?'], ['payment_ref', 'Payment ref / UTR'], ['level', 'Level'], ['gender', 'Gender'], ['age', 'Age'], ['club', 'Club'], ['timestamp', 'Timestamp'], ['ignore', 'Ignore']];
+  const specOf = (ev) => ({ discipline: ev.discipline, gender: ev.gender, age: ev.age || 'Open', level: ev.level || 'Open' });
+  function importCard(t) {
+    const I = (S.imp && S.imp.t === t.id) ? S.imp : (S.imp = { t: t.id, open: false });
+    const evById = new Map(t.events.map((e) => [e.id, e]));
+    const preview = async (body) => {
+      I.busy = true;
+      render();
+      try {
+        const r = await api('POST', `${tPath(t)}/import/preview`, body, t.id);
+        Object.assign(I, { r, source: body.csv ? { csv: body.csv } : { sheetUrl: body.sheetUrl }, skip: new Set(), create: new Set(r.missing.map((m) => m.key)) });
+      } catch (e) { toast(e.message, true); }
+      I.busy = false;
+      render();
+    };
+    const head = h('summary', {}, h('strong', {}, 'Import from Google Form'), h('small', { class: 'muted' }, ' · the responses you\'ve already collected'));
+    if (!I.r) {
+      const link = h('input', { type: 'url', placeholder: 'https://docs.google.com/spreadsheets/…/pub?output=csv', 'aria-label': 'Published sheet link' });
+      return h('details', { class: 'card import-card', open: I.open, ontoggle: (e) => { I.open = e.target.open; } }, head,
+        h('p', { class: 'muted small' }, 'In your form: Responses › Link to Sheets. In the sheet: File › Download › CSV, and choose the file here. Or use File › Share › Publish to web (as CSV) and paste the link.'),
+        I.busy ? [h('p', {}, 'Reading the responses…'), h('div', { class: 'progress' }, h('span', { class: 'indeterminate' }))] : [
+          h('label', { class: 'btn btn-primary' }, 'Choose the CSV file', h('input', {
+            type: 'file', accept: '.csv,text/csv', hidden: true,
+            onchange: async (e) => { const f = e.target.files[0]; if (!f) return; if (f.size > 3 * 1024 * 1024) { toast('That file is over 3 MB', true); return; } preview({ csv: await f.text() }); },
+          })),
+          h('form', { class: 'ai-row', onsubmit: (e) => { e.preventDefault(); if (link.value.trim()) preview({ sheetUrl: link.value.trim() }); } }, link, h('button', { class: 'btn', type: 'submit' }, 'Read the sheet'))],
+        h('p', { class: 'muted small' }, 'Nothing is added until you check the preview. Players aren\'t messaged.'));
+    }
+    const r = I.r;
+    const m = r.mapping;
+    const by = { ai: 'Columns matched by Claude — check them', saved: 'Columns matched as last time', you: 'Your column choices', guess: 'Columns matched by their names — check them' }[r.mappedBy];
+    const remap = () => preview({ ...I.source, mapping: m });
+    const evOptions = (value, extra = []) => [h('option', { value: '' }, 'Not an event'), ...extra, ...t.events.map((e) => h('option', { value: String(e.id), selected: value === String(e.id) }, e.name))];
+    const specKey = (sp) => (sp ? t.events.find((e) => e.discipline === sp.discipline && e.gender === sp.gender && (e.age || 'Open').toLowerCase() === String(sp.age || 'Open').toLowerCase() && (e.level || 'Open').toLowerCase() === String(sp.level || 'Open').toLowerCase()) : null);
+    const columns = h('div', { class: 'import-cols' }, m.columns.map((c) => h('div', { class: 'import-col' },
+      h('span', { class: 'import-head', title: c.header }, c.header),
+      h('select', { 'aria-label': `What's in "${c.header}"`, value: c.field, onchange: (e) => { c.field = e.target.value; if (c.field !== 'category_flag') c.event = null; remap(); } }, IMPORT_FIELDS.map(([v, l]) => h('option', { value: v }, l))),
+      c.field === 'category_flag' ? h('select', { 'aria-label': `Event for "${c.header}"`, onchange: (e) => { const ev = evById.get(Number(e.target.value)); c.event = ev ? specOf(ev) : null; remap(); } },
+        evOptions(specKey(c.event) ? String(specKey(c.event).id) : '')) : null)));
+    const valueOf = (a) => m.categoryValues.find((v) => v.value.toLowerCase() === a.toLowerCase());
+    const answers = r.answers.length ? h('div', { class: 'import-cols' }, r.answers.map((a) => {
+      const v = valueOf(a);
+      const known = v && v.event ? specKey(v.event) : null;
+      const isNew = v && v.event && !known;
+      return h('div', { class: 'import-col' }, h('span', { class: 'import-head' }, `"${a}"`),
+        h('select', { 'aria-label': `Event for "${a}"`, onchange: (e) => {
+          const ev = evById.get(Number(e.target.value));
+          const next = e.target.value === '__new' ? v.event : ev ? specOf(ev) : null;
+          m.categoryValues = [...m.categoryValues.filter((x) => x.value.toLowerCase() !== a.toLowerCase()), { value: a, event: next }];
+          remap();
+        } }, evOptions(known ? String(known.id) : isNew ? '__new' : '', isNew ? [h('option', { value: '__new', selected: true }, `New event: ${r.missing.find((x) => x.spec && x.spec.discipline === v.event.discipline)?.name || 'as read'}`)] : [])));
+    })) : null;
+    const chosen = r.entries.filter((e) => !I.skip.has(e.key) && (e.eventId || I.create.has(e.missingKey)));
+    const doImport = () => act(async () => {
+      const res = await api('POST', `${tPath(t)}/import`, { entries: chosen, create: r.missing.filter((x) => I.create.has(x.key)).map((x) => ({ key: x.key, spec: x.spec })), mapping: m }, t.id);
+      const { imported, ...view } = res;
+      S.t = view;
+      S.imp = null;
+      toast(`${imported.added} entr${imported.added === 1 ? 'y' : 'ies'} imported${imported.events ? `, ${imported.events} event${imported.events === 1 ? '' : 's'} added` : ''}${imported.unconfirmed ? ` (${imported.unconfirmed} unconfirmed: over your plan's limit)` : ''}${imported.skipped.length ? `. Skipped: ${imported.skipped.join(', ')}` : ''}`);
+    });
+    return h('div', { class: 'card import-card' },
+      h('div', { class: 'card-head' }, h('h2', {}, `Import ${r.responses} response${r.responses === 1 ? '' : 's'}`), h('button', { class: 'btn btn-small btn-ghost', type: 'button', onclick: () => { S.imp = null; render(); } }, 'Cancel')),
+      I.busy ? h('div', { class: 'progress' }, h('span', { class: 'indeterminate' })) : null,
+      h('details', { class: 'fold', open: r.mappedBy === 'guess' }, h('summary', {}, h('span', {}, h('strong', {}, 'Columns'), h('span', { class: 'muted' }, ` · ${by}`))), columns,
+        answers ? [h('h3', {}, 'Answers → events'), answers] : null, (m.notes || []).map((n) => h('p', { class: 'muted small' }, n))),
+      h('h3', {}, 'What will be added'),
+      h('ul', { class: 'plain-list import-totals' }, r.totals.map((x) => {
+        const miss = x.missingKey ? r.missing.find((y) => y.key === x.missingKey) : null;
+        return h('li', {},
+          miss ? h('label', { class: 'check-field' }, h('input', { type: 'checkbox', checked: I.create.has(miss.key), onchange: (e) => { if (e.target.checked) I.create.add(miss.key); else I.create.delete(miss.key); render(); } }),
+            h('span', {}, h('strong', {}, x.event), h('small', {}, ' · a new event — tick to add it'))) : h('strong', {}, x.event),
+          h('span', { class: 'muted small' }, ` ${x.entries} entr${x.entries === 1 ? 'y' : 'ies'}${x.solo ? ` · ${x.solo} need a partner` : ''}${x.unpaid ? ` · ${x.unpaid} unpaid` : ''}`));
+      })),
+      r.merged.length ? h('p', { class: 'muted small' }, `Merged ${r.merged.length} duplicate${r.merged.length === 1 ? '' : 's'} (the same people twice): ${r.merged.map((x) => `${x.name} (rows ${x.dropped} and ${x.kept})`).join(', ')}.`) : null,
+      r.problems.length ? h('div', { class: 'banner info small' }, h('strong', {}, `${r.problems.length} to check`), h('ul', {}, r.problems.slice(0, 20).map((p) => h('li', {}, `Row ${p.row}: ${p.message}`)))) : null,
+      h('details', { class: 'fold' }, h('summary', {}, h('span', {}, h('strong', {}, 'Entries'), h('span', { class: 'muted' }, ` · untick any to leave out`))),
+        h('ul', { class: 'plain-list import-rows' }, r.entries.map((e) => h('li', {}, h('label', { class: 'check-field' },
+          h('input', { type: 'checkbox', checked: !I.skip.has(e.key), onchange: (ev) => { if (ev.target.checked) I.skip.delete(e.key); else I.skip.add(e.key); render(); } }),
+          h('span', {}, h('strong', {}, e.name), h('small', {}, [e.eventName, e.solo ? 'needs a partner' : null, e.paid ? 'paid' : null, e.phone].filter(Boolean).join(' · ')))))))),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'button', disabled: !chosen.length || I.busy, onclick: doImport }, `Import ${chosen.length} entr${chosen.length === 1 ? 'y' : 'ies'}`)));
   }
 
   function addEntriesForm(t, walkIn) {
@@ -9672,7 +9867,10 @@
             const label = { email: 'Email', whatsapp: 'WhatsApp', sms: 'SMS' }[c];
             return h('li', {}, h('strong', {}, label), ' ',
               f.channels[c] ? h('span', { class: 'muted' }, m ? `${m.sent} sent${m.failed ? ` · ${m.failed} failed` : ''}${m.cost ? ` · ${money(m.cost)}` : ''}` : 'none sent') : pill('setup', 'Off'));
-          }))),
+          }),
+          f.ai ? h('li', {}, h('strong', {}, 'AI setup'), ' ', f.ai.enabled
+            ? h('span', { class: 'muted' }, `${f.ai.drafts} draft${f.ai.drafts === 1 ? '' : 's'} · ${f.ai.mappings} import${f.ai.mappings === 1 ? '' : 's'}${f.ai.failed ? ` · ${f.ai.failed} failed` : ''} · ${money(f.ai.cost)} · ${f.ai.model}`)
+            : pill('setup', 'Off')) : null)),
         h('div', { class: 'card' }, h('h3', {}, 'Scheduled jobs'),
           A.cron && !A.cron.secret ? h('p', { class: 'muted small' }, 'Set CRON_SECRET in the Vercel project so these run on their own.') : null,
           h('ul', { class: 'plain-list' }, jobs.map((j) => h('li', {}, h('span', {}, h('strong', {}, j.job), ' ',
@@ -10067,6 +10265,7 @@
     S.gift = me.gift || null;
     S.emailEnabled = Boolean(me.emailEnabled);
     S.phoneEnabled = Boolean(me.phoneEnabled);
+    S.aiEnabled = Boolean(me.aiEnabled);
     route();
     loadInviter();
   });

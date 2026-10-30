@@ -5,6 +5,7 @@ const path = require('node:path');
 const sports = require('./sports');
 const { createService } = require('./service');
 const { createCron } = require('./cron');
+const { createAi } = require('./ai');
 const { createAuth } = require('./auth');
 const { HttpError } = require('./errors');
 const pages = require('./pages');
@@ -35,7 +36,7 @@ function currentAppVersion() {
 // The app's pages other than tournaments (served the app page; see vercel.json).
 const APP_ROUTES = /^\/(?:new|play|compete|you|notifications|goals|goals\/new|runs|races|races\/new|meets|meets\/new|champs|champs\/new|club-run\/\d{1,12}|goals\/\d{1,12}|challenges|challenges\/new|c\/\d{1,12}|cc\/\d{1,12}|season\/\d{1,12}|invite|templates|signin|signup|forgot|reset|link|admin|academy\/new|clubs|clubs\/new|clubs\/rankings|club\/[a-z0-9-]{3,30}|a\/\d{1,12}|me\/profile|groups|groups\/new|g\/[a-z0-9-]{3,40}(?:\/game\/\d+)?|@[a-z0-9-]{3,30}\/edit)\/?$/;
 const MAX_BODY = 100 * 1024;
-const MAX_MEDIA_BODY = 3 * 1024 * 1024; // image uploads (resized in the browser first)
+const MAX_MEDIA_BODY = 4 * 1024 * 1024; // image uploads (resized in the browser first), posters, CSVs (under Vercel's 4.5 MB)
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -210,8 +211,10 @@ const deviceOf = (req) => {
   return typeof d === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(d) ? d : null;
 };
 
-function createApp(db, { mailer = createMailer(), fetchImpl, messaging } = {}) {
-  const svc = createService(db, { mailer, fetchImpl, messaging });
+function createApp(db, { mailer = createMailer(), fetchImpl, messaging, aiClient = null, aiEnv = process.env } = {}) {
+  // AI setup (server/ai.js): off without ANTHROPIC_API_KEY; tests pass a stand-in client.
+  const ai = createAi({ db, fail: (status, message) => { throw new HttpError(status, message); }, env: aiEnv, client: aiClient, fetchImpl: fetchImpl || globalThis.fetch });
+  const svc = createService(db, { mailer, fetchImpl, messaging, ai });
   const auth = createAuth(db, { mailer, messaging: svc.messaging, onSignup: (q, user, ref) => svc.referrals.attach(q, user, ref) });
   const cron = createCron({ db, svc, fail: (status, message) => { throw new HttpError(status, message); }, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, '') });
 
@@ -235,6 +238,12 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging } = {}) {
     ['GET', '/api/tournaments/places', () => svc.tournamentPlaces(), 60],
     ['POST', '/api/tournaments', (c) => svc.createTournament(c.actor, c.body)],
     ['POST', `${T}/template`, (c, id) => svc.saveTemplate(id, c.actor, c.body)],
+    // AI setup: a draft from a poster, form link or text (nothing saved), then the reviewed draft.
+    ['POST', '/api/ai/tournament-draft', (c) => ai.tournamentDraft(c.actor, c.body)],
+    ['POST', '/api/tournaments/from-draft', (c) => svc.createFromDraft(c.actor, c.body)],
+    // Google Form responses → entries: a preview, then the import.
+    ['POST', `${T}/import/preview`, (c, id) => svc.importPreview(id, c.actor, c.body)],
+    ['POST', `${T}/import`, (c, id) => svc.importEntries(id, c.actor, c.body)],
     ['POST', `${T}/invite-previous`, (c, id) => svc.invitePrevious(id, c.actor, c.body)],
     ['POST', `${T}/events/${N}/copy`, (c, id, eid) => svc.copyEventSettings(id, c.actor, eid, c.body)],
     ['GET', '/api/me/templates', (c) => svc.myTemplates(c.actor)],
@@ -297,7 +306,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging } = {}) {
     ['POST', `${T}/scoring/preview`, (c, id) => svc.previewScoringChange(id, c.actor, c.body)],
     ['POST', `${T}/scoring`, (c, id) => svc.changeScoring(id, c.actor, c.body)],
 
-    ['GET', '/api/auth/me', async (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled, phoneEnabled: svc.messaging.phoneEnabled(), gift: c.actor.user ? await svc.referrals.welcomeFor(c.actor.user) : null })],
+    ['GET', '/api/auth/me', async (c) => ({ user: c.actor.user, emailEnabled: mailer.enabled, phoneEnabled: svc.messaging.phoneEnabled(), aiEnabled: ai.enabled(), gift: c.actor.user ? await svc.referrals.welcomeFor(c.actor.user) : null })],
     ['POST', '/api/auth/forgot', async (c) => {
       const url = baseUrl(c.req);
       if (!url) throw new HttpError(503, 'Set APP_URL in the project settings to enable password reset');
@@ -1055,7 +1064,7 @@ function createApp(db, { mailer = createMailer(), fetchImpl, messaging } = {}) {
           const ctx = {
             req,
             query: url.searchParams,
-            body: write ? await readJson(req, /\/media$/.test(pathname) ? MAX_MEDIA_BODY : MAX_BODY) : {},
+            body: write ? await readJson(req, /\/media$|\/ai\/tournament-draft$|\/import(\/preview)?$/.test(pathname) ? MAX_MEDIA_BODY : MAX_BODY) : {},
             setCookie: (cookie) => cookies.push(cookie),
           };
           const cache = typeof route.cache === 'function' ? route.cache(ctx) : route.cache;

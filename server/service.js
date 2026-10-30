@@ -21,6 +21,8 @@ const { createCards } = require('./cards');
 const { createNotify } = require('./notify');
 const { createMessaging } = require('./messaging');
 const { sourceLabel } = require('./sources');
+const csv = require('./csv');
+const importer = require('./importer');
 const { createChallenges } = require('./challenges');
 const { createLadders } = require('./ladders');
 const { createClubChallenges } = require('./club-challenges');
@@ -229,7 +231,7 @@ const nextSlotColumn = (m) => (m.slot % 2 ? 'b_id' : 'a_id');
 // Every write runs in a transaction that first locks the tournament row, so
 // concurrent requests for one tournament (two umpires, retries, several
 // serverless instances) are applied one at a time.
-function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db, mailer, fetchImpl }) } = {}) {
+function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db, mailer, fetchImpl }), ai = null } = {}) {
   // Site-wide settings the admin changes, and academy / venue pages (set up at the end).
   const settings = createSettings(db);
   let orgs;
@@ -3482,6 +3484,7 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
       days: d, stages, activity, sources,
       tournamentSources: [...by.values()].sort((a, b) => b.n - a.n).slice(0, 12),
       messages, channels: messaging.channels(),
+      ai: ai ? await ai.usage(d) : null,
     };
   }
 
@@ -3802,6 +3805,197 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
   // (the goal card asks the goals module for a goal when it's drawn)
   const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null), clubChallengeCard: (id) => clubChallenges.card(id), seasonCard: (id) => seasons.card(id), raceCard: (id) => races.card(id), meetCard: (id) => meets.card(id), champCard: (id) => champs.card(id), matchCard, eventCard, resultsCard, posterCard });
 
+
+  // ---------- AI setup: a reviewed draft becomes a tournament (server/ai.js)
+
+  // The draft (as the organiser left it on the review screen): the
+  // tournament, then each event's fee, then the page's details and links.
+  async function createFromDraft(actor, d = {}) {
+    if (!actor.user) fail(401, 'Sign in to create a tournament');
+    const sport = sports.get(d.sport);
+    if (!sport) fail(400, 'Pick the sport');
+    const events = (Array.isArray(d.events) ? d.events : []).map((e) => ({
+      discipline: e.discipline, gender: e.gender, age: e.age || 'Open', level: e.level || 'Open', ...(e.name && { name: e.name }),
+      fee: e.feeRupees != null && e.feeRupees !== '' ? int(Math.round(Number(e.feeRupees) * 100), 0, MAX_FEE, 0, 'Entry fee') : 0,
+      feePer: e.feePer === 'player' ? 'player' : 'entry',
+    }));
+    if (!events.length) fail(400, 'Add at least one event');
+    // A state we don't know (or a country without a list) is left out rather than refused.
+    const country = d.country || regions.defaultCountry;
+    const states = regions.regionsFor(country);
+    const region = d.region && (!states || states.some((r) => r.toLowerCase() === String(d.region).toLowerCase())) ? d.region : null;
+    const { id, gift } = await createTournament(actor, {
+      name: d.name, sport: sport.id, format: FORMATS[d.format] ? d.format : 'league_knockout', groupSize: 4, qualifiers: 2, scoring: sport.defaults,
+      startsOn: d.startsOn || undefined, endsOn: d.startsOn && d.endsOn ? d.endsOn : undefined,
+      startTime: d.startsOn && d.startTime ? d.startTime : undefined, endTime: d.startsOn && d.endTime ? d.endTime : undefined,
+      venue: d.venue || undefined, address: d.address || undefined, city: d.city || undefined, region: region || undefined, country,
+      events: events.map(({ fee, feePer, ...e }) => e),
+    });
+    const t = await getTournament(id, actor);
+    for (const [i, ev] of t.events.entries()) {
+      const e = events[i];
+      if (!e || !e.fee) continue;
+      const team = ev.discipline === 'team';
+      await updateEvent(id, actor, ev.id, { fee: e.fee, ...(team && e.feePer === 'player' && { feePer: 'player' }) });
+    }
+    // Prizes, contacts and anything else: the page's "Other details".
+    const contacts = (Array.isArray(d.contacts) ? d.contacts : []).filter((c) => c && (c.name || c.phone)).map((c) => [c.name, c.phone].filter(Boolean).join(' '));
+    const notes = [d.prizes ? `Prizes: ${d.prizes}` : null, contacts.length ? `Contact: ${contacts.join(', ')}` : null, d.otherDetails || null].filter(Boolean).join('\n\n').slice(0, 2000);
+    const https = (v) => (v ? (/^https?:\/\//i.test(v) ? v : `https://${v}`) : null);
+    const okLink = (v, host) => { try { const u = new URL(https(v)); return !host || u.hostname.endsWith(host) ? u.toString() : null; } catch { return null; } };
+    const l = d.links || {};
+    const pageLinks = { website: okLink(l.website), instagram: okLink(l.instagram, 'instagram.com'), whatsapp: okLink(l.whatsapp, 'chat.whatsapp.com') };
+    const close = d.entriesCloseAt && !Number.isNaN(Date.parse(d.entriesCloseAt)) ? new Date(`${String(d.entriesCloseAt).slice(0, 16)}:00+05:30`).toISOString() : undefined;
+    await updateSettings(id, actor, { ...(notes && { notes }), ...(Object.values(pageLinks).some(Boolean) && { pageLinks }), ...(close && { entriesCloseAt: close }) });
+    return { id, ...(gift && { gift }) };
+  }
+
+  // ---------- importing a Google Form's responses (server/importer.js)
+
+  const SHEET_HOSTS = /^(docs\.google\.com|[a-z0-9-]+\.googleusercontent\.com)$/;
+  async function sheetCsv(url) {
+    let u;
+    try { u = new URL(String(url || '').trim()); } catch { fail(400, 'Paste the sheet\'s "Publish to web" CSV link'); }
+    if (u.protocol !== 'https:' || u.hostname !== 'docs.google.com' || !u.pathname.startsWith('/spreadsheets/') || !/output=csv/.test(u.search)) {
+      fail(400, 'Use the sheet\'s "Publish to web" link, as CSV (docs.google.com/spreadsheets/…/pub?output=csv)');
+    }
+    const get = fetchImpl || globalThis.fetch;
+    let res;
+    for (let hops = 0; hops < 5; hops += 1) {
+      res = await get(u.toString(), { redirect: 'manual' });
+      if (res.status < 300 || res.status >= 400) break;
+      const next = new URL(res.headers.get('location') || '', u);
+      if (next.protocol !== 'https:' || !SHEET_HOSTS.test(next.hostname)) fail(400, 'That link doesn\'t open a published sheet');
+      u = next;
+    }
+    if (!res || !res.ok) fail(400, 'Couldn\'t open that sheet — is it published to the web as CSV?');
+    const text = await res.text();
+    if (text.length > 2_000_000) fail(400, 'That sheet is too big to import');
+    return text;
+  }
+  // A first guess from the headers, when the AI is off (the organiser corrects it).
+  function guessMapping(headers) {
+    const rules = [[/time ?stamp/i, 'timestamp'], [/partner/i, 'partner'], [/e-?mail/i, 'email'], [/phone|mobile|whats ?app|contact no/i, 'phone'],
+      [/utr|transaction|reference|txn/i, 'payment_ref'], [/paid|payment/i, 'paid'], [/team/i, 'team'], [/club|academy/i, 'club'],
+      [/gender|sex/i, 'gender'], [/level|skill/i, 'level'], [/category|categories|event/i, 'category'], [/name/i, 'name']];
+    const used = new Set();
+    return {
+      columns: headers.map((h) => {
+        const hit = rules.find(([re, f]) => re.test(h) && (!used.has(f) || f === 'category'));
+        if (hit) used.add(hit[1]);
+        return { header: h, field: hit ? hit[1] : 'ignore', event: null };
+      }),
+      categoryValues: [], separator: ',', paidValues: [], notes: ['Set by the column names — check each one.'],
+    };
+  }
+  const mappingFits = (m, headers) => m && Array.isArray(m.columns) && m.columns.length && m.columns.every((c) => headers.includes(c.header));
+
+  async function importPreview(id, actor, input = {}) {
+    const t = await db.tx(async (q) => (await lockWith(q, id, actor, 'manage')).t);
+    const rows = await eventsOf(db.query, t.id);
+    if (!rows.some((e) => e.status === 'setup')) fail(409, 'Entries are locked once the tournament has started');
+    const text = input.sheetUrl ? await sheetCsv(input.sheetUrl) : typeof input.csv === 'string' ? input.csv : '';
+    if (text.length > 2_000_000) fail(400, 'That file is too big to import');
+    const tbl = csv.table(text);
+    if (!tbl.headers.length || !tbl.rows.length) fail(400, 'No responses found in that file');
+    if (tbl.rows.length > 2000) fail(400, 'Up to 2,000 responses at a time');
+    const events = rows.map((e) => ({ id: e.id, name: catalog.eventName(e), discipline: e.discipline, gender: e.gender, age: e.age, level: e.level, status: e.status }));
+    let mapping = input.mapping && mappingFits(input.mapping, tbl.headers) ? input.mapping : null;
+    let mappedBy = mapping ? 'you' : null;
+    if (!mapping && mappingFits(t.import_mapping, tbl.headers)) { mapping = t.import_mapping; mappedBy = 'saved'; }
+    if (!mapping && ai && ai.enabled()) {
+      mapping = await ai.columnMapping(actor, { tournament: t.id, sport: t.sport, events, sample: importer.sampleFor(tbl) });
+      mappedBy = 'ai';
+      await db.query('UPDATE tournaments SET import_mapping = $1::jsonb WHERE id = $2', [JSON.stringify(mapping), t.id]);
+    }
+    if (!mapping) { mapping = guessMapping(tbl.headers); mappedBy = 'guess'; }
+    const r = importer.applyMapping(tbl, mapping, events, t.sport);
+    // Answers in category columns, for the organiser to map by hand.
+    const catCols = mapping.columns.filter((c) => c.field === 'category').map((c) => tbl.headers.indexOf(c.header));
+    const answers = [...new Set(tbl.rows.flatMap((row) => catCols.flatMap((i) => String(row[i] || '').split(/[,;]/).map((x) => x.trim()).filter(Boolean))))];
+    return {
+      headers: tbl.headers, responses: tbl.rows.length, mapping, mappedBy, answers,
+      events: events.map(({ id: eid, name, status }) => ({ id: eid, name, status })),
+      entries: r.entries.map((e, i) => ({ ...e, key: i })), totals: importer.totals(r.entries), merged: r.merged, problems: r.problems, missing: r.missing,
+    };
+  }
+
+  // The rows the organiser kept: entries with their phone, email, level,
+  // partner (or "find me a partner"), payment and reference. No messages are
+  // sent to the players. Names already entered are skipped; past the plan's
+  // limit entries come in unconfirmed, as self-entries do.
+  async function importEntries(id, actor, input = {}) {
+    const list = Array.isArray(input.entries) ? input.entries : [];
+    if (!list.length) fail(400, 'Nothing to import');
+    if (list.length > 2000) fail(400, 'Up to 2,000 entries at a time');
+    const summary = { added: 0, skipped: [], unconfirmed: 0, events: 0 };
+    const view = await mutate(id, actor, async (q, t) => {
+      // Events to create first (from the preview's "missing").
+      const existing = await eventsOf(q, t.id);
+      const made = new Map();
+      for (const c of Array.isArray(input.create) ? input.create : []) {
+        let f;
+        try { f = catalog.normalize(c.spec || {}, {}, t.sport); } catch (err) { fail(400, err.message); }
+        const label = catalog.eventName(f);
+        const same = existing.find((e) => catalog.eventName(e).toLowerCase() === label.toLowerCase());
+        if (same) { made.set(c.key, same.id); continue; }
+        const base = existing[0] ? eventContext(t, existing[0]) : null;
+        const config = eventConfigOf(buildConfig({}, t.sportDef, base ? { ...base.config, knockoutRounds: undefined, maxEntries: null, fee: 0, prizes: [] } : {}));
+        delete config.knockoutRounds;
+        const pos = existing.reduce((m, e) => Math.max(m, e.position), -1) + 1;
+        const [row] = await insertEvent(q, t.id, pos, { ...f, format: base?.format ?? 'league_knockout' }, config);
+        existing.push({ id: row.id, ...f, position: pos, status: 'setup' });
+        made.set(c.key, row.id);
+        summary.events += 1;
+      }
+      const limit = planLimit(t.plan);
+      let confirmedSoFar = await confirmedCount(q, t);
+      const byEvent = new Map();
+      for (const e of list) {
+        const evId = e.eventId ? Number(e.eventId) : made.get(e.missingKey);
+        if (!evId) continue;
+        if (!byEvent.has(evId)) byEvent.set(evId, []);
+        byEvent.get(evId).push(e);
+      }
+      for (const [evId, items] of byEvent) {
+        const ev = await eventFor(q, t, evId);
+        requireSetup(ev);
+        const current = await entriesOf(q, ev);
+        const seen = new Set(current.map((x) => x.name.toLowerCase()));
+        let seed = current.reduce((m, x) => Math.max(m, x.seed), 0);
+        let count = current.length;
+        const team = ev.event.discipline === 'team';
+        for (const e of items) {
+          const name = text(e.name, 'Name', { max: 60 });
+          if (seen.has(name.toLowerCase())) { summary.skipped.push(`${name} (${eventLabel(ev)}: already entered)`); continue; }
+          if (count >= MAX_ENTRIES) { summary.skipped.push(`${name} (${eventLabel(ev)} is full)`); continue; }
+          seen.add(name.toLowerCase());
+          count += 1;
+          const solo = ev.event.discipline === 'doubles' && Boolean(e.solo);
+          const fee = solo ? Math.ceil(feeOf(ev) / 2) : feeOf(ev);
+          const confirmed = confirmedSoFar < limit;
+          if (confirmed) confirmedSoFar += 1; else summary.unconfirmed += 1;
+          let level = null;
+          try { level = team ? null : levelIn(ev, e.level); } catch { level = null; }
+          const email = typeof e.email === 'string' && validEmail(e.email.trim().toLowerCase()) ? e.email.trim().toLowerCase() : null;
+          const phone = typeof e.phone === 'string' && e.phone.trim() ? e.phone.trim().slice(0, 20) : null;
+          const players = (Array.isArray(e.players) ? e.players : []).map((p) => String(p || '').trim().slice(0, 40)).filter(Boolean);
+          const [row] = await insertEntry(q, ev, {
+            name, seed: ++seed, source: 'import', contact: email || phone, phone, level, solo,
+            side: solo && ev.event.gender === 'mixed' && ['man', 'woman'].includes(e.side) ? e.side : null,
+            confirmed, feeStatus: fee ? (e.paid ? 'received' : 'due') : null, feeAmount: fee || null,
+            players: team && players.length ? players : null,
+          });
+          if (e.payRef) await q('UPDATE entries SET pay_ref = $1 WHERE id = $2', [String(e.payRef).slice(0, 60), row.id]);
+          if (!team) await profiles.setPeople(q, row.id, (solo ? players.slice(0, 1) : players).map((n, i) => ({ name: n, email: i === 0 ? email : null })));
+          summary.added += 1;
+        }
+      }
+      if (input.mapping && Array.isArray(input.mapping.columns)) await q('UPDATE tournaments SET import_mapping = $1::jsonb WHERE id = $2', [JSON.stringify(input.mapping), t.id]);
+      await syncTournament(q, t.id);
+    });
+    return { ...view, imported: summary };
+  }
 
   // ---------- templates, and new tournaments from old ones
 
@@ -4231,6 +4425,10 @@ function createService(db, { mailer, fetchImpl, messaging = createMessaging({ db
     matchCard,
     eventCard,
     saveTemplate,
+    createFromDraft,
+    importPreview,
+    importEntries,
+    ai,
     myTemplates,
     renameTemplate,
     deleteTemplate,
