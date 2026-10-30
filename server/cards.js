@@ -128,7 +128,7 @@ function render(card, size = 'og') {
   return r.render().asPng();
 }
 
-function createCards({ db, goalsView = null, clubChallengeCard = null }) {
+function createCards({ db, goalsView = null, clubChallengeCard = null, seasonCard = null }) {
   const minorYear = () => new Date().getFullYear() - MINOR_AGE;
   const sportName = (id) => (sports.get(id) || sports.info(id) || {}).name || '';
   const FINISH = { W: 'Champion', F: 'Finalist' };
@@ -166,6 +166,13 @@ function createCards({ db, goalsView = null, clubChallengeCard = null }) {
       const kind = d.kind === 'tie' ? 'tie' : 'match';
       if (!d.winner) return { eyebrow: `Club v club · ${sportName(a.sport)}`, title: `${d.from} v ${d.to}`, subtitle: `A drawn ${kind}`, big: d.score, bigLabel: 'Final' };
       return { eyebrow: `Club v club · ${sportName(a.sport)}`, title: d.winner, subtitle: `beat ${d.loser} in a ${sportName(a.sport).toLowerCase()} ${kind}`, big: d.score, bigLabel: 'Final' };
+    }
+    if (a.verb === 'season_match') {
+      if (!d.winner) return { eyebrow: `${d.season} · Round ${d.round}`, title: `${d.a} v ${d.b}`, subtitle: 'All square', big: d.score, bigLabel: 'Draw' };
+      return { eyebrow: `${d.season} · Round ${d.round}`, title: d.winner, subtitle: `beat ${d.loser}`, big: d.score, bigLabel: sportName(a.sport) };
+    }
+    if (a.verb === 'season_won') {
+      return { eyebrow: `Champions · ${sportName(a.sport)}`, title: d.champion, subtitle: `won ${d.season}`, big: `${d.points} pts`, bigLabel: `${d.won} wins from ${d.played}` };
     }
     if (a.verb === 'joined' || a.verb === 'club') {
       return { eyebrow: a.verb === 'club' ? 'New club' : 'Joined the club', title: d.club, subtitle: `${who ? who.name : 'Someone'} ${a.verb === 'club' ? 'started it' : 'is in'} — join them on Tonament` };
@@ -254,7 +261,8 @@ function createCards({ db, goalsView = null, clubChallengeCard = null }) {
   }
 
   const cc = async (id) => (clubChallengeCard ? clubChallengeCard(id) : null);
-  const KINDS = { a: activity, club, p: player, t: tournament, ladder, goal, cc };
+  const season = async (id) => (seasonCard ? seasonCard(id) : null);
+  const KINDS = { a: activity, club, p: player, t: tournament, ladder, goal, cc, season };
   // The PNG for /img/<kind>/<id>.png, or null.
   async function image(kind, id, size) {
     const make = KINDS[kind];

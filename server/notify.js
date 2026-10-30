@@ -23,6 +23,7 @@ const KINDS = {
   goal: { label: 'Goals reached', email: false },
   club_challenge: { label: 'Challenges to your club', email: true },
   club_result: { label: 'Club v club results', email: false },
+  season: { label: 'Club seasons', email: false },
 };
 const PAGE = 40;
 const DELIVERY_MS = 4000;

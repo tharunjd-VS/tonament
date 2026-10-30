@@ -770,11 +770,29 @@ CREATE TABLE IF NOT EXISTS club_challenges (
 CREATE INDEX IF NOT EXISTS club_challenges_from ON club_challenges(from_org, created_at DESC);
 CREATE INDEX IF NOT EXISTS club_challenges_to ON club_challenges(to_org, created_at DESC);
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS club_challenge_id INTEGER;
+-- v41: club seasons. A league between clubs, run by a host club: clubs enter
+-- by link before it starts, each picks its team from its members, and every
+-- club plays every other once (a tie in racket sports, a match in team
+-- sports). It's a link-only league tournament with the clubs as entries.
+CREATE TABLE IF NOT EXISTS seasons (
+  id            SERIAL PRIMARY KEY,
+  host_org      INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  sport         TEXT NOT NULL,
+  tie           JSONB,                            -- the tie format; null in team sports
+  status        TEXT NOT NULL DEFAULT 'open',     -- open | on | done
+  tournament_id TEXT NOT NULL,
+  champion_org  INTEGER,
+  created_by    INTEGER NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS seasons_host ON seasons(host_org);
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS season_id INTEGER;
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 40;
+const SCHEMA_VERSION = 41;
 
 async function migrate(db) {
   try {

@@ -22,6 +22,7 @@ const { createNotify } = require('./notify');
 const { createChallenges } = require('./challenges');
 const { createLadders } = require('./ladders');
 const { createClubChallenges } = require('./club-challenges');
+const { createSeasons } = require('./seasons');
 const { createGoals } = require('./goals');
 const { createTies } = require('./ties');
 const TIE = require('../public/sports/tie');
@@ -226,6 +227,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
   let social;
   let goalsRef = null;
   let clubChallengesRef = null;
+  let seasonsRef = null;
   let referrals;
 
   // ---------- queries (q is db.query or a transaction's query)
@@ -400,7 +402,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
   }
   // A club v club match (club-challenges.js) finished, or reopened by an undo.
   async function clubMatchStatus(q, t, done) {
-    const [row] = await q('SELECT club_challenge_id FROM tournaments WHERE id = $1', [t.id]);
+    const [row] = await q('SELECT club_challenge_id, season_id FROM tournaments WHERE id = $1', [t.id]);
+    if (row && row.season_id && seasonsRef) return seasonsRef.statusChanged(q, row.season_id, done ? 'done' : t.status);
     if (!row || !row.club_challenge_id || !clubChallengesRef) return;
     if (!done) return clubChallengesRef.reopened(q, row.club_challenge_id);
     const [m] = await q('SELECT * FROM matches WHERE event_id = $1 ORDER BY id LIMIT 1', [t.eventId]);
@@ -440,9 +443,9 @@ function createService(db, { mailer, fetchImpl } = {}) {
   // ones to followers; private ones not at all).
   async function podiumActivity(q, t) {
     await social.forget(q, 'event', t.eventId);
-    const [row] = await q('SELECT visibility, name, club_challenge_id FROM tournaments WHERE id = $1', [t.id]);
-    // Club v club matches post their own result (club-challenges.js).
-    if (!row || row.visibility === 'private' || row.club_challenge_id) return;
+    const [row] = await q('SELECT visibility, name, club_challenge_id, season_id FROM tournaments WHERE id = $1', [t.id]);
+    // Club v club matches and seasons post their own results.
+    if (!row || row.visibility === 'private' || row.club_challenge_id || row.season_id) return;
     const podium = await q(
       `SELECT u.id, u.profile_public, r.finish, r.entries, e.org_id FROM event_results r JOIN users u ON u.email = r.email
        JOIN entries e ON e.id = r.entry_id WHERE r.event_id = $1 AND r.finish IN ('W', 'F')`,
@@ -2925,6 +2928,10 @@ function createService(db, { mailer, fetchImpl } = {}) {
       `UPDATE matches SET rallies = $1, status = $2, winner_id = $3, updated_at = now() WHERE id = $4 RETURNING *`,
       [rallies, over ? 'done' : 'live', winnerId, m.id],
     );
+    if (tournament.season_id && seasonsRef && (over || m.status === 'done')) {
+      const g = score.single ? score.games[0] : score.gamesWon;
+      await seasonsRef.matchChanged(q, tournament.season_id, row, over && { a: g.a, b: g.b, winner: score.winner || null });
+    }
     if (over) {
       if (m.stage === 'knockout') {
         if (m.round === t.config.knockoutRounds) await setStatus(q, t, 'completed');
@@ -3009,6 +3016,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
         `UPDATE matches SET rallies = $1, status = 'live', winner_id = NULL, retired = NULL, updated_at = now() WHERE id = $2 RETURNING *`,
         [m.retired ? m.rallies : m.rallies.slice(0, -1), m.id],
       );
+      if (m.status === 'done' && tournament.season_id && seasonsRef) await seasonsRef.matchChanged(q, tournament.season_id, row, false);
       return viewOfRow(q, t, row);
     });
   }
@@ -3704,8 +3712,13 @@ function createService(db, { mailer, fetchImpl } = {}) {
     match: { create: makeClubMatch, roster: clubRoster, info: clubMatchInfo },
   });
   clubChallengesRef = clubChallenges;
+  const seasons = createSeasons({
+    db, fail, text, social, notify, kindOf: clubChallenges.kindOf,
+    league: { create: makeSeasonLeague, enter: addClubEntry, leave: removeClubEntry, roster: seasonRoster, info: seasonInfo, start: startSeasonLeague },
+  });
+  seasonsRef = seasons;
   // (the goal card asks the goals module for a goal when it's drawn)
-  const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null), clubChallengeCard: (id) => clubChallenges.card(id) });
+  const cards = createCards({ db, goalsView: (id) => goalsRef.get(id, null), clubChallengeCard: (id) => clubChallenges.card(id), seasonCard: (id) => seasons.card(id) });
 
   // ---------- club v club matches (club-challenges.js)
 
@@ -3775,6 +3788,78 @@ function createService(db, { mailer, fetchImpl } = {}) {
     };
   }
 
+  // ---------- club seasons (seasons.js): a league between clubs
+
+  // The season's link-only league: one team event, open for clubs to enter.
+  async function makeSeasonLeague({ actor, name, sport, tie }) {
+    const { id } = await createTournament(actor, {
+      name: name.slice(0, 80), sport, format: 'league', visibility: 'link', events: [{ discipline: 'team', gender: 'open' }],
+    }, { gift: false });
+    const ev = (await eventsOf(db.query, id))[0].id;
+    await updateEvent(id, actor, ev, { ...(tie && { tie }), groups: 1 });
+    return id;
+  }
+  // A club enters (before the start): its entry, captained by the admin who
+  // entered it, and its admins as umpires so they can score fixtures.
+  async function addClubEntry(q, tid, { name, orgId, userId, emails, role = 'umpire' }) {
+    const tournament = await load(q, tid, { lock: true });
+    const [{ id: eventId }] = await eventsOf(q, tid);
+    const t = await eventFor(q, tournament, eventId);
+    requireSetup(t);
+    const entries = await entriesOf(q, t);
+    if (entries.some((e) => e.name.toLowerCase() === name.toLowerCase())) fail(409, `A club called ${name} is already in`);
+    const seed = entries.reduce((max, e) => Math.max(max, e.seed), 0) + 1;
+    const [e] = await insertEntry(q, t, { name, seed, userId });
+    await q('UPDATE entries SET org_id = $1 WHERE id = $2', [orgId, e.id]);
+    for (const email of emails) await q(`INSERT INTO members (tournament_id, email, role) VALUES ($1, $2, $3) ON CONFLICT (tournament_id, email) DO NOTHING`, [tid, email, role]);
+  }
+  async function removeClubEntry(q, tid, orgId) {
+    const tournament = await load(q, tid, { lock: true });
+    const [{ id: eventId }] = await eventsOf(q, tid);
+    requireSetup(await eventFor(q, tournament, eventId));
+    await q('DELETE FROM entries WHERE tournament_id = $1 AND org_id = $2', [tid, orgId]);
+  }
+  // A club's team in the season. Once it's on, players can be added but not
+  // taken off (line-ups point at their places on the list).
+  async function seasonRoster(tid, orgId, players) {
+    await db.tx(async (q) => {
+      const tournament = await load(q, tid, { lock: true });
+      const [e] = await q('SELECT * FROM entries WHERE tournament_id = $1 AND org_id = $2', [tid, orgId]);
+      if (!e) fail(404, 'That club isn\'t in this season');
+      const t = await eventFor(q, tournament, e.event_id);
+      if (t.status !== 'setup') {
+        const now = await q('SELECT email FROM entry_players WHERE entry_id = $1 ORDER BY slot', [e.id]);
+        if (now.some((p, i) => !players[i] || (p.email || '').toLowerCase() !== String(players[i].email || '').toLowerCase())) {
+          fail(409, 'The season has started: you can add players, but not take anyone off or reorder the team');
+        }
+      }
+      await saveRoster(q, t, e, players);
+    });
+  }
+  // The table, fixtures and teams.
+  async function seasonInfo(q, tid) {
+    const t = await view(q, await load(q, tid), {});
+    const orgOf = new Map((await q('SELECT id, org_id FROM entries WHERE tournament_id = $1', [tid])).map((e) => [e.id, e.org_id]));
+    const team = async (entryId) => (await q(
+      'SELECT p.name, p.captain, p.email, u.handle FROM entry_players p LEFT JOIN users u ON u.email = p.email WHERE p.entry_id = $1 ORDER BY p.slot', [entryId],
+    )).map((p) => ({ name: p.name, captain: p.captain, email: p.email, handle: p.handle || null }));
+    const g = (t.groups || [])[0];
+    return {
+      status: t.status,
+      entries: await Promise.all(t.entries.map(async (e) => ({ id: e.id, name: e.name, org: orgOf.get(e.id), team: await team(e.id) }))),
+      table: g ? g.standings.map((r) => ({ ...r, org: orgOf.get(r.id) })) : [],
+      fixtures: (t.matches || []).map((m) => ({
+        id: m.id, round: m.round, status: m.status, summary: m.summary || '',
+        a: m.a && { name: m.a.name, org: orgOf.get(m.a.id) }, b: m.b && { name: m.b.name, org: orgOf.get(m.b.id) },
+        winner: m.winner || null,
+      })),
+    };
+  }
+  async function startSeasonLeague(tid, actor) {
+    const [{ id: eventId }] = await eventsOf(db.query, tid);
+    await startEvent(tid, actor, { event: eventId });
+  }
+
   referrals = createReferrals({ db, fail, mailer: mailer?.enabled ? mailer : null, baseUrl: (process.env.APP_URL || 'https://tonament.com').replace(/\/+$/, ''), confirmWaiting });
 
   // A free upgrade from a referral credit: one of your tournaments moves up a plan.
@@ -3799,6 +3884,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     goals,
     ties,
     clubChallenges,
+    seasons,
     referrals,
     useCredit,
     takeOverScoring,

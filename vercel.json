@@ -88,6 +88,10 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/season/:id(\\d{1,12})",
+      "destination": "/api/index?__path=seasonpage/:id"
+    },
+    {
       "source": "/cc/:id(\\d{1,12})",
       "destination": "/api/index?__path=ccpage/:id"
     },
@@ -108,7 +112,7 @@
       "destination": "/api/index?__path=item/:id"
     },
     {
-      "source": "/img/:kind(a|club|p|t|ladder|goal|cc)/:file",
+      "source": "/img/:kind(a|club|p|t|ladder|goal|cc|season)/:file",
       "destination": "/api/index?__path=img/:kind/:file"
     },
     {

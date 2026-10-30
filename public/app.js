@@ -684,6 +684,13 @@
           render();
           S.challenges = await api('GET', '/challenges').catch(() => ({ incoming: [], outgoing: [], toPlay: [], toConfirm: [], played: [] }));
         }
+      } else if (parts[0] === 'season' && /^\d+$/.test(parts[1] || '')) {
+        S.route = { name: 'season', id: Number(parts[1]) };
+        if (!S.season || S.season.id !== S.route.id) S.season = null;
+        S.seasonPick = null;
+        render();
+        await loadSeason();
+        return;
       } else if (parts[0] === 'cc' && /^\d+$/.test(parts[1] || '')) {
         S.route = { name: 'clubChallenge', id: Number(parts[1]) };
         if (!S.cc || S.cc.id !== S.route.id) S.cc = null;
@@ -912,6 +919,7 @@
     else if (S.route.name === 'challengeNew') view = viewChallengeNew();
     else if (S.route.name === 'challenge') view = viewChallenge();
     else if (S.route.name === 'clubChallenge') view = viewClubChallenge();
+    else if (S.route.name === 'season') view = viewSeason();
     else if (S.route.name === 'profile') view = viewProfile();
     else if (S.route.name === 'groups') view = viewGroups();
     else if (S.route.name === 'groupNew') view = viewGroupNew();
@@ -6831,6 +6839,7 @@
     S.clubLadders = null; // positions move: fetch them fresh
     S.clubGoalsList = null;
     S.clubVersus = null;
+    S.clubSeasons = null;
     try {
       S.club = await api('GET', `${clubPath(slug)}${join ? `?join=${encodeURIComponent(join)}` : ''}`);
       S.error = null;
@@ -6907,7 +6916,7 @@
       feed: () => [clubGoals(c), feedList(S.clubFeed, member ? 'Nothing here yet. Results, titles and new members show up here.' : 'Nothing public here yet.')],
       members: () => clubMembers(c),
       leaderboard: () => clubLeaderboard(c),
-      ladder: () => [clubVersus(c), clubLadders(c)],
+      ladder: () => [clubVersus(c), clubSeasons(c), clubLadders(c)],
       page: () => clubPageCard(c),
     }[tab]();
     return [head,
@@ -7075,6 +7084,146 @@
           : h('p', { class: 'muted' }, 'Take on another club: a team tie in racket sports, or a friendly in team sports. Results go on both clubs\' records and feeds.'),
         V.admin && !S.ccForm ? h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => { S.ccForm = true; render(); } }, '⚔️ Challenge a club')) : null),
       V.admin && S.ccForm ? form() : null);
+  }
+
+  // ---------- club seasons: a league between clubs
+  const SEASON_STATUS = { open: ['waiting', 'Clubs entering'], on: ['org', 'On'], done: ['done', 'Finished'] };
+  // Sports a club can play against clubs: ties in racket sports, matches in team sports.
+  const clubSportsFor = (c) => {
+    const listed = (c.sports || []).filter((x) => CAT.isTeamSport(x.id) || CAT.hasTies(x.id));
+    const all = listed.length ? listed : (S.sports || []).filter((x) => x.status === 'live' && (CAT.isTeamSport(x.id) || CAT.hasTies(x.id)));
+    return all.map((x) => ({ id: x.id, name: x.name, kind: CAT.isTeamSport(x.id) ? 'friendly' : 'tie' }));
+  };
+
+  function clubSeasons(c) {
+    const L = S.clubSeasons;
+    if (!L || L.slug !== c.slug) {
+      S.clubSeasons = { slug: c.slug, loading: true };
+      api('GET', `${clubPath(c.slug)}/seasons`).then((r) => { S.clubSeasons = { slug: c.slug, ...r }; render(); }, () => { S.clubSeasons = { slug: c.slug, items: [] }; render(); });
+      return loading();
+    }
+    if (L.loading) return loading();
+    const options = clubSportsFor(c);
+    const form = () => {
+      const d = (S.seasonDraft ||= { sport: (options[0] || {}).id || '', format: '2s1d', name: '' });
+      const kind = (options.find((x) => x.id === d.sport) || {}).kind;
+      return h('form', {
+        class: 'card form',
+        onsubmit: (e) => {
+          e.preventDefault();
+          act(async () => {
+            const x = await api('POST', `${clubPath(c.slug)}/seasons`, { name: d.name || null, sport: d.sport, ...(kind === 'tie' && { tie: { format: d.format } }) });
+            S.seasonForm = false; S.seasonDraft = null; S.clubSeasons = null; S.season = x;
+            navigate(`/season/${x.id}`);
+          }, 'Season set up — share the link with the clubs you want in');
+        },
+      },
+      h('h2', {}, 'Start a season'),
+      h('p', { class: 'muted small' }, 'A league between clubs: they enter with the link, pick their teams, and every club plays every other once. You start it when everyone\'s in.'),
+      field('Name', h('input', { maxlength: 60, placeholder: `${c.name} League`, value: d.name, oninput: (e) => { d.name = e.target.value; } })),
+      options.length ? groupField('Sport', choiceGroup({ name: 'seasonSport', label: 'Sport', value: d.sport, options: options.map((x) => ({ value: x.id, label: x.name, hint: x.kind === 'tie' ? 'Team ties' : 'Matches' })), onchange: (e) => { d.sport = e.target.value; render(); } }))
+        : h('p', { class: 'muted' }, 'Add a racket or team sport to the club first.'),
+      kind === 'tie' ? groupField('Each fixture is', choiceGroup({ name: 'seasonFormat', label: 'Each fixture is', value: d.format, options: Object.entries(TonamentTie.FORMATS).map(([value, x]) => ({ value, label: x.name, hint: x.hint })), onchange: (e) => { d.format = e.target.value; render(); } })) : null,
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', type: 'submit', disabled: !d.sport }, 'Set it up'), h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { S.seasonForm = false; render(); } }, 'Cancel')));
+    };
+    const row = (x) => h('li', {},
+      h('a', { href: `/season/${x.id}` }, h('strong', {}, x.name)),
+      h('span', { class: 'muted small' }, ` · ${x.sport.name} · ${x.clubs} clubs`),
+      x.champion ? pill('org', '🏆 Champions') : x.place ? pill(x.status === 'done' ? 'done' : 'org', `${x.status === 'done' ? 'Finished' : 'Now'} #${x.place}`) : pill(...SEASON_STATUS[x.status]));
+    return h('section', { class: 'section club-versus' },
+      h('div', { class: 'card' },
+        h('h2', {}, 'Seasons'),
+        L.items.length ? h('ul', { class: 'cc-list' }, L.items.map(row))
+          : h('p', { class: 'muted' }, 'Run a league with other clubs: a table, fixtures every week, and champions at the end.'),
+        L.admin && !S.seasonForm ? h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => { S.seasonForm = true; render(); } }, '🏁 Start a season')) : null),
+      L.admin && S.seasonForm ? form() : null);
+  }
+
+  async function loadSeason() {
+    try {
+      S.season = await api('GET', `/seasons/${S.route.id}`);
+      S.error = null;
+    } catch (e) {
+      S.error = e.message;
+    }
+    render();
+  }
+  setInterval(() => {
+    if (S.route.name === 'season' && S.season && S.season.status === 'on' && !document.hidden && !isEditing() && !S.seasonPick) loadSeason();
+  }, 10000);
+
+  function viewSeason() {
+    const x = S.season;
+    if (!x || x.id !== S.route.id) return loading();
+    document.title = `${x.name} · Club season`;
+    const post = (what, body, msg) => act(async () => { S.season = await api('POST', `/seasons/${x.id}/${what}`, body || {}); }, msg);
+    const share = () => shareSheet({
+      title: x.name,
+      text: x.status === 'open' ? `${x.name} — a ${x.sport.name.toLowerCase()} league between clubs. Enter your club:` : x.champion ? `🏆 ${x.champion.name} won ${x.name}. The final table:` : `${x.name} — the table so far:`,
+      url: `${location.origin}/season/${x.id}`, image: `/img/season/${x.id}.png`,
+    });
+    const [cls, label] = SEASON_STATUS[x.status];
+    const rounds = [...new Set(x.fixtures.map((f) => f.round))].sort((a, b) => a - b);
+    const matchUrl = (f) => `/t/${x.tournamentId}/m/${f.id}`;
+    const fixture = (f) => h('li', { class: 'season-fixture' },
+      h('a', { href: matchUrl(f) },
+        h('span', { class: f.winner === 'a' ? 'won' : '' }, f.a), h('span', { class: 'season-score' }, f.status === 'done' || f.status === 'live' ? f.summary || '–' : 'v'), h('span', { class: f.winner === 'b' ? 'won' : '' }, f.b)),
+      f.status === 'live' ? pill('live', 'Live') : null);
+    const team = (cl) => {
+      const picking = S.seasonPick && S.seasonPick.slug === cl.slug;
+      if (picking) {
+        const chosen = S.seasonPick.ids;
+        const locked = x.status !== 'open' ? cl.members.filter((m) => m.picked).map((m) => m.id) : [];
+        const toggle = (id) => { if (locked.includes(id)) return; const i = chosen.indexOf(id); if (i >= 0) chosen.splice(i, 1); else chosen.push(id); render(); };
+        return h('div', { class: 'card cc-team' },
+          h('h3', {}, `Pick ${cl.name}'s team`),
+          h('p', { class: 'muted small' }, `At least ${x.need}. The first one you tick is the captain.${x.status !== 'open' ? ' The season\'s on: you can add players, not take anyone off.' : ''}`),
+          h('ul', { class: 'cc-pick' }, cl.members.map((p) => h('li', {}, h('label', { class: 'check-field' },
+            h('input', { type: 'checkbox', checked: chosen.includes(p.id), disabled: locked.includes(p.id), onchange: () => toggle(p.id) }),
+            h('span', {}, p.name), chosen[0] === p.id ? h('small', { class: 'muted' }, ' · captain') : null)))),
+          h('div', { class: 'actions' },
+            h('button', { class: 'btn btn-primary', disabled: chosen.length < x.need, onclick: () => act(async () => { S.season = await api('POST', `/seasons/${x.id}/team`, { club: cl.slug, members: chosen }); S.seasonPick = null; }, 'Team saved') }, `Save the team (${chosen.length})`),
+            h('button', { class: 'btn btn-ghost', onclick: () => { S.seasonPick = null; render(); } }, 'Cancel')));
+      }
+      // Keep the team's order (it's the line-up's list): picked first, as saved.
+      const start = () => { const ids = cl.team.map((p) => (cl.members.find((m) => m.name === p.name) || {}).id).filter(Boolean); S.seasonPick = { slug: cl.slug, ids }; render(); };
+      return h('div', { class: 'card cc-team' },
+        h('div', { class: 'card-head' }, h('h3', {}, h('a', { href: `/club/${cl.slug}` }, cl.name), cl.host ? h('small', { class: 'muted' }, ' · host') : null),
+          cl.team.length >= x.need ? pill('done', `${cl.team.length} players`) : pill('waiting', 'No team yet')),
+        cl.team.length ? h('p', { class: 'small' }, cl.team.map((p, i) => [i ? ', ' : '', p.handle ? h('a', { href: `/@${p.handle}` }, p.name) : p.name, p.captain ? ' (c)' : ''])) : null,
+        h('div', { class: 'actions' },
+          cl.members ? h('button', { class: cl.team.length ? 'btn btn-small' : 'btn btn-primary btn-small', onclick: start }, cl.team.length ? (x.status === 'open' ? 'Change the team' : 'Add players') : 'Pick your team') : null,
+          x.status === 'open' && !cl.host && (cl.admin || x.can.remove) ? h('button', { class: 'btn btn-ghost btn-small', onclick: () => confirm(`Take ${cl.name} out of the season?`) && post('leave', { club: cl.slug }, `${cl.name} is out`) }, cl.admin ? 'Leave' : 'Remove') : null));
+    };
+    return [
+      h('p', {}, h('a', { class: 'back-link', href: `/club/${x.host.slug}?tab=ladder` }, `← ${x.host.name}`)),
+      h('div', { class: 'card challenge-head' },
+        h('p', { class: 'eyebrow' }, ['Club season', x.sport.name, x.tie ? x.tie.name : null].filter(Boolean).join(' · ')),
+        h('h1', {}, x.name),
+        h('p', { class: 'muted small' }, `Hosted by ${x.host.name} · ${x.clubs.length} club${x.clubs.length === 1 ? '' : 's'}${rounds.length ? ` · ${rounds.length} rounds` : ''}`),
+        h('div', { class: 'actions' }, pill(cls, label), h('button', { class: 'btn btn-small', onclick: share }, x.status === 'open' ? 'Invite clubs' : 'Share'))),
+      x.champion ? h('div', { class: 'card cc-result' }, h('p', { class: 'eyebrow' }, 'Champions'),
+        h('div', { class: 'cc-score' }, h('strong', {}, `🏆 ${x.champion.name}`), h('span', { class: 'cc-big' }, `${x.table[0].points} pts`)),
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: share }, 'Share the final table'))) : null,
+      x.status === 'open' ? h('div', { class: 'card' },
+        h('h2', {}, 'Clubs are entering'),
+        h('p', { class: 'muted small' }, `Share the link with clubs you want in (up to 12). Each picks a team of at least ${x.need} from its members. Every club plays every other once.`),
+        x.can.enter.length ? h('div', { class: 'actions' }, x.can.enter.map((o) => h('button', { class: 'btn btn-primary', onclick: () => post('enter', { club: o.slug }, `${o.name} is in — now pick your team`) }, `Enter ${o.name}`))) : null,
+        x.can.start ? h('div', { class: 'actions' },
+          h('button', { class: 'btn btn-primary', disabled: x.clubs.length < 3, onclick: () => confirm(`Start ${x.name}? The fixtures are drawn and no more clubs can enter.`) && post('start', {}, 'The season is on — fixtures are out 🏁') }, 'Start the season'),
+          h('button', { class: 'btn', onclick: share }, 'Invite clubs'),
+          x.clubs.length < 3 ? h('small', { class: 'muted' }, 'At least 3 clubs') : null) : null) : null,
+      x.table.length ? h('div', { class: 'card' }, h('h2', {}, x.status === 'done' ? 'Final table' : 'Table'),
+        h('table', { class: 'standings season-table' },
+          h('thead', {}, h('tr', {}, ['#', 'Club', 'P', 'W', 'L', 'Pts'].map((c, i) => h('th', { class: i > 1 ? 'num' : '' }, c)))),
+          h('tbody', {}, x.table.map((r, i) => h('tr', {},
+            h('td', {}, i + 1), h('td', {}, h('a', { href: `/club/${r.slug}` }, r.name)), h('td', { class: 'num' }, r.played), h('td', { class: 'num' }, r.won), h('td', { class: 'num' }, r.lost), h('td', { class: 'num' }, h('strong', {}, r.points))))))) : null,
+      rounds.length ? h('div', { class: 'card' }, h('h2', {}, 'Fixtures'),
+        rounds.map((rd) => [h('h3', { class: 'season-round' }, `Round ${rd}`), h('ul', { class: 'season-fixtures' }, x.fixtures.filter((f) => f.round === rd).map(fixture))]),
+        h('p', { class: 'muted small' }, x.kind === 'tie' ? 'Open a fixture to set your line-up (sealed until both are in) and score each match.' : 'Open a fixture to score it.')) : null,
+      h('h2', { class: 'section-title' }, 'Teams'),
+      h('div', { class: 'cc-teams' }, x.clubs.map(team)),
+    ];
   }
 
   async function loadClubChallenge() {
@@ -7584,6 +7733,19 @@
       return d.winner
         ? ['🏆 ', club(d.winner, winSlug), ' beat ', club(d.loser, loseSlug), ' ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score), ` in a club v club ${d.kind === 'tie' ? 'tie' : 'friendly'}`]
         : ['🤝 ', club(d.from, d.fromSlug), ' and ', club(d.to, d.toSlug), ' drew ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score)];
+    }
+    if (x.verb === 'season_match') {
+      const club = (name, slug) => h('a', { href: `/club/${slug}` }, name);
+      const season = h('a', { href: `/season/${d.id}` }, d.season);
+      return d.winner
+        ? ['🏁 ', club(d.winner, d.winnerSlug), ' beat ', club(d.loser, d.loserSlug), ' ', h('span', { class: 'feed-score' }, d.score), ' in ', season, ` · round ${d.round}`]
+        : ['🏁 ', club(d.a, d.aSlug), ' and ', club(d.b, d.bSlug), ' drew ', h('span', { class: 'feed-score' }, d.score), ' in ', season];
+    }
+    if (x.verb === 'season_won') {
+      return ['🏆 ', h('a', { href: `/club/${d.slug}` }, d.champion), ' won ', h('a', { href: `/season/${d.id}` }, d.season), ` — ${d.won} wins from ${d.played}, ${d.points} pts`];
+    }
+    if (x.verb === 'season_on') {
+      return ['🏁 ', h('a', { href: `/season/${d.id}` }, d.season), ` is on — ${d.clubs} clubs, ${d.rounds} rounds. Fixtures are out.`];
     }
     if (x.verb === 'club_challenge') {
       return ['⚔️ ', h('a', { href: `/club/${d.fromSlug}` }, d.from), ' v ', h('a', { href: `/club/${d.toSlug}` }, d.to), ` is on — a ${d.kind === 'tie' ? 'team tie' : 'friendly'}`, d.playAt ? `, ${fmtWhen(d.playAt)}` : '', '. ', h('a', { href: `/cc/${d.id}` }, 'See the teams')];
@@ -8501,7 +8663,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|goals(?:\/new|\/\d+)?$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);
