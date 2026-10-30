@@ -667,6 +667,14 @@
           render();
           S.goals = await api('GET', '/goals').catch(() => ({ active: [], past: [] }));
         }
+      } else if (parts[0] === 'runs') {
+        if (!S.me) {
+          navigate(`/signin?next=${encodeURIComponent(location.pathname)}`, { replace: true });
+          return;
+        }
+        S.route = { name: 'runs' };
+        render();
+        S.runs = await api('GET', '/runs').catch(() => null);
       } else if (parts[0] === 'challenges') {
         if (!S.me) {
           navigate(`/signin?next=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
@@ -914,6 +922,7 @@
     else if (S.route.name === 'notifications') view = viewNotifications();
     else if (S.route.name === 'challenges') view = viewChallenges();
     else if (S.route.name === 'goals') view = viewGoals();
+    else if (S.route.name === 'runs') view = viewRuns();
     else if (S.route.name === 'goalNew') view = viewGoalNew();
     else if (S.route.name === 'goal') view = viewGoal();
     else if (S.route.name === 'challengeNew') view = viewChallengeNew();
@@ -5107,6 +5116,7 @@
             h('a', { href: '/clubs', onclick: closeMenu }, 'Clubs'),
             h('a', { href: '/challenges', onclick: closeMenu }, 'Challenges'),
             h('a', { href: '/goals', onclick: closeMenu }, 'Goals'),
+            h('a', { href: '/runs', onclick: closeMenu }, 'Runs'),
             h('a', { href: '/', onclick: closeMenu }, 'My tournaments'),
             (S.myOrgs || []).map((o) => h('a', { href: `/@${o.slug}/edit`, onclick: closeMenu }, o.name, h('small', { class: 'muted' }, ` · ${o.live ? 'your page' : 'draft'}`))),
             S.me.isAdmin ? h('a', { href: '/admin', onclick: closeMenu }, 'Admin') : null,
@@ -7528,6 +7538,64 @@
           h('small', { class: 'muted' }, g.scope === 'club' ? `${g.total} of ${g.target} together` : g.me ? `You: ${g.me.value} of ${g.target}` : `${g.people} chasing it`)]);
   }
 
+  // ---------- runs: log one, totals, best efforts, this week with the people you follow
+  function viewRuns() {
+    document.title = 'Runs · Tonament';
+    const R = S.runs;
+    const d = (S.runDraft ||= { km: '', time: '', date: localToday(), title: '', place: '', visibility: 'public' });
+    const reload = async () => { S.runs = await api('GET', '/runs'); };
+    const form = h('form', {
+      class: 'card form run-form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const today = d.date === localToday();
+        act(async () => {
+          const r = await api('POST', '/runs', {
+            km: Number(d.km), time: d.time, title: d.title || null, place: d.place || null, visibility: d.visibility,
+            ranAt: today ? new Date().toISOString() : new Date(`${d.date}T07:00:00`).toISOString(),
+          });
+          S.runDraft = null;
+          await reload();
+          S.lastRun = r;
+        }, 'Run logged 🏃');
+      },
+    },
+    h('h2', {}, 'Log a run'),
+    h('div', { class: 'run-row' },
+      field('Distance (km)', h('input', { type: 'number', step: '0.01', min: '0.1', max: '300', required: true, inputmode: 'decimal', placeholder: '5', value: d.km, oninput: (e) => { d.km = e.target.value; } })),
+      field('Time', h('input', { required: true, placeholder: '28:30', pattern: '\\d{1,2}(:\\d{2}){1,2}|\\d+', inputmode: 'numeric', value: d.time, oninput: (e) => { d.time = e.target.value; } }), null, 'mm:ss or h:mm:ss')),
+    field('Day', h('input', { type: 'date', max: localToday(), value: d.date, oninput: (e) => { d.date = e.target.value; } })),
+    field('Name', h('input', { maxlength: 80, placeholder: 'Sunday long run', value: d.title, oninput: (e) => { d.title = e.target.value; } })),
+    field('Where', h('input', { maxlength: 80, placeholder: 'Marina Beach', value: d.place, oninput: (e) => { d.place = e.target.value; } })),
+    groupField('Who sees it', choiceGroup({ name: 'runVis', label: 'Who sees it', value: d.visibility, options: [{ value: 'public', label: 'Everyone' }, { value: 'followers', label: 'Followers' }, { value: 'private', label: 'Only me' }], onchange: (e) => { d.visibility = e.target.value; } })),
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary btn-lg', type: 'submit' }, 'Log it')));
+    const last = S.lastRun;
+    const shareRun = (r) => shareSheet({ title: 'My run', text: `${r.km} km in ${r.time} (${r.pace} /km)${r.pbs && r.pbs.length ? ` — a new best ${r.pbs.join(' and ')}! 🏃` : ' 🏃'}`, url: r.post ? `${location.origin}/a/${r.post.id}` : `${location.origin}/runs`, image: r.post && r.post.public ? `/img/a/${r.post.id}.png` : null });
+    const stat = (label, t) => h('div', { class: 'run-stat' }, h('small', { class: 'muted' }, label), h('strong', {}, `${t.km} km`), h('small', { class: 'muted' }, `${t.runs} run${t.runs === 1 ? '' : 's'}`));
+    return [
+      h('div', { class: 'card-head page-head' }, h('h1', {}, 'Runs'), h('a', { class: 'btn', href: '/goals/new' }, 'Set a km goal')),
+      last ? h('div', { class: 'card cc-result' },
+        h('p', { class: 'eyebrow' }, last.pbs.length ? `New best · ${last.pbs.join(', ')}` : 'Logged'),
+        h('div', { class: 'cc-score' }, h('strong', {}, `${last.time} · ${last.pace} /km`), h('span', { class: 'cc-big' }, `${last.km} km`)),
+        h('div', { class: 'actions' }, h('button', { class: 'btn btn-primary', onclick: () => shareRun(last) }, 'Share it'), h('button', { class: 'btn btn-ghost', onclick: () => { S.lastRun = null; render(); } }, 'Log another'))) : form,
+      R == null ? loading() : [
+        h('div', { class: 'run-stats' }, stat('This week', R.week), stat('This month', R.month), stat('This year', R.year)),
+        h('div', { class: 'card' }, h('h2', {}, 'This week'),
+          R.board.length > 1 ? h('ol', { class: 'entries run-board' }, R.board.map((b) => h('li', { class: b.me ? 'me' : '' },
+            b.handle ? h('a', { href: `/@${b.handle}` }, b.name) : h('span', {}, b.name), h('strong', {}, `${b.km} km`))))
+            : h('p', { class: 'muted' }, 'Follow friends who run and you\'ll see who\'s run the most this week — you against them.')),
+        R.bests.length ? h('div', { class: 'card' }, h('h2', {}, 'Best efforts'),
+          h('div', { class: 'run-bests' }, R.bests.map((b) => h('div', { class: 'run-stat' }, h('small', { class: 'muted' }, b.name), h('strong', {}, b.time), h('small', { class: 'muted' }, `${b.pace} /km`)))),
+          h('p', { class: 'muted small' }, 'Your fastest pace over a run at least that long.')) : null,
+        R.recent.length ? h('div', { class: 'card' }, h('h2', {}, 'Your runs'),
+          h('ul', { class: 'cc-list' }, R.recent.map((r) => h('li', {},
+            h('strong', {}, `${r.km} km`), h('span', { class: 'muted small' }, ` · ${r.time} · ${r.pace} /km · ${fmtDates(new Date(r.ranAt).toISOString().slice(0, 10))}${r.title ? ` · ${r.title}` : ''}`),
+            r.visibility !== 'public' ? h('small', { class: 'muted' }, r.visibility === 'private' ? ' 🔒' : ' 👥') : null,
+            h('button', { class: 'link-btn small', style: 'margin-left:auto', onclick: () => confirm('Delete this run?') && act(async () => { await api('DELETE', `/runs/${r.id}`); await reload(); }, 'Run deleted') }, 'Delete'))))) : null,
+      ],
+    ];
+  }
+
   function viewGoals() {
     document.title = 'Goals · Tonament';
     const G = S.goals;
@@ -7575,8 +7643,8 @@
     ], onchange: (e) => { d.scope = e.target.value; render(); } }), null, mine.length ? null : 'Club goals are set by a club\'s admins.'),
     d.scope !== 'personal' ? field('Club', h('select', { name: 'club', required: true }, mine.map((c) => h('option', { value: c.slug, selected: c.slug === d.club }, c.name)))) : null,
     d.scope === 'versus' ? field('Against', h('input', { name: 'rival', required: true, placeholder: 'Their club address, e.g. velachery-smashers', pattern: '[a-z0-9-]{3,30}' }), null, 'The part after tonament.com/club/ on their club page.') : null,
-    groupField('Count', choiceGroup({ name: 'metric', label: 'Count', value: d.metric, options: [{ value: 'games', label: 'Games played' }, { value: 'wins', label: 'Games won' }], onchange: (e) => { d.metric = e.target.value; } })),
-    field('Sport', h('select', { name: 'sport', onchange: (e) => { d.sport = e.target.value; } }, h('option', { value: '' }, 'Any sport'), (S.sports || []).filter((x) => x.status === 'live').map((x) => h('option', { value: x.id, selected: x.id === d.sport }, x.name)))),
+    groupField('Count', choiceGroup({ name: 'metric', label: 'Count', value: d.metric, options: [{ value: 'games', label: 'Games played' }, { value: 'wins', label: 'Games won' }, { value: 'km', label: 'Km run' }, { value: 'runs', label: 'Runs' }], onchange: (e) => { d.metric = e.target.value; render(); } })),
+    ['km', 'runs'].includes(d.metric) ? null : field('Sport', h('select', { name: 'sport', onchange: (e) => { d.sport = e.target.value; } }, h('option', { value: '' }, 'Any sport'), (S.sports || []).filter((x) => x.status === 'live').map((x) => h('option', { value: x.id, selected: x.id === d.sport }, x.name)))),
     d.scope !== 'versus' ? field('Target', h('input', { name: 'target', type: 'number', min: 1, max: 100000, required: true, value: d.target, inputmode: 'numeric' }), null, d.scope === 'club' ? 'For the whole club, together.' : 'For each person.') : null,
     groupField('When', choiceGroup({ name: 'period', label: 'When', value: d.period, options: [{ value: 'week', label: 'This week' }, { value: 'month', label: 'This month' }, { value: 'days30', label: 'Next 30 days' }], onchange: (e) => { d.period = e.target.value; } })),
     field('Name (optional)', h('input', { name: 'title', maxlength: 80, placeholder: 'e.g. November grind' })),
@@ -7611,7 +7679,7 @@
             g.scope === 'versus' ? h('small', { class: 'contact' }, p.side === g.club.id ? g.club.name : g.rival.name) : null,
             h('span', { class: 'progress' }, h('span', { style: `width:${(p.value / max) * 100}%` }))),
           h('strong', { class: 'goal-value' }, g.scope === 'personal' && g.target && p.value >= g.target ? `${p.value} 🏅` : p.value)))) : empty('Nobody yet.'),
-        h('p', { class: 'hint' }, 'Counts confirmed group games, challenges and tournament matches played since the goal started.')),
+        h('p', { class: 'hint' }, ['km', 'runs'].includes(g.metric) ? 'Counts runs logged on Tonament since the goal started.' : 'Counts confirmed group games, challenges and tournament matches played since the goal started.')),
     ];
   }
 
@@ -7733,6 +7801,10 @@
       return d.winner
         ? ['🏆 ', club(d.winner, winSlug), ' beat ', club(d.loser, loseSlug), ' ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score), ` in a club v club ${d.kind === 'tie' ? 'tie' : 'friendly'}`]
         : ['🤝 ', club(d.from, d.fromSlug), ' and ', club(d.to, d.toSlug), ' drew ', h('a', { class: 'feed-score', href: `/cc/${d.id}` }, d.score)];
+    }
+    if (x.verb === 'run') {
+      return ['🏃 ', who, ` ran ${d.km} km in ${d.time} at `, h('span', { class: 'feed-score' }, `${d.pace} /km`), d.title ? ` · ${d.title}` : '', d.place && !d.title ? ` · ${d.place}` : '',
+        d.pbs && d.pbs.length ? [' · ', h('strong', {}, `New best ${d.pbs.join(', ')} 🎉`)] : ''];
     }
     if (x.verb === 'season_match') {
       const club = (name, slug) => h('a', { href: `/club/${slug}` }, name);
@@ -8663,7 +8735,7 @@
 
   // ---------- navigation: real URLs (/t/<id>/courts), no page reloads
   // The app's own pages; anything else (/pricing, /terms, …) is a normal link.
-  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|me\/profile$|@[a-z0-9-]+\/edit$)/;
+  const APP_PATH = /^\/(?:$|t\/|new$|invite$|signin$|signup$|forgot$|reset$|link$|admin$|groups(?:\/new)?$|g\/|academy\/new$|clubs(?:\/new)?$|club\/|a\/\d+$|notifications$|challenges(?:\/new)?$|c\/\d+$|cc\/\d+$|season\/\d+$|goals(?:\/new|\/\d+)?$|runs$|me\/profile$|@[a-z0-9-]+\/edit$)/;
   function navigate(url, { replace = false } = {}) {
     const same = url === location.pathname + location.search;
     history[replace || same ? 'replaceState' : 'pushState'](null, '', url);

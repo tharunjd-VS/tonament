@@ -167,6 +167,14 @@ function createCards({ db, goalsView = null, clubChallengeCard = null, seasonCar
       if (!d.winner) return { eyebrow: `Club v club · ${sportName(a.sport)}`, title: `${d.from} v ${d.to}`, subtitle: `A drawn ${kind}`, big: d.score, bigLabel: 'Final' };
       return { eyebrow: `Club v club · ${sportName(a.sport)}`, title: d.winner, subtitle: `beat ${d.loser} in a ${sportName(a.sport).toLowerCase()} ${kind}`, big: d.score, bigLabel: 'Final' };
     }
+    if (a.verb === 'run') {
+      const when = new Date(a.created_at).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
+      return {
+        eyebrow: d.pbs && d.pbs.length ? `Run · ${when} · New best ${d.pbs.join(', ')}` : `Run · ${when}`,
+        title: who ? who.name : 'A runner', subtitle: [d.title, d.place].filter(Boolean).join(' · ') || `${d.time} · ${d.pace} /km`,
+        big: `${d.km} km`, bigLabel: `${d.time} · ${d.pace} /km`,
+      };
+    }
     if (a.verb === 'season_match') {
       if (!d.winner) return { eyebrow: `${d.season} · Round ${d.round}`, title: `${d.a} v ${d.b}`, subtitle: 'All square', big: d.score, bigLabel: 'Draw' };
       return { eyebrow: `${d.season} · Round ${d.round}`, title: d.winner, subtitle: `beat ${d.loser}`, big: d.score, bigLabel: sportName(a.sport) };

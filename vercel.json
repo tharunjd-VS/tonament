@@ -68,6 +68,10 @@
       "destination": "/api/index?__path=app"
     },
     {
+      "source": "/runs",
+      "destination": "/api/index?__path=app"
+    },
+    {
       "source": "/goals",
       "destination": "/api/index?__path=app"
     },

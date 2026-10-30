@@ -23,6 +23,7 @@ const { createChallenges } = require('./challenges');
 const { createLadders } = require('./ladders');
 const { createClubChallenges } = require('./club-challenges');
 const { createSeasons } = require('./seasons');
+const { createRuns } = require('./runs');
 const { createGoals } = require('./goals');
 const { createTies } = require('./ties');
 const TIE = require('../public/sports/tie');
@@ -3704,7 +3705,8 @@ function createService(db, { mailer, fetchImpl } = {}) {
   const groups = createGroups({ db, fail, text, orgs, social, notify, ratings: challenges });
   const clubs = createClubs({ db, fail, orgs, social, mediaUrl, notify });
   const ladders = createLadders({ db, fail, text, social, notify, challenges });
-  const goals = createGoals({ db, fail, text, social, notify });
+  const runs = createRuns({ db, fail, text, social });
+  const goals = createGoals({ db, fail, text, social, notify, runCounts: runs.counts });
   const ties = createTies({ db, fail, load, accessOf, matchOf, eventFor, saveRallies, requireStageOpen });
   goalsRef = goals;
   const clubChallenges = createClubChallenges({
@@ -3885,6 +3887,7 @@ function createService(db, { mailer, fetchImpl } = {}) {
     ties,
     clubChallenges,
     seasons,
+    runs,
     referrals,
     useCredit,
     takeOverScoring,

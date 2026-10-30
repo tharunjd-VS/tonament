@@ -788,11 +788,26 @@ CREATE TABLE IF NOT EXISTS seasons (
 );
 CREATE INDEX IF NOT EXISTS seasons_host ON seasons(host_org);
 ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS season_id INTEGER;
+-- v42: runs. Anyone logs a run (distance, time, when); it goes to the feed
+-- (public or followers) unless private, counts in km/runs goals, and makes
+-- best efforts at the standard distances.
+CREATE TABLE IF NOT EXISTS runs (
+  id          SERIAL PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  distance_m  INTEGER NOT NULL,
+  duration_s  INTEGER NOT NULL,
+  ran_at      TIMESTAMPTZ NOT NULL,
+  title       TEXT,
+  place       TEXT,
+  visibility  TEXT NOT NULL DEFAULT 'public',   -- public | followers | private
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS runs_user ON runs(user_id, ran_at DESC);
 `;
 
 // Bump when SCHEMA changes. Each cold start does one cheap check instead of
 // re-running every CREATE/ALTER statement.
-const SCHEMA_VERSION = 41;
+const SCHEMA_VERSION = 42;
 
 async function migrate(db) {
   try {

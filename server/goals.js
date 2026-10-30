@@ -6,16 +6,17 @@
 // - versus: two clubs' members add up, and the higher total wins.
 // Progress is counted live from confirmed group games, confirmed challenges
 // and finished tournament matches between starts_at and ends_at (games, or
-// wins). Reaching a target is a badge: in the feed, with a notification.
+// wins), or from logged runs (km, or runs). Reaching a target is a badge: in the feed, with a notification.
 
 const sports = require('./sports');
 
-const METRICS = { games: 'games', wins: 'wins' };
+const METRICS = { games: 'games', wins: 'wins', km: 'km', runs: 'runs' };
+const RUNNING = ['km', 'runs']; // counted from logged runs (runs.js), not games
 // A timestamp from the database (a Date or a string) in milliseconds, exactly.
 const ms = (t) => new Date(t).getTime();
 const MAX_DAYS = 92;
 
-function createGoals({ db, fail, text, social, notify }) {
+function createGoals({ db, fail, text, social, notify, runCounts = null }) {
   const needUser = (actor) => { if (!actor?.user) fail(401, 'Sign in first'); return actor.user; };
 
   // ---------- counting
@@ -65,7 +66,7 @@ function createGoals({ db, fail, text, social, notify }) {
     const me = needUser(actor);
     const scope = ['personal', 'club', 'versus'].includes(input.scope) ? input.scope : 'personal';
     const metric = METRICS[input.metric] ? input.metric : 'games';
-    const sport = input.sport ? String(input.sport) : null;
+    const sport = input.sport && !RUNNING.includes(metric) ? String(input.sport) : null;
     if (sport && !sports.get(sport)) fail(400, 'Pick a sport, or any sport');
     const starts = new Date(input.startsAt || Date.now());
     const ends = new Date(input.endsAt || Date.now() + 30 * 86400000);
@@ -84,7 +85,7 @@ function createGoals({ db, fail, text, social, notify }) {
         if (rival.id === org.id) fail(400, 'Pick another club to take on');
       }
     }
-    const what = `${metric === 'wins' ? 'wins' : 'games'}${sport ? ` of ${sports.get(sport).name.toLowerCase()}` : ''}`;
+    const what = metric === 'km' ? 'km run' : metric === 'runs' ? 'runs' : `${metric === 'wins' ? 'wins' : 'games'}${sport ? ` of ${sports.get(sport).name.toLowerCase()}` : ''}`;
     const title = text(input.title, 'Name', { max: 80, optional: true })
       || (scope === 'versus' ? `${org.name} v ${rival.name}: most ${what}` : `${target} ${what}`);
     const [g] = await db.query(
@@ -128,8 +129,10 @@ function createGoals({ db, fail, text, social, notify }) {
     const g = await load(q, id);
     const list = await people(q, g);
     const end = new Date(Math.min(ms(g.ends_at), Date.now() + 60000));
-    const c = await counts(q, list.map((p) => p.id), g.starts_at, end.toISOString(), g.sport);
-    const value = (p) => (c.get(p.id) || { games: 0, wins: 0 })[g.metric];
+    const running = RUNNING.includes(g.metric);
+    const c = running && runCounts ? await runCounts(q, list.map((p) => p.id), g.starts_at, end.toISOString())
+      : await counts(q, list.map((p) => p.id), g.starts_at, end.toISOString(), g.sport);
+    const value = (p) => (c.get(p.id) || { games: 0, wins: 0, km: 0, runs: 0 })[g.metric];
     const board = list.map((p) => ({ id: p.id, name: p.name, handle: p.handle, side: p.side, value: value(p) }))
       .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
     const clubs = (await q('SELECT id, name, slug FROM orgs WHERE id = ANY($1::int[])', [[g.org_id, g.rival_id].filter(Boolean)]))

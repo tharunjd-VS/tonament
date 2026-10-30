@@ -1612,3 +1612,12 @@ label.btn.disabled { opacity: 0.5; pointer-events: none; }
 .season-fixture .won { font-weight: 700; }
 .season-score { font-variant-numeric: tabular-nums; font-weight: 700; min-width: 44px; text-align: center; color: var(--muted); }
 .section-title { margin: 20px 0 10px; }
+
+/* Runs */
+.run-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.run-stats, .run-bests { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.run-bests { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 8px; }
+.run-stat { display: grid; gap: 2px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.run-stat strong { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+.run-board li { display: flex; justify-content: space-between; gap: 8px; }
+.run-board li.me { background: var(--accent-soft); border-radius: 8px; }
